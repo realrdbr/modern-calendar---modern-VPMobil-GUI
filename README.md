@@ -45,6 +45,10 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 ## 4) Lokal testen (ohne Reverse Proxy)
 
+ggf.  python Abhängigkeiten installieren:
+```bash
+pip install -r requirements.txt
+```
 ```bash
 ./start-all.sh docker
 ```
