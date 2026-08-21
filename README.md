@@ -111,13 +111,14 @@ NTFY_BEHIND_PROXY=true
 Die Domain-Zuordnung steht in [Caddyfile](/home/rdbr/PycharmProjects/jahrgangskalender/proxy/Caddyfile).  
 Wenn du andere Domains nutzt, passe sie dort an.
 
-### Mit Proxy starten
+### Mit Proxy starten (automatisch)
 
 ```bash
 ./start-all.sh docker-proxy
 ```
 
 Caddy holt Zertifikate automatisch via Let’s Encrypt. Beim ersten Start kann das 1-2 Minuten dauern.
+Bei einem anderen Proxy, musst du das Template nutzen und mit ./start-all.sh docker starten
 
 Prüfen:
 
