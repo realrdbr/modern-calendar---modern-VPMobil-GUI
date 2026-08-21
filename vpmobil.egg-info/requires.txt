@@ -1,0 +1,7 @@
+requests
+yarl
+pyyaml
+toml
+
+[pdfs]
+pdfplumber

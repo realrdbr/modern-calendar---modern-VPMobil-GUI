@@ -1,0 +1,60 @@
+# Dynamic Traefik configuration. Replace only the certificate resolver if needed.
+# The static Traefik configuration must define entryPoints.websecure and the
+# certificateResolver named letsencrypt.
+
+http:
+  routers:
+    cal11-app:
+      rule: Host(`cal11.de`)
+      entryPoints:
+        - websecure
+      service: cal11-app
+      middlewares:
+        - cal11-security
+      tls:
+        certResolver: letsencrypt
+
+    cal11-vp:
+      rule: Host(`vp.cal11.de`)
+      entryPoints:
+        - websecure
+      service: cal11-vp
+      middlewares:
+        - cal11-security
+      tls:
+        certResolver: letsencrypt
+
+    cal11-notify:
+      rule: Host(`notify.cal11.de`)
+      entryPoints:
+        - websecure
+      service: cal11-notify
+      middlewares:
+        - cal11-security
+      tls:
+        certResolver: letsencrypt
+
+  services:
+    cal11-app:
+      loadBalancer:
+        servers:
+          - url: http://127.0.0.1:3000
+
+    cal11-vp:
+      loadBalancer:
+        servers:
+          - url: http://127.0.0.1:8000
+
+    cal11-notify:
+      loadBalancer:
+        servers:
+          - url: http://127.0.0.1:8090
+
+  middlewares:
+    cal11-security:
+      headers:
+        contentTypeNosniff: true
+        referrerPolicy: same-origin
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: false

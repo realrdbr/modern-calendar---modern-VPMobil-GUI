@@ -1,0 +1,17 @@
+{
+    email {$TLS_EMAIL}
+}
+
+cal11.de {
+    reverse_proxy app:3000
+}
+
+vp.cal11.de {
+    reverse_proxy vp:8000
+}
+
+notify.cal11.de {
+    reverse_proxy ntfy:80 {
+        flush_interval -1
+    }
+}

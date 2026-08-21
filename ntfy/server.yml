@@ -1,0 +1,6 @@
+# Private ntfy-Instanz. Nutzer und ihre individuellen Leserechte werden durch
+# `admin.py create-user` mit der ntfy-CLI angelegt.
+auth-default-access: "read-write"
+# Selbst gehostetes ntfy benötigt diesen Upstream für sofortige iOS-Pushs.
+upstream-base-url: "https://ntfy.sh"
+# Lokaler Betrieb: Topics sind ohne Login nutzbar.

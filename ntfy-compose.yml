@@ -1,0 +1,19 @@
+services:
+  ntfy:
+    image: binwiederhier/ntfy:v2.25.0
+    container_name: vpmobil-ntfy
+    command: serve
+    restart: unless-stopped
+    environment:
+      NTFY_BASE_URL: ${NTFY_PUBLIC_URL:-http://127.0.0.1:8090}
+      NTFY_CACHE_FILE: /var/lib/ntfy/cache.db
+      NTFY_AUTH_FILE: /var/lib/ntfy/auth.db
+      NTFY_AUTH_DEFAULT_ACCESS: read-write
+      NTFY_ENABLE_LOGIN: "true"
+      NTFY_ENABLE_SIGNUP: "false"
+      NTFY_BEHIND_PROXY: ${NTFY_BEHIND_PROXY:-false}
+    volumes:
+      - ./data/ntfy:/var/lib/ntfy
+      - ./ntfy/server.yml:/etc/ntfy/server.yml:ro
+    ports:
+      - "127.0.0.1:${NTFY_PORT:-8090}:80"
