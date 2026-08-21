@@ -4,13 +4,21 @@ dist/
 coverage/
 .DS_Store
 *.log
+*.pid
+*.sqlite
+*.sqlite3
 
 .venv
+.env.*
+!.env.example
 .vp_cache
 .env
 .idea
-__pycache__
-ntfy/__pycache__
-vpmobil/__pycache__
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
 data/*
 !data/.gitkeep
+uploads/

@@ -574,9 +574,31 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
+    app.use(express.static(distPath, { index: false }));
+    const indexHtmlPath = path.join(distPath, 'index.html');
+    const indexHtmlTemplate = fs.readFileSync(indexHtmlPath, 'utf-8');
     app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+      const publicHostRaw = (process.env.HOST || '127.0.0.1').trim();
+      const publicHost = (publicHostRaw === '0.0.0.0' || publicHostRaw === '::') ? '127.0.0.1' : publicHostRaw;
+      const calendarPort = (process.env.CAL11_PORT || process.env.PORT || '3000').trim();
+      const vpPort = (process.env.VP_PORT || '8000').trim();
+      const calendarFallback = `http://${publicHost}:${calendarPort}`;
+      const vpFallback = `http://${publicHost}:${vpPort}`;
+      const resolveUrl = (preferred: string | undefined, fallback: string): string => {
+        const normalized = (preferred || '').trim();
+        if (!normalized) return fallback;
+        return normalized;
+      };
+      const runtimeConfig = {
+        kalenderUrl: resolveUrl(process.env.CALENDAR_PUBLIC_URL, calendarFallback),
+        vertretungsplanUrl: resolveUrl(process.env.VERTRETUNGSPLAN_PUBLIC_URL, vpFallback),
+      };
+      const runtimeConfigScript = `<script>window.__CAL11_RUNTIME_CONFIG__=${JSON.stringify(runtimeConfig)};</script>`;
+      const html = indexHtmlTemplate.includes('</head>')
+        ? indexHtmlTemplate.replace('</head>', `${runtimeConfigScript}</head>`)
+        : `${runtimeConfigScript}${indexHtmlTemplate}`;
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(html);
     });
   }
 
