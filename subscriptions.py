@@ -11,8 +11,9 @@ from typing import Iterable
 
 import requests
 
-from accounts import AccountStore, User
+from accounts import AccountStore, CalendarEvent, NotifySettings, NotificationRecipient, User
 from ntfy.notifications import DEFAULT_BLOCKS, Block
+from ntfy.service import resolve_ntfy_publisher_auth
 
 
 def subject_key(subject: str | None) -> str | None:
@@ -108,6 +109,19 @@ def matching_lessons(class_item: object, lessons: Iterable[object], selected: se
     ]
 
 
+def class_sort_key(class_name: str) -> list[object]:
+    return [int(part) if part.isdigit() else part.casefold() for part in re.split(r"(\d+)", class_name)]
+
+
+def available_class_names_from_plans(plans: Iterable[object | None]) -> list[str]:
+    classes: set[str] = set()
+    for plan in plans:
+        if plan is None:
+            continue
+        classes.update(getattr(plan, "klassen", {}).keys())
+    return sorted(classes, key=class_sort_key)
+
+
 class SubscriptionNotifier:
     """Erstellt persönliche Nachrichten und dedupliziert sie persistent pro Nutzer."""
 
@@ -117,6 +131,7 @@ class SubscriptionNotifier:
         self.timeout = timeout
         self.blocks = DEFAULT_BLOCKS
         self._known_plan_signatures: dict[date, dict[str, str]] = {}
+        self._publisher_auth = resolve_ntfy_publisher_auth()
 
     @staticmethod
     def _plan_signature(class_item: object) -> str:
@@ -166,11 +181,106 @@ class SubscriptionNotifier:
     def _period_end(plan: object, block: Block) -> time | None:
         return getattr(plan, "zeitplan", {}).get(block.period, (block.start, block.end))[1]
 
+    @staticmethod
+    def _period_start(plan: object, block: Block) -> time | None:
+        return getattr(plan, "zeitplan", {}).get(block.period, (block.start, block.end))[0]
+
+    @staticmethod
+    def _time_from_text(value: str) -> time:
+        return datetime.strptime(value, "%H:%M").time()
+
+    @staticmethod
+    def _format_block_line(block_number: int, entries: list[tuple[str, str]], *, include_class_name: bool) -> str:
+        if include_class_name:
+            rendered = " | ".join(f"{class_name}: {text}" for class_name, text in entries)
+        else:
+            rendered = entries[0][1]
+        return f"{block_number}. Block: {rendered}"
+
+    def _class_block_entries(
+        self,
+        recipient: NotificationRecipient,
+        plan: object,
+        block: Block,
+        *,
+        changed_only: bool = False,
+    ) -> list[tuple[str, str]]:
+        entries: list[tuple[str, str]] = []
+        for class_name in recipient.selected_classes:
+            class_item = getattr(plan, "klassen", {}).get(class_name)
+            if class_item is None:
+                continue
+            selected = recipient.subject_selections.get(class_name, set())
+            if not selected:
+                continue
+            lessons = matching_lessons(class_item, self._block_lessons(class_item, block), selected)
+            if not lessons:
+                continue
+            if changed_only and not any(getattr(lesson, "änderung", False) for lesson in lessons):
+                continue
+            entries.append((class_name, self._lesson_text(class_item, lessons)))
+        return entries
+
+    def _daily_summary_lines(self, recipient: NotificationRecipient, plan: object) -> list[str]:
+        include_class_name = len(recipient.selected_classes) > 1
+        lines: list[str] = []
+        for block in self.blocks:
+            entries = self._class_block_entries(recipient, plan, block)
+            if entries:
+                lines.append(self._format_block_line(block.number, entries, include_class_name=include_class_name))
+        return lines
+
+    def _change_lines(self, recipient: NotificationRecipient, plan: object) -> list[str]:
+        include_class_name = len(recipient.selected_classes) > 1
+        lines: list[str] = []
+        for block in self.blocks:
+            entries = self._class_block_entries(recipient, plan, block, changed_only=True)
+            if entries:
+                lines.append(self._format_block_line(block.number, entries, include_class_name=include_class_name))
+        return lines
+
+    def _next_block_notification(self, recipient: NotificationRecipient, plan: object, trigger_time: time) -> tuple[int, str, str] | None:
+        include_class_name = len(recipient.selected_classes) > 1
+        for block in self.blocks:
+            block_start = self._period_start(plan, block)
+            if block_start is None or block_start <= trigger_time:
+                continue
+            entries = self._class_block_entries(recipient, plan, block)
+            if not entries:
+                continue
+            title_suffix = ", ".join(
+                sorted(
+                    {
+                        room
+                        for class_name in recipient.selected_classes
+                        for lesson in matching_lessons(
+                            getattr(plan, "klassen", {}).get(class_name, object()),
+                            self._block_lessons(getattr(plan, "klassen", {}).get(class_name, object()), block)
+                            if getattr(plan, "klassen", {}).get(class_name) is not None else [],
+                            recipient.subject_selections.get(class_name, set()),
+                        )
+                        for room in getattr(lesson, "räume", ())
+                        if room
+                    }
+                )
+            )
+            return (
+                block.number,
+                f"(VPrintfy) Nächster Raum: {title_suffix or 'Freistunde'}",
+                f"Nächster ({block.number}.) Block: "
+                + (
+                    " | ".join(f"{class_name}: {text}" for class_name, text in entries)
+                    if include_class_name else entries[0][1]
+                ),
+            )
+        return None
+
     def _publish(self, user: User, message: str, title: str, priority: str = "default") -> None:
         response = requests.post(
             f"{self.ntfy_url}/{user.ntfy_topic}", data=message.encode("utf-8"),
             headers={"Title": Header(title, "utf-8").encode(), "Priority": priority, "Tags": "calendar"},
             timeout=self.timeout,
+            auth=self._publisher_auth,
         )
         response.raise_for_status()
 
@@ -185,16 +295,16 @@ class SubscriptionNotifier:
         return True
 
     def send_test(self, user: User, selected: set[str], plan: object, kind: str, block_number: int | None = None) -> None:
-        class_item = getattr(plan, "klassen", {}).get(user.class_name)
-        if class_item is None:
-            raise ValueError("Für die Klasse des Nutzers ist im aktuellen Plan kein Eintrag vorhanden.")
+        recipient = NotificationRecipient(
+            user=user,
+            selected_classes=(user.class_name,),
+            subject_selections={user.class_name: selected},
+            notify_settings=NotifySettings(),
+            calendar_courses=set(),
+        )
 
         if kind == "morning":
-            entries = []
-            for block in self.blocks:
-                lessons = matching_lessons(class_item, self._block_lessons(class_item, block), selected)
-                if lessons:
-                    entries.append(f"{block.number}. Block: {self._lesson_text(class_item, lessons)}")
+            entries = self._daily_summary_lines(recipient, plan)
             if not entries:
                 raise ValueError("Für die ausgewählten Fächer enthält der aktuelle Plan keine Stunden.")
             plan_date = getattr(plan, "datum", None) or date.today()
@@ -207,11 +317,7 @@ class SubscriptionNotifier:
 
         if kind == "change":
             timestamp = getattr(plan, "zeitstempel", None)
-            changes = []
-            for block in self.blocks:
-                lessons = matching_lessons(class_item, self._block_lessons(class_item, block), selected)
-                if any(getattr(lesson, "änderung", False) for lesson in lessons):
-                    changes.append(f"{block.number}. Block: {self._lesson_text(class_item, lessons)}")
+            changes = self._change_lines(recipient, plan)
             if timestamp is None or not changes:
                 raise ValueError("Für die ausgewählten Fächer enthält der aktuelle Plan keine Änderung.")
             self._publish(
@@ -225,27 +331,55 @@ class SubscriptionNotifier:
         if kind == "next":
             if block_number is None or not 1 <= block_number < len(self.blocks):
                 raise ValueError("Für next muss --block zwischen 1 und 3 liegen.")
-            block = self.blocks[block_number - 1]
-            next_block = self.blocks[block_number]
-            lessons = matching_lessons(class_item, self._block_lessons(class_item, next_block), selected)
-            if not lessons:
+            trigger_time = self._period_end(plan, self.blocks[block_number - 1])
+            if trigger_time is None:
+                raise ValueError("Für den gewählten Block fehlt die Uhrzeit.")
+            notification = self._next_block_notification(recipient, plan, trigger_time)
+            if notification is None:
                 raise ValueError("Für die ausgewählten Fächer enthält der nächste Block keine Stunden.")
-            rooms = sorted({room for lesson in lessons for room in getattr(lesson, "räume", ()) if room})
             self._publish(
                 user,
-                f"Nächster ({next_block.number}.) Block: {self._lesson_text(class_item, lessons)}",
-                "(VPrintfy) Nächster Raum: " + (", ".join(rooms) if rooms else "Freistunde"),
+                notification[2],
+                notification[1],
                 "high",
             )
             return
 
         raise ValueError("Unbekannter Benachrichtigungstyp.")
 
+    @staticmethod
+    def _event_matches_recipient(recipient: NotificationRecipient, event: CalendarEvent, selected_types: set[str]) -> bool:
+        if event.event_type not in selected_types:
+            return False
+        if not event.course_id:
+            return True
+        return event.course_id in recipient.calendar_courses
+
+    @staticmethod
+    def _calendar_notification_at(event: CalendarEvent, settings: NotifySettings) -> datetime:
+        event_date = date.fromisoformat(event.date)
+        return datetime.combine(
+            event_date - timedelta(days=settings.calendar_notification_days_before),
+            datetime.strptime(settings.calendar_notification_time, "%H:%M").time(),
+        )
+
+    @staticmethod
+    def _calendar_message(event: CalendarEvent) -> tuple[str, str]:
+        title = f"(VPrintfy) Kalender: {event.title}"
+        when = event.date
+        if event.start_time:
+            when = f"{when} ab {event.start_time}"
+        lines = [event.title, f"Typ: {event.event_type}", f"Datum: {when}"]
+        if event.course_id:
+            lines.append(f"Kurs: {event.course_id}")
+        if event.description:
+            lines.append("")
+            lines.append(event.description)
+        return title, "\n".join(lines)
+
     def poll_once(self, plan: object, now: datetime | None = None) -> int:
         now = now or datetime.now()
         plan_date = getattr(plan, "datum", None) or now.date()
-        if plan_date.weekday() >= 5:
-            return 0
         known_signatures = self._known_plan_signatures.setdefault(plan_date, {})
         changed_classes: set[str] = set()
         for class_name, class_item in getattr(plan, "klassen", {}).items():
@@ -255,52 +389,70 @@ class SubscriptionNotifier:
                 changed_classes.add(class_name)
             known_signatures[class_name] = signature
         sent = 0
-        for user, selected in self.store.subscribed_users():
-            if not selected:
-                continue
-            class_item = getattr(plan, "klassen", {}).get(user.class_name)
-            if class_item is None:
-                continue
-            if now.time() >= time(7, 0):
-                entries = []
-                for block in self.blocks:
-                    lessons = matching_lessons(class_item, self._block_lessons(class_item, block), selected)
-                    if lessons:
-                        entries.append(f"{block.number}. Block: {self._lesson_text(class_item, lessons)}")
-                if entries:
-                    sent += self._deliver(
-                        user, f"morning:{plan_date.isoformat()}",
-                        "Heute, " + plan_date.strftime("%d.%m.%Y") + ":\n" + "\n".join(entries),
-                        "(VPrintfy) Heute",
-                    )
-            timestamp = getattr(plan, "zeitstempel", None)
-            if timestamp and user.class_name in changed_classes:
-                changes = []
-                for block in self.blocks:
-                    lessons = matching_lessons(class_item, self._block_lessons(class_item, block), selected)
-                    if any(getattr(lesson, "änderung", False) for lesson in lessons):
-                        changes.append(f"{block.number}. Block: {self._lesson_text(class_item, lessons)}")
-                if changes:
-                    sent += self._deliver(
-                        user, f"publication:{plan_date.isoformat()}:{self._plan_signature(class_item)}",
-                        "Plan veröffentlicht/aktualisiert (" + timestamp.strftime("%d.%m.%Y %H:%M") + "):\n" + "\n".join(changes),
-                        "(VPrintfy) Plan-Änderung", "high",
-                    )
-            for position, block in enumerate(self.blocks[:-1]):
-                block_end = self._period_end(plan, block)
-                if block_end is None:
-                    continue
-                start = (datetime.combine(now.date(), block_end) - timedelta(minutes=5)).time()
-                if not start <= now.time() < block_end:
-                    continue
-                next_block = self.blocks[position + 1]
-                lessons = matching_lessons(class_item, self._block_lessons(class_item, next_block), selected)
-                if not lessons:
-                    continue
-                rooms = sorted({room for lesson in lessons for room in getattr(lesson, "räume", ()) if room})
-                sent += self._deliver(
-                    user, f"next:{plan_date.isoformat()}:{block.number}",
-                    f"Nächster ({next_block.number}.) Block: {self._lesson_text(class_item, lessons)}",
-                    "(VPrintfy) Nächster Raum: " + (", ".join(rooms) if rooms else "Freistunde"), "high",
+        calendar_events = self.store.get_calendar_events()
+        for recipient in self.store.notification_recipients():
+            user = recipient.user
+            settings = recipient.notify_settings
+            has_subject_selection = any(recipient.subject_selections.values())
+            if plan_date.weekday() < 5 and settings.lesson_notifications_enabled and has_subject_selection:
+                lesson_times = sorted(
+                    [(value, self._time_from_text(value)) for value in dict.fromkeys(settings.lesson_notification_times)],
+                    key=lambda item: item[1],
                 )
+                if lesson_times:
+                    _first_key, first_time = lesson_times[0]
+                    if now.time() >= first_time:
+                        lines = self._daily_summary_lines(recipient, plan)
+                        if lines:
+                            sent += self._deliver(
+                                user,
+                                f"morning:{plan_date.isoformat()}",
+                                "Heute, " + plan_date.strftime("%d.%m.%Y") + ":\n" + "\n".join(lines),
+                                "(VPrintfy) Heute",
+                            )
+                    timestamp = getattr(plan, "zeitstempel", None)
+                    if timestamp and any(class_name in changed_classes for class_name in recipient.selected_classes):
+                        changes = self._change_lines(recipient, plan)
+                        if changes:
+                            signature = "|".join(
+                                f"{class_name}:{self._plan_signature(getattr(plan, 'klassen', {})[class_name])}"
+                                for class_name in recipient.selected_classes
+                                if class_name in getattr(plan, "klassen", {})
+                            )
+                            sent += self._deliver(
+                                user,
+                                f"publication:{plan_date.isoformat()}:{signature}",
+                                "Plan veröffentlicht/aktualisiert (" + timestamp.strftime("%d.%m.%Y %H:%M") + "):\n" + "\n".join(changes),
+                                "(VPrintfy) Plan-Änderung",
+                                "high",
+                            )
+                    for time_key, trigger_time in lesson_times[1:]:
+                        if now.time() < trigger_time:
+                            continue
+                        notification = self._next_block_notification(recipient, plan, trigger_time)
+                        if notification is None:
+                            continue
+                        sent += self._deliver(
+                            user,
+                            f"next:{plan_date.isoformat()}:{notification[0]}",
+                            notification[2],
+                            notification[1],
+                            "high",
+                        )
+            if settings.calendar_notifications_enabled and settings.calendar_notification_types:
+                selected_types = set(settings.calendar_notification_types)
+                for event in calendar_events:
+                    if not self._event_matches_recipient(recipient, event, selected_types):
+                        continue
+                    notify_at = self._calendar_notification_at(event, settings)
+                    if now < notify_at:
+                        continue
+                    title, message = self._calendar_message(event)
+                    sent += self._deliver(
+                        user,
+                        f"calendar:{event.id}:{settings.calendar_notification_days_before}:{settings.calendar_notification_time}",
+                        message,
+                        title,
+                        "high",
+                    )
         return sent

@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import secrets
 import sqlite3
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 from urllib.parse import unquote, urlparse
 
 from argon2 import PasswordHasher
@@ -31,6 +31,9 @@ LOGIN_WINDOW = timedelta(minutes=15)
 LOGIN_LOCK = timedelta(minutes=30)
 LOGIN_MAX_FAILURES = 5
 SESSION_LIFETIME = timedelta(days=14)
+DEFAULT_LESSON_NOTIFICATION_TIMES = ("07:00", "09:10", "11:00", "13:15")
+DEFAULT_CALENDAR_NOTIFICATION_TIME = "16:00"
+DEFAULT_CALENDAR_NOTIFICATION_DAYS_BEFORE = 1
 
 
 def utcnow() -> datetime:
@@ -103,6 +106,45 @@ class User:
 class Session:
     user: User
     csrf_token: str
+
+
+@dataclass(frozen=True)
+class NotifySettings:
+    lesson_notifications_enabled: bool = True
+    lesson_notification_times: tuple[str, ...] = DEFAULT_LESSON_NOTIFICATION_TIMES
+    calendar_notifications_enabled: bool = False
+    calendar_notification_time: str = DEFAULT_CALENDAR_NOTIFICATION_TIME
+    calendar_notification_days_before: int = DEFAULT_CALENDAR_NOTIFICATION_DAYS_BEFORE
+    calendar_notification_types: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CalendarEventTypeOption:
+    id: str
+    label: str
+
+
+@dataclass(frozen=True)
+class CalendarEvent:
+    id: str
+    title: str
+    date: str
+    end_date: str | None
+    start_time: str | None
+    end_time: str | None
+    course_id: str
+    event_type: str
+    description: str
+    author: str
+
+
+@dataclass(frozen=True)
+class NotificationRecipient:
+    user: User
+    selected_classes: tuple[str, ...]
+    subject_selections: dict[str, set[str]]
+    notify_settings: NotifySettings
+    calendar_courses: set[str]
 
 
 class AccountStore:
@@ -268,6 +310,21 @@ class AccountStore:
                         subject_key TEXT NOT NULL,
                         PRIMARY KEY (user_id, subject_key)
                     );
+                    CREATE TABLE IF NOT EXISTS user_selected_classes (
+                        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        class_name TEXT NOT NULL,
+                        PRIMARY KEY (user_id, class_name)
+                    );
+                    CREATE TABLE IF NOT EXISTS user_subject_selections (
+                        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        class_name TEXT NOT NULL,
+                        subject_key TEXT NOT NULL,
+                        PRIMARY KEY (user_id, class_name, subject_key)
+                    );
+                    CREATE TABLE IF NOT EXISTS user_notification_settings (
+                        user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                        settings_json TEXT NOT NULL
+                    );
                     CREATE TABLE IF NOT EXISTS sessions (
                         token_hash TEXT PRIMARY KEY,
                         user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -289,6 +346,31 @@ class AccountStore:
                         event_key TEXT NOT NULL,
                         delivered_at TEXT NOT NULL,
                         PRIMARY KEY (user_id, event_key)
+                    );
+                    CREATE TABLE IF NOT EXISTS calendar_users (
+                        username TEXT PRIMARY KEY COLLATE NOCASE,
+                        courses TEXT NOT NULL,
+                        pin TEXT DEFAULT NULL,
+                        preferences TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'ACTIVE'
+                    );
+                    CREATE TABLE IF NOT EXISTS calendar_events (
+                        id TEXT PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        date TEXT NOT NULL,
+                        end_date TEXT DEFAULT NULL,
+                        start_time TEXT DEFAULT NULL,
+                        end_time TEXT DEFAULT NULL,
+                        course_id TEXT NOT NULL,
+                        type TEXT NOT NULL,
+                        description TEXT DEFAULT '',
+                        author TEXT DEFAULT ''
+                    );
+                    CREATE TABLE IF NOT EXISTS calendar_event_categories (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        color TEXT NOT NULL,
+                        sort_order INTEGER NOT NULL DEFAULT 0
                     );
                     """
                 )
@@ -314,6 +396,36 @@ class AccountStore:
                     subject_key VARCHAR(160) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
                     PRIMARY KEY (user_id, subject_key),
                     CONSTRAINT fk_vp_user_subjects_user
+                        FOREIGN KEY (user_id) REFERENCES vp_users(id)
+                        ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS vp_user_selected_classes (
+                    user_id BIGINT NOT NULL,
+                    class_name VARCHAR(64) NOT NULL,
+                    PRIMARY KEY (user_id, class_name),
+                    CONSTRAINT fk_vp_user_selected_classes_user
+                        FOREIGN KEY (user_id) REFERENCES vp_users(id)
+                        ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS vp_user_subject_selections (
+                    user_id BIGINT NOT NULL,
+                    class_name VARCHAR(64) NOT NULL,
+                    subject_key VARCHAR(160) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+                    PRIMARY KEY (user_id, class_name, subject_key),
+                    CONSTRAINT fk_vp_user_subject_selections_user
+                        FOREIGN KEY (user_id) REFERENCES vp_users(id)
+                        ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS vp_user_notification_settings (
+                    user_id BIGINT PRIMARY KEY,
+                    settings_json LONGTEXT NOT NULL,
+                    CONSTRAINT fk_vp_user_notification_settings_user
                         FOREIGN KEY (user_id) REFERENCES vp_users(id)
                         ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -377,6 +489,88 @@ class AccountStore:
             return self._fernet.decrypt(value).decode("utf-8")
         except (InvalidToken, UnicodeDecodeError) as error:
             raise RuntimeError("Die gespeicherten ntfy-Zugangsdaten können nicht entschlüsselt werden.") from error
+
+    def _users_table(self) -> str:
+        return "users" if self._backend == "sqlite" else "vp_users"
+
+    def _legacy_subjects_table(self) -> str:
+        return "user_subjects" if self._backend == "sqlite" else "vp_user_subjects"
+
+    def _selected_classes_table(self) -> str:
+        return "user_selected_classes" if self._backend == "sqlite" else "vp_user_selected_classes"
+
+    def _subject_selections_table(self) -> str:
+        return "user_subject_selections" if self._backend == "sqlite" else "vp_user_subject_selections"
+
+    def _settings_table(self) -> str:
+        return "user_notification_settings" if self._backend == "sqlite" else "vp_user_notification_settings"
+
+    def _calendar_users_table(self) -> str:
+        return "calendar_users" if self._backend == "sqlite" else "users"
+
+    def _calendar_events_table(self) -> str:
+        return "calendar_events" if self._backend == "sqlite" else "events"
+
+    def _calendar_event_categories_table(self) -> str:
+        return "calendar_event_categories" if self._backend == "sqlite" else "event_categories"
+
+    def _get_user_row_by_id(self, connection: Any, user_id: int) -> Any:
+        return self._fetchone(connection, f"SELECT * FROM {self._users_table()} WHERE id = ?", (user_id,))
+
+    @staticmethod
+    def _validate_class_names(class_names: set[str]) -> set[str]:
+        normalized = {class_name.strip() for class_name in class_names if class_name.strip()}
+        if not normalized:
+            raise ValueError("Mindestens eine Klasse muss ausgewählt sein.")
+        if any(len(class_name) > 64 for class_name in normalized):
+            raise ValueError("Mindestens eine Klasse ist ungültig.")
+        return normalized
+
+    @staticmethod
+    def _validate_subject_keys(subject_keys: set[str]) -> set[str]:
+        if any(not key.startswith("subject:") or len(key) > 160 for key in subject_keys):
+            raise ValueError("Ungültige Fachauswahl.")
+        return set(subject_keys)
+
+    @staticmethod
+    def _normalize_notification_time(value: str) -> str:
+        value = value.strip()
+        try:
+            return datetime.strptime(value, "%H:%M").strftime("%H:%M")
+        except ValueError as error:
+            raise ValueError(f"Ungültige Uhrzeit: {value}") from error
+
+    def _settings_from_row(self, row: Any | None) -> NotifySettings:
+        if row is None:
+            return NotifySettings()
+        raw = row["settings_json"]
+        data = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
+        lesson_times = tuple(
+            dict.fromkeys(
+                self._normalize_notification_time(value)
+                for value in data.get("lesson_notification_times", DEFAULT_LESSON_NOTIFICATION_TIMES)
+            )
+        )
+        if not lesson_times:
+            lesson_times = DEFAULT_LESSON_NOTIFICATION_TIMES
+        calendar_types = tuple(
+            event_type.strip()
+            for event_type in data.get("calendar_notification_types", ())
+            if isinstance(event_type, str) and event_type.strip()
+        )
+        days_before = int(data.get("calendar_notification_days_before", DEFAULT_CALENDAR_NOTIFICATION_DAYS_BEFORE))
+        if days_before < 0:
+            raise ValueError("Kalender-Erinnerungen dürfen nicht in der Vergangenheit liegen.")
+        return NotifySettings(
+            lesson_notifications_enabled=bool(data.get("lesson_notifications_enabled", True)),
+            lesson_notification_times=lesson_times,
+            calendar_notifications_enabled=bool(data.get("calendar_notifications_enabled", False)),
+            calendar_notification_time=self._normalize_notification_time(
+                str(data.get("calendar_notification_time", DEFAULT_CALENDAR_NOTIFICATION_TIME))
+            ),
+            calendar_notification_days_before=days_before,
+            calendar_notification_types=calendar_types,
+        )
 
     def _user_from_row(self, row: Any) -> User:
         return User(
@@ -477,6 +671,15 @@ class AccountStore:
                          ntfy_username, encrypted_password, to_db_time(utcnow())),
                     )
                     last_id = cursor.lastrowid
+                    self._run(
+                        connection,
+                        """
+                        INSERT INTO calendar_users(username, courses, pin, preferences, status)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(username) DO UPDATE SET pin = excluded.pin
+                        """,
+                        (username, "[]", _hash_shared_pin(pin), json.dumps({}), "ACTIVE"),
+                    )
                     row = self._fetchone(connection, "SELECT * FROM users WHERE id = ?", (last_id,))
                     return self._user_from_row(row)
 
@@ -520,6 +723,7 @@ class AccountStore:
             if self._backend == "sqlite":
                 cursor = self._execute(connection, "DELETE FROM users WHERE username = ? COLLATE NOCASE", (username,))
                 deleted = cursor.rowcount
+                self._run(connection, "DELETE FROM calendar_users WHERE username = ? COLLATE NOCASE", (username,))
             else:
                 cursor = self._execute(connection, "DELETE FROM vp_users WHERE LOWER(username) = LOWER(?)", (username,))
                 deleted = cursor.rowcount
@@ -540,6 +744,15 @@ class AccountStore:
                     (self._hasher.hash(pin), username),
                 )
                 changed = cursor.rowcount
+                self._run(
+                    connection,
+                    """
+                    INSERT INTO calendar_users(username, courses, pin, preferences, status)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(username) DO UPDATE SET pin = excluded.pin
+                    """,
+                    (username, "[]", _hash_shared_pin(pin), json.dumps({}), "ACTIVE"),
+                )
             else:
                 self._run(connection, "UPDATE vp_users SET pin_hash = ? WHERE LOWER(username) = LOWER(?)", (self._hasher.hash(pin), username))
                 self._run(
@@ -697,35 +910,279 @@ class AccountStore:
         with self._connection() as connection:
             self._run(connection, f"DELETE FROM {table} WHERE token_hash = ?", (self._token_hash(token),))
 
-    def get_subjects(self, user_id: int) -> set[str]:
-        table = "user_subjects" if self._backend == "sqlite" else "vp_user_subjects"
+    def load_notify_settings(self, user_id: int) -> tuple[NotifySettings, bool]:
         with self._connection() as connection:
-            rows = self._fetchall(connection, f"SELECT subject_key FROM {table} WHERE user_id = ?", (user_id,))
-        return {row["subject_key"] for row in rows}
+            row = self._fetchone(connection, f"SELECT settings_json FROM {self._settings_table()} WHERE user_id = ?", (user_id,))
+        return self._settings_from_row(row), row is not None
 
-    def replace_subjects(self, user_id: int, subject_keys: set[str]) -> None:
-        if any(not key.startswith("subject:") or len(key) > 160 for key in subject_keys):
-            raise ValueError("Ungültige Fachauswahl.")
-        table = "user_subjects" if self._backend == "sqlite" else "vp_user_subjects"
+    def save_notify_settings(self, user_id: int, settings: NotifySettings) -> None:
+        normalized = NotifySettings(
+            lesson_notifications_enabled=settings.lesson_notifications_enabled,
+            lesson_notification_times=tuple(
+                dict.fromkeys(self._normalize_notification_time(value) for value in settings.lesson_notification_times)
+            ) or DEFAULT_LESSON_NOTIFICATION_TIMES,
+            calendar_notifications_enabled=settings.calendar_notifications_enabled,
+            calendar_notification_time=self._normalize_notification_time(settings.calendar_notification_time),
+            calendar_notification_days_before=max(0, int(settings.calendar_notification_days_before)),
+            calendar_notification_types=tuple(
+                dict.fromkeys(event_type.strip() for event_type in settings.calendar_notification_types if event_type.strip())
+            ),
+        )
+        payload = json.dumps(
+            {
+                "lesson_notifications_enabled": normalized.lesson_notifications_enabled,
+                "lesson_notification_times": list(normalized.lesson_notification_times),
+                "calendar_notifications_enabled": normalized.calendar_notifications_enabled,
+                "calendar_notification_time": normalized.calendar_notification_time,
+                "calendar_notification_days_before": normalized.calendar_notification_days_before,
+                "calendar_notification_types": list(normalized.calendar_notification_types),
+            },
+            sort_keys=True,
+        )
         with self._connection() as connection:
-            self._run(connection, f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
+            if self._backend == "sqlite":
+                self._run(
+                    connection,
+                    f"""
+                    INSERT INTO {self._settings_table()}(user_id, settings_json)
+                    VALUES (?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET settings_json = excluded.settings_json
+                    """,
+                    (user_id, payload),
+                )
+            else:
+                self._run(
+                    connection,
+                    f"""
+                    INSERT INTO {self._settings_table()}(user_id, settings_json)
+                    VALUES (?, ?)
+                    ON DUPLICATE KEY UPDATE settings_json = VALUES(settings_json)
+                    """,
+                    (user_id, payload),
+                )
+
+    def get_selected_classes(self, user_id: int, fallback_class_name: str | None = None) -> tuple[tuple[str, ...], bool]:
+        with self._connection() as connection:
+            rows = self._fetchall(
+                connection,
+                f"SELECT class_name FROM {self._selected_classes_table()} WHERE user_id = ? ORDER BY class_name ASC",
+                (user_id,),
+            )
+            if rows:
+                return tuple(row["class_name"] for row in rows), True
+            user_row = self._get_user_row_by_id(connection, user_id) if fallback_class_name is None else None
+        resolved_fallback = fallback_class_name or (user_row["class_name"] if user_row is not None else None)
+        if not resolved_fallback:
+            return tuple(), False
+        return (resolved_fallback,), False
+
+    def replace_selected_classes(self, user_id: int, class_names: set[str]) -> None:
+        normalized = sorted(self._validate_class_names(class_names))
+        with self._connection() as connection:
+            self._run(connection, f"DELETE FROM {self._selected_classes_table()} WHERE user_id = ?", (user_id,))
             self._executemany(
                 connection,
-                f"INSERT INTO {table}(user_id, subject_key) VALUES (?, ?)",
-                [(user_id, key) for key in sorted(subject_keys)],
+                f"INSERT INTO {self._selected_classes_table()}(user_id, class_name) VALUES (?, ?)",
+                [(user_id, class_name) for class_name in normalized],
             )
 
-    def subscribed_users(self) -> list[tuple[User, set[str]]]:
-        users_table = "users" if self._backend == "sqlite" else "vp_users"
-        subjects_table = "user_subjects" if self._backend == "sqlite" else "vp_user_subjects"
+    def get_subject_selections(
+        self,
+        user_id: int,
+        fallback_class_name: str | None = None,
+    ) -> tuple[dict[str, set[str]], bool]:
         with self._connection() as connection:
-            rows = self._fetchall(connection, f"SELECT * FROM {users_table} WHERE active = 1")
-            subscriptions = {
-                row["user_id"]: set() for row in self._fetchall(connection, f"SELECT DISTINCT user_id FROM {subjects_table}")
+            rows = self._fetchall(
+                connection,
+                f"""
+                SELECT class_name, subject_key
+                FROM {self._subject_selections_table()}
+                WHERE user_id = ?
+                ORDER BY class_name ASC, subject_key ASC
+                """,
+                (user_id,),
+            )
+            if rows:
+                selections: dict[str, set[str]] = {}
+                for row in rows:
+                    selections.setdefault(row["class_name"], set()).add(row["subject_key"])
+                return selections, True
+            legacy_rows = self._fetchall(
+                connection,
+                f"SELECT subject_key FROM {self._legacy_subjects_table()} WHERE user_id = ? ORDER BY subject_key ASC",
+                (user_id,),
+            )
+            if not legacy_rows:
+                return {}, False
+            user_row = self._get_user_row_by_id(connection, user_id) if fallback_class_name is None else None
+        resolved_fallback = fallback_class_name or (user_row["class_name"] if user_row is not None else None)
+        if not resolved_fallback:
+            return {}, False
+        return ({resolved_fallback: {row["subject_key"] for row in legacy_rows}}, False)
+
+    def get_subjects(self, user_id: int) -> set[str]:
+        selections, _ = self.get_subject_selections(user_id)
+        return {subject_key for class_subjects in selections.values() for subject_key in class_subjects}
+
+    def replace_subjects(self, user_id: int, subject_keys: set[str] | Mapping[str, set[str]]) -> None:
+        if isinstance(subject_keys, Mapping):
+            normalized_classes = {class_name.strip() for class_name in subject_keys if class_name.strip()}
+            selections = {
+                class_name.strip(): self._validate_subject_keys(set(keys))
+                for class_name, keys in subject_keys.items()
+                if class_name.strip()
             }
-            for row in self._fetchall(connection, f"SELECT user_id, subject_key FROM {subjects_table}"):
-                subscriptions.setdefault(row["user_id"], set()).add(row["subject_key"])
-        return [(self._user_from_row(row), subscriptions.get(row["id"], set())) for row in rows]
+            if not normalized_classes:
+                selections = {}
+        else:
+            with self._connection() as connection:
+                user_row = self._get_user_row_by_id(connection, user_id)
+            if user_row is None:
+                raise ValueError("Benutzer nicht gefunden.")
+            selections = {user_row["class_name"]: self._validate_subject_keys(set(subject_keys))}
+        with self._connection() as connection:
+            self._run(connection, f"DELETE FROM {self._legacy_subjects_table()} WHERE user_id = ?", (user_id,))
+            self._run(connection, f"DELETE FROM {self._subject_selections_table()} WHERE user_id = ?", (user_id,))
+            selection_rows = [
+                (user_id, class_name, subject_key)
+                for class_name in sorted(selections)
+                for subject_key in sorted(selections[class_name])
+            ]
+            if selection_rows:
+                self._executemany(
+                    connection,
+                    f"INSERT INTO {self._subject_selections_table()}(user_id, class_name, subject_key) VALUES (?, ?, ?)",
+                    selection_rows,
+                )
+            legacy_class = min(selections) if selections else None
+            legacy_rows = [(user_id, key) for key in sorted(selections.get(legacy_class, set()))] if legacy_class else []
+            if legacy_rows:
+                self._executemany(
+                    connection,
+                    f"INSERT INTO {self._legacy_subjects_table()}(user_id, subject_key) VALUES (?, ?)",
+                    legacy_rows,
+                )
+
+    def get_calendar_course_ids(self, username: str) -> set[str]:
+        with self._connection() as connection:
+            row = self._fetchone(
+                connection,
+                f"SELECT courses FROM {self._calendar_users_table()} WHERE LOWER(username) = LOWER(?)",
+                (username,),
+            )
+        if row is None:
+            return set()
+        raw = row["courses"]
+        courses = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
+        return {
+            str(course_id).strip()
+            for course_id in courses
+            if isinstance(course_id, str) and str(course_id).strip()
+        }
+
+    def get_calendar_event_types(self) -> list[CalendarEventTypeOption]:
+        with self._connection() as connection:
+            category_rows = self._fetchall(
+                connection,
+                f"SELECT id, name FROM {self._calendar_event_categories_table()} ORDER BY sort_order ASC, name ASC",
+            )
+            if category_rows:
+                return [CalendarEventTypeOption(id=row["id"], label=row["name"]) for row in category_rows]
+            event_rows = self._fetchall(
+                connection,
+                f"SELECT DISTINCT type FROM {self._calendar_events_table()} ORDER BY type ASC",
+            )
+        return [CalendarEventTypeOption(id=row["type"], label=row["type"]) for row in event_rows if row["type"]]
+
+    def get_calendar_events(self) -> list[CalendarEvent]:
+        with self._connection() as connection:
+            rows = self._fetchall(
+                connection,
+                f"""
+                SELECT id, title, date, end_date, start_time, end_time, course_id, type, description, author
+                FROM {self._calendar_events_table()}
+                ORDER BY date ASC, COALESCE(start_time, ''), title ASC
+                """,
+            )
+        return [
+            CalendarEvent(
+                id=row["id"],
+                title=row["title"],
+                date=row["date"],
+                end_date=row["end_date"],
+                start_time=row["start_time"],
+                end_time=row["end_time"],
+                course_id=row["course_id"],
+                event_type=row["type"],
+                description=row["description"] or "",
+                author=row["author"] or "",
+            )
+            for row in rows
+        ]
+
+    def subscribed_users(self) -> list[tuple[User, set[str]]]:
+        recipients = self.notification_recipients()
+        return [
+            (
+                recipient.user,
+                {subject_key for class_subjects in recipient.subject_selections.values() for subject_key in class_subjects},
+            )
+            for recipient in recipients
+        ]
+
+    def notification_recipients(self) -> list[NotificationRecipient]:
+        with self._connection() as connection:
+            rows = self._fetchall(connection, f"SELECT * FROM {self._users_table()} WHERE active = 1")
+            selected_class_rows = self._fetchall(
+                connection,
+                f"SELECT user_id, class_name FROM {self._selected_classes_table()} ORDER BY user_id ASC, class_name ASC",
+            )
+            selection_rows = self._fetchall(
+                connection,
+                f"""
+                SELECT user_id, class_name, subject_key
+                FROM {self._subject_selections_table()}
+                ORDER BY user_id ASC, class_name ASC, subject_key ASC
+                """,
+            )
+            legacy_rows = self._fetchall(
+                connection,
+                f"SELECT user_id, subject_key FROM {self._legacy_subjects_table()} ORDER BY user_id ASC, subject_key ASC",
+            )
+            settings_rows = self._fetchall(
+                connection,
+                f"SELECT user_id, settings_json FROM {self._settings_table()} ORDER BY user_id ASC",
+            )
+        selected_classes_by_user: dict[int, list[str]] = {}
+        for row in selected_class_rows:
+            selected_classes_by_user.setdefault(int(row["user_id"]), []).append(row["class_name"])
+        selections_by_user: dict[int, dict[str, set[str]]] = {}
+        for row in selection_rows:
+            selections_by_user.setdefault(int(row["user_id"]), {}).setdefault(row["class_name"], set()).add(row["subject_key"])
+        legacy_by_user: dict[int, set[str]] = {}
+        for row in legacy_rows:
+            legacy_by_user.setdefault(int(row["user_id"]), set()).add(row["subject_key"])
+        settings_by_user = {
+            int(row["user_id"]): self._settings_from_row(row)
+            for row in settings_rows
+        }
+        recipients: list[NotificationRecipient] = []
+        for row in rows:
+            user = self._user_from_row(row)
+            selected_classes = tuple(selected_classes_by_user.get(user.id) or [user.class_name])
+            subject_selections = selections_by_user.get(user.id)
+            if subject_selections is None and legacy_by_user.get(user.id):
+                subject_selections = {user.class_name: set(legacy_by_user[user.id])}
+            recipients.append(
+                NotificationRecipient(
+                    user=user,
+                    selected_classes=selected_classes,
+                    subject_selections={class_name: set(keys) for class_name, keys in (subject_selections or {}).items()},
+                    notify_settings=settings_by_user.get(user.id, NotifySettings()),
+                    calendar_courses=self.get_calendar_course_ids(user.username),
+                )
+            )
+        return recipients
 
     def mark_delivery_once(self, user_id: int, event_key: str) -> bool:
         table = "notification_deliveries" if self._backend == "sqlite" else "vp_notification_deliveries"

@@ -10,7 +10,7 @@ from cryptography.fernet import Fernet
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from accounts import AccountStore
+from accounts import AccountStore, NotifySettings
 from subscriptions import SubscriptionNotifier, subject_key, subject_options
 from vp_data import get_future_week_dates, get_future_week_plans, get_subject_catalog_plans
 
@@ -116,6 +116,89 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         self.assertIn("Chemie", bob_messages)
         self.assertNotIn("Mathe", bob_messages)
         self.assertEqual(notifier.poll_once(plan, datetime(2026, 8, 20, 7, 2)), 0)
+
+    def test_multiple_classes_can_be_stored_with_class_specific_subjects(self):
+        self.store.replace_selected_classes(self.alice.id, {"11", "12"})
+        self.store.replace_subjects(
+            self.alice.id,
+            {"11": {subject_key("Mathe")}, "12": {subject_key("Chemie")}},
+        )
+        selected_classes, has_saved_classes = self.store.get_selected_classes(self.alice.id, self.alice.class_name)
+        selected_subjects, has_saved_subjects = self.store.get_subject_selections(self.alice.id, self.alice.class_name)
+
+        self.assertTrue(has_saved_classes)
+        self.assertEqual(selected_classes, ("11", "12"))
+        self.assertTrue(has_saved_subjects)
+        self.assertEqual(
+            selected_subjects,
+            {"11": {subject_key("Mathe")}, "12": {subject_key("Chemie")}},
+        )
+
+    def test_multi_class_notifications_include_class_name(self):
+        self.store.replace_selected_classes(self.alice.id, {"11", "12"})
+        self.store.replace_subjects(
+            self.alice.id,
+            {"11": {subject_key("Mathe")}, "12": {subject_key("Chemie")}},
+        )
+        plan = SimpleNamespace(
+            datum=date(2026, 8, 20), zeitstempel=None,
+            zeitplan={1: (time(7, 45), time(9, 15))},
+            klassen={
+                "11": SimpleNamespace(kurse={}, stunden={1: [lesson("Mathe", "101", 1)], 2: [lesson("Mathe", "101", 2)]}),
+                "12": SimpleNamespace(kurse={}, stunden={1: [lesson("Chemie", "201", 1)], 2: [lesson("Chemie", "201", 2)]}),
+            },
+        )
+        notifier = SubscriptionNotifier(self.store, "https://ntfy.invalid")
+        published = []
+        notifier._publish = lambda user, message, title, priority="default": published.append((title, message))
+
+        self.assertEqual(notifier.poll_once(plan, datetime(2026, 8, 20, 7, 0)), 1)
+        self.assertIn("1. Block: 11: Mathe in 101 | 12: Chemie in 201", published[0][1])
+
+    def test_calendar_notifications_respect_type_and_schedule(self):
+        with self.store._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO calendar_users(username, courses, pin, preferences, status)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(username) DO UPDATE SET courses = excluded.courses
+                """,
+                ("alice", '["MA1"]', None, "{}", "ACTIVE"),
+            )
+            connection.execute(
+                """
+                INSERT INTO calendar_event_categories(id, name, color, sort_order)
+                VALUES (?, ?, ?, ?)
+                """,
+                ("HAUSAUFGABE", "Hausaufgabe", "#59b3cb", 0),
+            )
+            connection.execute(
+                """
+                INSERT INTO calendar_events(id, title, date, end_date, start_time, end_time, course_id, type, description, author)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("evt-1", "Blatt 5", "2026-08-21", "2026-08-21", None, None, "MA1", "HAUSAUFGABE", "Bis Freitag erledigen.", "lehrer"),
+            )
+        self.store.save_notify_settings(
+            self.alice.id,
+            NotifySettings(
+                calendar_notifications_enabled=True,
+                calendar_notification_time="16:00",
+                calendar_notification_days_before=1,
+                calendar_notification_types=("HAUSAUFGABE",),
+            ),
+        )
+        notifier = SubscriptionNotifier(self.store, "https://ntfy.invalid")
+        published = []
+        notifier._publish = lambda user, message, title, priority="default": published.append((title, message))
+        empty_plan = SimpleNamespace(datum=date(2026, 8, 20), zeitstempel=None, zeitplan={}, klassen={})
+
+        self.assertEqual(notifier.poll_once(empty_plan, datetime(2026, 8, 20, 15, 59)), 0)
+        self.assertEqual(notifier.poll_once(empty_plan, datetime(2026, 8, 20, 16, 0)), 1)
+        self.assertEqual(notifier.poll_once(empty_plan, datetime(2026, 8, 20, 16, 1)), 0)
+        self.assertEqual(published[0][0], "(VPrintfy) Kalender: Blatt 5")
+        self.assertIn("Typ: HAUSAUFGABE", published[0][1])
+        self.assertIn("Kurs: MA1", published[0][1])
 
     def test_notifications_are_suppressed_on_weekends(self):
         self.store.replace_subjects(self.alice.id, {subject_key("Mathe")})
@@ -299,6 +382,8 @@ class AccountAndSubscriptionTests(unittest.TestCase):
 
     def test_delete_user_removes_credentials_and_cascades_private_data(self):
         self.store.replace_subjects(self.alice.id, {subject_key("Mathe")})
+        self.store.replace_selected_classes(self.alice.id, {"11", "12"})
+        self.store.save_notify_settings(self.alice.id, NotifySettings(calendar_notification_types=("HAUSAUFGABE",)))
         self.store.create_session(self.alice.id)
         self.assertTrue(self.store.mark_delivery_once(self.alice.id, "morning:2026-08-20"))
 
@@ -306,7 +391,7 @@ class AccountAndSubscriptionTests(unittest.TestCase):
 
         self.assertIsNone(self.store.authenticate("alice", "1234", "127.0.0.1"))
         with self.store._connection() as connection:
-            for table in ("users", "user_subjects", "sessions", "notification_deliveries"):
+            for table in ("users", "user_subjects", "user_selected_classes", "user_subject_selections", "user_notification_settings", "sessions", "notification_deliveries"):
                 count = connection.execute(f"SELECT COUNT(*) FROM {table} WHERE user_id = ?", (self.alice.id,)).fetchone()[0] if table != "users" else connection.execute("SELECT COUNT(*) FROM users WHERE id = ?", (self.alice.id,)).fetchone()[0]
                 self.assertEqual(count, 0, table)
 

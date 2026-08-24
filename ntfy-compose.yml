@@ -8,7 +8,7 @@ services:
       NTFY_BASE_URL: ${NTFY_PUBLIC_URL:-http://127.0.0.1:8090}
       NTFY_CACHE_FILE: /var/lib/ntfy/cache.db
       NTFY_AUTH_FILE: /var/lib/ntfy/auth.db
-      NTFY_AUTH_DEFAULT_ACCESS: read-write
+      NTFY_AUTH_DEFAULT_ACCESS: ${NTFY_AUTH_DEFAULT_ACCESS:-deny-all}
       NTFY_ENABLE_LOGIN: "true"
       NTFY_ENABLE_SIGNUP: "false"
       NTFY_BEHIND_PROXY: ${NTFY_BEHIND_PROXY:-false}
