@@ -239,12 +239,19 @@ def render_teacher_week_table(
 
     for plan_date in dates:
         day_name = DAY_NAMES.get(plan_date.weekday(), plan_date.strftime("%a"))
+        day_plan = week_plans[plan_date]
+        if day_plan is None:
+            day_plan_info = "<small>Keine Plandaten vorhanden</small>"
+        else:
+            timestamp = getattr(day_plan, "zeitstempel", None)
+            timestamp_text = timestamp.strftime("%d.%m.%Y %H:%M") if timestamp is not None else "unbekannt"
+            day_plan_info = f"<small>Planstand: {escape(timestamp_text)}</small>"
 
         header_cells.append(f"""
             <th>
                 <span>{escape(day_name)}</span>
                 <small>{plan_date.strftime("%d.%m.")}</small>
-                {"<small>Keine Plandaten vorhanden</small>" if week_plans[plan_date] is None else ""}
+                {day_plan_info}
             </th>
         """)
 

@@ -1,4 +1,4 @@
-from datetime import date, time
+from datetime import date, datetime, time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -27,11 +27,12 @@ class TeacherPageTests(unittest.TestCase):
             info=None,
         )
         teacher = SimpleNamespace(stunden={1: [lesson]})
-        plan = SimpleNamespace(lehrer={"KÖN": teacher})
+        plan = SimpleNamespace(lehrer={"KÖN": teacher}, zeitstempel=datetime(2026, 8, 24, 6, 30))
 
         html = render_teacher_week_table({monday: plan, tuesday: None}, "KÖN")
 
         self.assertIn("Keine Plandaten vorhanden", html)
+        self.assertIn("Planstand: 24.08.2026 06:30", html)
         self.assertEqual(html.count('class="period-head">'), 9)
         self.assertIn("25.08.", html)
 
