@@ -1,7 +1,7 @@
 services:
   mariadb:
     image: mariadb:11.4
-    container_name: mariadb
+    container_name: cal11_v2_mariadb
     restart: unless-stopped
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --max-connections=100
     environment:
@@ -10,9 +10,10 @@ services:
       MYSQL_USER: ${DB_USER:-cal11user}
       MYSQL_PASSWORD: ${DB_PASSWORD:-geheimes_passwort_hier_eintragen}
     volumes:
-      - mariadb_data:/var/lib/mysql
+      - mariadb_v2_data:/var/lib/mysql
     ports:
-      - "127.0.0.1:3306:3306"
+      # Port 3307 für DataGrip per SSH-Tunnel
+      - "127.0.0.1:3307:3306"
     networks:
       - cal11_net
 
@@ -20,49 +21,49 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: cal11_app
+    container_name: cal11_v2_app
     restart: unless-stopped
     depends_on:
       - mariadb
     environment:
-      HOST: ${HOST:-127.0.0.1}
+      HOST: ${HOST:-0.0.0.0}
       BIND_HOST: ${BIND_HOST:-0.0.0.0}
-      CAL11_PORT: ${CAL11_PORT:-3000}
+      CAL11_PORT: ${CAL11_PORT:-3001}
       VP_PORT: ${VP_PORT:-8000}
-      PORT: ${CAL11_PORT:-3000}
+      PORT: ${CAL11_PORT:-3001}
       NODE_ENV: production
       DB_HOST: mariadb
       DB_PORT: 3306
       DB_USER: ${DB_USER:-cal11user}
-      DB_PASSWORD: ${DB_PASSWORD:-geheimes_passwort_hier_eintragen}
+      DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME:-cal11}
-      CALENDAR_PUBLIC_URL: ${CALENDAR_PUBLIC_URL:-http://127.0.0.1:3000}
-      VERTRETUNGSPLAN_PUBLIC_URL: ${VERTRETUNGSPLAN_PUBLIC_URL:-http://127.0.0.1:8000}
-      VITE_VERTRETUNGSPLAN_URL: ${VERTRETUNGSPLAN_PUBLIC_URL:-http://127.0.0.1:8000}
-      VITE_KALENDER_URL: ${CALENDAR_PUBLIC_URL:-http://127.0.0.1:3000}
+      CALENDAR_PUBLIC_URL: ${CALENDAR_PUBLIC_URL:-https://cal11.de}
+      VERTRETUNGSPLAN_PUBLIC_URL: ${VERTRETUNGSPLAN_PUBLIC_URL:-https://vp.cal11.de}
+      VITE_VERTRETUNGSPLAN_URL: ${VERTRETUNGSPLAN_PUBLIC_URL:-https://vp.cal11.de}
+      VITE_KALENDER_URL: ${CALENDAR_PUBLIC_URL:-https://cal11.de}
     ports:
-      - "127.0.0.1:${CAL11_PORT:-3000}:${CAL11_PORT:-3000}"
+      - "${CAL11_PORT:-3001}:${CAL11_PORT:-3001}"
     networks:
       - cal11_net
 
   ntfy:
     image: binwiederhier/ntfy:v2.25.0
-    container_name: vpmobil-ntfy
+    container_name: cal11_v2_ntfy
     command: serve
     restart: unless-stopped
     environment:
-      NTFY_BASE_URL: ${NTFY_PUBLIC_URL:-http://127.0.0.1:8090}
+      NTFY_BASE_URL: ${NTFY_PUBLIC_URL:-https://notify.cal11.de}
       NTFY_CACHE_FILE: /var/lib/ntfy/cache.db
       NTFY_AUTH_FILE: /var/lib/ntfy/auth.db
-      NTFY_AUTH_DEFAULT_ACCESS: ${NTFY_AUTH_DEFAULT_ACCESS:-deny-all}
+      NTFY_AUTH_DEFAULT_ACCESS: ${NTFY_AUTH_DEFAULT_ACCESS:-read-write}
       NTFY_ENABLE_LOGIN: "true"
       NTFY_ENABLE_SIGNUP: "false"
-      NTFY_BEHIND_PROXY: ${NTFY_BEHIND_PROXY:-false}
+      NTFY_BEHIND_PROXY: ${NTFY_BEHIND_PROXY:-true}
     volumes:
       - ./data/ntfy:/var/lib/ntfy
       - ./ntfy/server.yml:/etc/ntfy/server.yml:ro
     ports:
-      - "127.0.0.1:${NTFY_PORT:-8090}:80"
+      - "${NTFY_PORT:-8090}:80"
     networks:
       - cal11_net
 
@@ -70,28 +71,28 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.vp
-    container_name: cal11_vp
+    container_name: cal11_v2_vp
     restart: unless-stopped
     depends_on:
       - mariadb
       - ntfy
     environment:
-      HOST: ${HOST:-127.0.0.1}
+      HOST: ${HOST:-0.0.0.0}
       BIND_HOST: ${BIND_HOST:-0.0.0.0}
       VP_PORT: ${VP_PORT:-8000}
       PORT: ${VP_PORT:-8000}
       DB_HOST: mariadb
       DB_PORT: 3306
       DB_USER: ${DB_USER:-cal11user}
-      DB_PASSWORD: ${DB_PASSWORD:-geheimes_passwort_hier_eintragen}
+      DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME:-cal11}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
-      NTFY_PUBLIC_URL: ${NTFY_PUBLIC_URL:-http://127.0.0.1:8090}
+      NTFY_PUBLIC_URL: ${NTFY_PUBLIC_URL:-https://notify.cal11.de}
       NTFY_INTERNAL_URL: ${NTFY_INTERNAL_URL:-http://ntfy}
       NTFY_AUTOSTART: "false"
-      CALENDAR_PUBLIC_URL: ${CALENDAR_PUBLIC_URL:-http://127.0.0.1:3000}
-      VERTRETUNGSPLAN_PUBLIC_URL: ${VERTRETUNGSPLAN_PUBLIC_URL:-http://127.0.0.1:8000}
+      CALENDAR_PUBLIC_URL: ${CALENDAR_PUBLIC_URL:-https://cal11.de}
+      VERTRETUNGSPLAN_PUBLIC_URL: ${VERTRETUNGSPLAN_PUBLIC_URL:-https://vp.cal11.de}
       SCHULNUMMER: ${SCHULNUMMER}
       BENUTZERNAME: ${BENUTZERNAME}
       PASSWORT: ${PASSWORT}
@@ -100,13 +101,13 @@ services:
       BAD_ROOMS: ${BAD_ROOMS}
       ALL_ROOMS: ${ALL_ROOMS}
     ports:
-      - "127.0.0.1:${VP_PORT:-8000}:${VP_PORT:-8000}"
+      - "${VP_PORT:-8000}:${VP_PORT:-8000}"
     networks:
       - cal11_net
 
   proxy:
     image: caddy:2.8
-    container_name: cal11_proxy
+    container_name: cal11_v2_proxy
     restart: unless-stopped
     profiles:
       - proxy
@@ -124,7 +125,7 @@ services:
       - cal11_net
 
 volumes:
-  mariadb_data:
+  mariadb_v2_data:
     driver: local
   caddy_data:
     driver: local
