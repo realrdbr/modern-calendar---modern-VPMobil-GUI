@@ -1,6 +1,7 @@
 import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
+import fs from 'fs';
 import { Course, COURSES as DEFAULT_COURSES } from '../src/types';
 
 dotenv.config();
@@ -138,6 +139,21 @@ export async function initDatabase() {
 
   if (!dbHost || !dbUser) {
     console.log('[Database] Keine DB-Umgebungsvariablen gefunden. Nutze In-Memory Speicher.');
+    return;
+  }
+
+  // Wenn die Docker-interne MariaDB-Adresse konfiguriert ist, aber der Prozess
+  // außerhalb eines Containers läuft, ist der Hostname "mariadb" nicht erreichbar.
+  // In diesem Fall In-Memory-Speicher nutzen (wie beim Python-VP-Server).
+  const runningInContainer = fs.existsSync('/.dockerenv');
+  const appDatabaseUrl = (process.env.APP_DATABASE_URL || '').toLowerCase();
+  const usesInternalMariadb =
+    appDatabaseUrl.includes('@mariadb') || dbHost.toLowerCase() === 'mariadb';
+  if (usesInternalMariadb && !runningInContainer) {
+    console.log(
+      '[Database] Docker-interne MariaDB-Konfiguration außerhalb des Containers erkannt. ' +
+        'Nutze In-Memory Speicher für lokales Testing.'
+    );
     return;
   }
 
