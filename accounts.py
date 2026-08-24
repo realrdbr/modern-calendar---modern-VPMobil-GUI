@@ -915,7 +915,7 @@ class AccountStore:
             row = self._fetchone(connection, f"SELECT settings_json FROM {self._settings_table()} WHERE user_id = ?", (user_id,))
         return self._settings_from_row(row), row is not None
 
-    def save_notify_settings(self, user_id: int, settings: NotifySettings) -> None:
+    def _normalize_notify_settings(self, settings: NotifySettings) -> tuple[NotifySettings, str]:
         normalized = NotifySettings(
             lesson_notifications_enabled=settings.lesson_notifications_enabled,
             lesson_notification_times=tuple(
@@ -939,27 +939,81 @@ class AccountStore:
             },
             sort_keys=True,
         )
+        return normalized, payload
+
+    def _save_notify_settings_with_connection(self, connection: Any, user_id: int, payload: str) -> None:
+        if self._backend == "sqlite":
+            self._run(
+                connection,
+                f"""
+                INSERT INTO {self._settings_table()}(user_id, settings_json)
+                VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET settings_json = excluded.settings_json
+                """,
+                (user_id, payload),
+            )
+        else:
+            self._run(
+                connection,
+                f"""
+                INSERT INTO {self._settings_table()}(user_id, settings_json)
+                VALUES (?, ?)
+                ON DUPLICATE KEY UPDATE settings_json = VALUES(settings_json)
+                """,
+                (user_id, payload),
+            )
+
+    def save_notify_settings(self, user_id: int, settings: NotifySettings) -> None:
+        _normalized, payload = self._normalize_notify_settings(settings)
         with self._connection() as connection:
-            if self._backend == "sqlite":
-                self._run(
+            self._save_notify_settings_with_connection(connection, user_id, payload)
+
+    def save_subscription_preferences(
+        self,
+        user_id: int,
+        class_names: set[str],
+        subject_selections: Mapping[str, set[str]],
+        settings: NotifySettings,
+    ) -> None:
+        """Speichert Klassen, Fächer und Zeiten atomar in einer Transaktion."""
+        normalized_classes = self._validate_class_names(class_names)
+        normalized_selections = {
+            class_name.strip(): self._validate_subject_keys(set(keys))
+            for class_name, keys in subject_selections.items()
+            if class_name.strip()
+        }
+        if set(normalized_selections) != normalized_classes:
+            raise ValueError("Die Fachauswahl passt nicht zu den ausgewählten Klassen.")
+        _normalized_settings, settings_payload = self._normalize_notify_settings(settings)
+        with self._connection() as connection:
+            self._run(connection, f"DELETE FROM {self._selected_classes_table()} WHERE user_id = ?", (user_id,))
+            self._executemany(
+                connection,
+                f"INSERT INTO {self._selected_classes_table()}(user_id, class_name) VALUES (?, ?)",
+                [(user_id, class_name) for class_name in sorted(normalized_classes)],
+            )
+            self._run(connection, f"DELETE FROM {self._legacy_subjects_table()} WHERE user_id = ?", (user_id,))
+            self._run(connection, f"DELETE FROM {self._subject_selections_table()} WHERE user_id = ?", (user_id,))
+            selection_rows = [
+                (user_id, class_name, subject_key)
+                for class_name in sorted(normalized_selections)
+                for subject_key in sorted(normalized_selections[class_name])
+            ]
+            if selection_rows:
+                self._executemany(
                     connection,
-                    f"""
-                    INSERT INTO {self._settings_table()}(user_id, settings_json)
-                    VALUES (?, ?)
-                    ON CONFLICT(user_id) DO UPDATE SET settings_json = excluded.settings_json
-                    """,
-                    (user_id, payload),
+                    f"INSERT INTO {self._subject_selections_table()}(user_id, class_name, subject_key) VALUES (?, ?, ?)",
+                    selection_rows,
                 )
-            else:
-                self._run(
+            legacy_class = min(normalized_selections)
+            legacy_rows = [(user_id, key) for key in sorted(normalized_selections[legacy_class])]
+            if legacy_rows:
+                self._executemany(
                     connection,
-                    f"""
-                    INSERT INTO {self._settings_table()}(user_id, settings_json)
-                    VALUES (?, ?)
-                    ON DUPLICATE KEY UPDATE settings_json = VALUES(settings_json)
-                    """,
-                    (user_id, payload),
+                    f"INSERT INTO {self._legacy_subjects_table()}(user_id, subject_key) VALUES (?, ?)",
+                    legacy_rows,
                 )
+            self._save_notify_settings_with_connection(connection, user_id, settings_payload)
 
     def get_selected_classes(self, user_id: int, fallback_class_name: str | None = None) -> tuple[tuple[str, ...], bool]:
         with self._connection() as connection:

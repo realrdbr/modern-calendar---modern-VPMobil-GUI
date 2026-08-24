@@ -189,6 +189,13 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if not self._validate_csrf(session, data):
             self.send_error(403, "Ungültige Sicherheitsprüfung")
             return
+        if path == "/abos/test":
+            try:
+                SubscriptionNotifier(self.store, resolve_ntfy_internal_url()).send_user_test(session.user)
+                self.render_subscriptions(session, test_sent=True)
+            except Exception:
+                self.render_subscriptions(session, error="Die Testbenachrichtigung konnte nicht gesendet werden. Prüfe die ntfy-Verbindung.")
+            return
         if path == "/abos":
             try:
                 catalog_plans = get_subject_catalog_plans()
@@ -206,7 +213,14 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                     if not selected_subjects <= allowed:
                         raise ValueError(f"Die Fachauswahl für Klasse {class_name} passt nicht zum aktuellen Stundenplan.")
                     subject_selections[class_name] = selected_subjects
-                lesson_times = self._split_time_list(self._field(data, "lesson_notification_times"))
+                lesson_times = tuple(
+                    value.strip()
+                    for value in data.get("lesson_notification_time", [])
+                    if value.strip()
+                )
+                # Alte Clients/Formulare bleiben während eines rollenden Deployments kompatibel.
+                if not lesson_times:
+                    lesson_times = self._split_time_list(self._field(data, "lesson_notification_times"))
                 if not lesson_times:
                     raise ValueError("Bitte hinterlege mindestens eine Uhrzeit für Stundenbenachrichtigungen.")
                 event_type_options = self.store.get_calendar_event_types()
@@ -224,9 +238,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 )
                 if settings.calendar_notifications_enabled and not settings.calendar_notification_types:
                     raise ValueError("Bitte wähle mindestens eine Kalender-Kategorie aus.")
-                self.store.replace_selected_classes(session.user.id, selected_classes)
-                self.store.replace_subjects(session.user.id, subject_selections)
-                self.store.save_notify_settings(session.user.id, settings)
+                self.store.save_subscription_preferences(session.user.id, selected_classes, subject_selections, settings)
                 self.render_subscriptions(session, saved=True)
             except Exception as error:
                 self.render_subscriptions(session, error=str(error))
@@ -245,7 +257,9 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(payload).encode("utf-8"))
 
-    def render_subscriptions(self, session: Session, *, saved: bool = False, error: str | None = None) -> None:
+    def render_subscriptions(
+        self, session: Session, *, saved: bool = False, test_sent: bool = False, error: str | None = None,
+    ) -> None:
         try:
             catalog_plans = get_subject_catalog_plans()
             class_options = available_class_names_from_plans(catalog_plans)
@@ -296,6 +310,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 os.getenv("NTFY_PUBLIC_URL", "http://127.0.0.1:8090"),
                 saved,
                 error,
+                test_sent,
             ),
         )
 

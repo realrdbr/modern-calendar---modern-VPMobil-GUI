@@ -17,8 +17,13 @@ import requests
 def resolve_ntfy_internal_url() -> str:
     requested = os.getenv("NTFY_INTERNAL_URL", os.getenv("NTFY_PUBLIC_URL", "http://127.0.0.1:8090")).rstrip("/")
     parsed = urlparse(requested)
-    if Path("/.dockerenv").exists() and parsed.hostname in {"127.0.0.1", "localhost"}:
+    in_container = Path("/.dockerenv").exists()
+    if in_container and parsed.hostname in {"127.0.0.1", "localhost"}:
         return "http://ntfy"
+    if not in_container and parsed.hostname == "ntfy":
+        # `http://ntfy` ist nur im Compose-Netz auflösbar. Bei lokal gestarteter
+        # VP-App ist derselbe Container über den gebundenen Loopback-Port erreichbar.
+        return f"http://127.0.0.1:{int(os.getenv('NTFY_PORT', '8090'))}"
     return requested
 
 
@@ -107,6 +112,9 @@ class NtfyService:
                     + (change.stderr.strip() or change.stdout.strip() or add.stderr.strip() or add.stdout.strip())
                 )
 
+        # Entfernt eine ACL aus älteren Installationen, die Schreibzugriffe auf
+        # das exakte Topic trotz neuer Regel weiterhin blockieren kann.
+        self._compose("exec", "-T", "ntfy", "ntfy", "access", "--reset", username, f"{topic}*")
         access = self._compose("exec", "-T", "ntfy", "ntfy", "access", username, topic, "read-write")
         if access.returncode != 0:
             raise RuntimeError(

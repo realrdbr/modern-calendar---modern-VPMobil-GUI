@@ -294,6 +294,20 @@ class SubscriptionNotifier:
             raise
         return True
 
+    def send_user_test(self, user: User) -> None:
+        """Sendet auf Wunsch eine nicht deduplizierte Probe an das persönliche Topic."""
+        # Der persönliche ntfy-Nutzer besitzt Schreibrecht auf genau sein Topic.
+        # Dadurch funktioniert der Test unabhängig vom globalen Publisher sowohl
+        # über 127.0.0.1 als auch im Compose-Netz und über die Produktionsdomain.
+        response = requests.post(
+            f"{self.ntfy_url}/{user.ntfy_topic}",
+            data="Deine Benachrichtigungen sind richtig verbunden.".encode("utf-8"),
+            headers={"Title": Header("(VPrintfy) Test erfolgreich", "utf-8").encode(), "Priority": "high", "Tags": "white_check_mark"},
+            timeout=self.timeout,
+            auth=(user.ntfy_username, user.ntfy_password),
+        )
+        response.raise_for_status()
+
     def send_test(self, user: User, selected: set[str], plan: object, kind: str, block_number: int | None = None) -> None:
         recipient = NotificationRecipient(
             user=user,

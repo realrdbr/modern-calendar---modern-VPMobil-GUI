@@ -175,11 +175,12 @@ def start_server(handler_class: type[BaseHTTPRequestHandler], title: str, port: 
 
 def render_theme_toggle_button() -> str:
     return (
-        '<label class="theme-toggle" title="Dunkelmodus umschalten">'
-        '<span class="theme-icon" aria-hidden="true">☀️</span>'
+        '<label class="theme-toggle" title="Darstellung wechseln">'
         '<input type="checkbox" data-theme-toggle aria-label="Dunkelmodus umschalten">'
-        '<span class="theme-slider" aria-hidden="true"></span>'
-        '<span class="theme-icon" aria-hidden="true">🌙</span>'
+        '<span class="theme-slider" aria-hidden="true">'
+        '<svg class="theme-icon theme-icon--sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.42"></path></svg>'
+        '<svg class="theme-icon theme-icon--moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.99 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 20.99 12.79z"></path></svg>'
+        '</span>'
         '</label>'
     )
 
@@ -366,7 +367,7 @@ main {
     justify-content: center;
     min-height: 42px;
     padding: 0 16px;
-    border-radius: 999px;
+    border-radius: 10px;
     background: var(--surface);
     border: 1px solid var(--border);
     color: var(--text);
@@ -377,52 +378,93 @@ main {
 .theme-toggle {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
     min-height: 42px;
-    padding: 0 10px;
-    border-radius: 999px;
+    padding: 4px;
+    border-radius: 10px;
     background: var(--surface);
     border: 1px solid var(--border);
     color: var(--text);
     cursor: pointer;
+    width: fit-content;
+    max-width: fit-content;
+    flex: 0 0 auto;
 }
 
 .theme-toggle input {
-    display: none;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
 }
 
 .theme-slider {
-    width: 46px;
-    height: 24px;
-    background: var(--border);
+    width: 56px;
+    height: 28px;
+    background: color-mix(in srgb, var(--primary) 10%, var(--surface));
+    border: 1px solid var(--border);
     border-radius: 999px;
     position: relative;
-    transition: background 0.2s ease;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    place-items: center;
+    transition: background 0.3s ease, border-color 0.3s ease;
 }
 
 .theme-slider::after {
     content: "";
-    width: 20px;
-    height: 20px;
+    width: 18px;
+    height: 18px;
     border-radius: 50%;
-    background: var(--surface);
+    background: var(--primary);
     position: absolute;
-    top: 2px;
-    left: 2px;
-    transition: transform 0.2s ease;
+    top: 4px;
+    left: 4px;
+    box-shadow: 0 3px 9px color-mix(in srgb, var(--primary) 35%, transparent);
+    transition: transform 0.32s cubic-bezier(.22, 1, .36, 1);
 }
 
 .theme-toggle input:checked + .theme-slider {
-    background: var(--primary);
+    background: color-mix(in srgb, var(--primary) 18%, var(--surface));
+    border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
 }
 
 .theme-toggle input:checked + .theme-slider::after {
-    transform: translateX(22px);
+    transform: translateX(28px);
 }
 
 .theme-icon {
-    font-size: 1rem;
-    line-height: 1;
+    width: 15px;
+    height: 15px;
+    z-index: 1;
+    color: var(--muted);
+    transition: color .25s ease, transform .32s cubic-bezier(.22, 1, .36, 1);
+}
+
+.theme-icon--sun {
+    color: white;
+}
+
+.theme-toggle input:checked + .theme-slider .theme-icon--sun {
+    color: var(--muted);
+    transform: rotate(90deg);
+}
+
+.theme-toggle input:checked + .theme-slider .theme-icon--moon {
+    color: white;
+    transform: rotate(-12deg);
+}
+
+.theme-toggle:focus-within {
+    outline: 3px solid color-mix(in srgb, var(--primary) 25%, transparent);
+    outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .theme-slider,
+    .theme-slider::after,
+    .theme-icon {
+        transition: none;
+    }
 }
 
 .nav a.active {
@@ -582,9 +624,13 @@ button:not(.theme-toggle):hover,
         width: 100%;
     }
 
-    .nav a,
-    .theme-toggle {
+    .nav a {
         flex: 1;
+    }
+
+    .theme-toggle {
+        flex: 0 0 auto;
+        width: fit-content;
     }
 
     .panel {
@@ -618,6 +664,11 @@ button:not(.theme-toggle):hover,
     button,
     .button {
         width: 100%;
+    }
+
+    label.theme-toggle {
+        width: fit-content;
+        max-width: fit-content;
     }
 
     .panel {

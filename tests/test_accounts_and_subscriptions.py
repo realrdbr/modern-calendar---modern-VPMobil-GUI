@@ -11,6 +11,7 @@ from cryptography.fernet import Fernet
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from accounts import AccountStore, NotifySettings
+from ntfy.service import resolve_ntfy_internal_url
 from subscriptions import SubscriptionNotifier, subject_key, subject_options
 from vp_data import get_future_week_dates, get_future_week_plans, get_subject_catalog_plans
 
@@ -25,7 +26,8 @@ def lesson(subject, room, period, *, changed=False, course_number=None):
 class AccountAndSubscriptionTests(unittest.TestCase):
     def setUp(self):
         self.temp = TemporaryDirectory()
-        self.store = AccountStore(Path(self.temp.name) / "accounts.sqlite", Fernet.generate_key().decode())
+        self.encryption_key = Fernet.generate_key().decode()
+        self.store = AccountStore(Path(self.temp.name) / "accounts.sqlite", self.encryption_key)
         self.alice = self.store.create_user("alice", "1234", "11", ntfy_topic="vpmobil-alice", ntfy_username="ntfy_alice", ntfy_password="secret")
         self.bob = self.store.create_user("bob", "5678", "11", ntfy_topic="vpmobil-bob", ntfy_username="ntfy_bob", ntfy_password="secret")
 
@@ -41,6 +43,12 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         session = self.store.get_session(token)
         self.assertEqual(session.user.username, "alice")
         self.assertEqual(session.csrf_token, csrf)
+
+    def test_local_ntfy_compose_hostname_resolves_to_loopback_port(self):
+        with patch.dict("os.environ", {"NTFY_INTERNAL_URL": "http://ntfy", "NTFY_PORT": "8099"}, clear=False), patch(
+            "ntfy.service.Path.exists", return_value=False,
+        ):
+            self.assertEqual(resolve_ntfy_internal_url(), "http://127.0.0.1:8099")
 
     def test_subject_options_include_courses_without_today_lesson(self):
         plan = SimpleNamespace(klassen={"11": SimpleNamespace(
@@ -199,6 +207,42 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         self.assertEqual(published[0][0], "(VPrintfy) Kalender: Blatt 5")
         self.assertIn("Typ: HAUSAUFGABE", published[0][1])
         self.assertIn("Kurs: MA1", published[0][1])
+
+    def test_calendar_notifications_ignore_courses_the_user_does_not_have(self):
+        with self.store._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO calendar_users(username, courses, pin, preferences, status)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(username) DO UPDATE SET courses = excluded.courses
+                """,
+                ("alice", '["MA1"]', None, "{}", "ACTIVE"),
+            )
+            connection.execute(
+                "INSERT INTO calendar_event_categories(id, name, color, sort_order) VALUES (?, ?, ?, ?)",
+                ("HAUSAUFGABE", "Hausaufgabe", "#59b3cb", 0),
+            )
+            connection.execute(
+                """
+                INSERT INTO calendar_events(id, title, date, end_date, start_time, end_time, course_id, type, description, author)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("evt-foreign", "Chemie-Blatt", "2026-08-21", "2026-08-21", None, None, "CH2", "HAUSAUFGABE", "", "lehrer"),
+            )
+        self.store.save_notify_settings(
+            self.alice.id,
+            NotifySettings(
+                calendar_notifications_enabled=True,
+                calendar_notification_time="16:00",
+                calendar_notification_days_before=1,
+                calendar_notification_types=("HAUSAUFGABE",),
+            ),
+        )
+        notifier = SubscriptionNotifier(self.store, "https://ntfy.invalid")
+        notifier._publish = lambda *args, **kwargs: self.fail("Ein fremder Kurs darf keine Benachrichtigung auslösen.")
+        empty_plan = SimpleNamespace(datum=date(2026, 8, 20), zeitstempel=None, zeitplan={}, klassen={})
+
+        self.assertEqual(notifier.poll_once(empty_plan, datetime(2026, 8, 20, 16, 0)), 0)
 
     def test_notifications_are_suppressed_on_weekends(self):
         self.store.replace_subjects(self.alice.id, {subject_key("Mathe")})
@@ -379,6 +423,50 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         for _, message in published:
             self.assertIn("Mathe", message)
             self.assertNotIn("Chemie", message)
+
+    def test_user_can_send_a_personal_test_notification(self):
+        notifier = SubscriptionNotifier(self.store, "https://ntfy.invalid")
+        with patch("subscriptions.requests.post") as post:
+            post.return_value.raise_for_status.return_value = None
+            notifier.send_user_test(self.alice)
+
+        _args, kwargs = post.call_args
+        self.assertEqual(kwargs["auth"], (self.alice.ntfy_username, self.alice.ntfy_password))
+        self.assertIn(b"richtig verbunden", kwargs["data"])
+        self.assertEqual(kwargs["headers"]["Priority"], "high")
+
+    def test_subscription_preferences_are_atomic(self):
+        self.store.replace_selected_classes(self.alice.id, {"11"})
+        self.store.replace_subjects(self.alice.id, {"11": {subject_key("Mathe")}})
+        with patch.object(self.store, "_save_notify_settings_with_connection", side_effect=RuntimeError("write failed")):
+            with self.assertRaises(RuntimeError):
+                self.store.save_subscription_preferences(
+                    self.alice.id,
+                    {"12"},
+                    {"12": {subject_key("Chemie")}},
+                    NotifySettings(calendar_notification_time="15:30"),
+                )
+
+        self.assertEqual(self.store.get_selected_classes(self.alice.id)[0], ("11",))
+        self.assertEqual(self.store.get_subject_selections(self.alice.id)[0], {"11": {subject_key("Mathe")}})
+
+    def test_existing_database_gets_new_subscription_tables_without_data_loss(self):
+        database = Path(self.temp.name) / "accounts.sqlite"
+        with self.store._connection() as connection:
+            connection.execute("DROP TABLE user_notification_settings")
+            connection.execute("DROP TABLE user_subject_selections")
+            connection.execute("DROP TABLE user_selected_classes")
+
+        reopened = AccountStore(database, self.encryption_key)
+
+        self.assertEqual(reopened.get_user("alice").id, self.alice.id)
+        reopened.save_subscription_preferences(
+            self.alice.id,
+            {"11"},
+            {"11": {subject_key("Mathe")}},
+            NotifySettings(calendar_notification_time="15:30"),
+        )
+        self.assertEqual(reopened.load_notify_settings(self.alice.id)[0].calendar_notification_time, "15:30")
 
     def test_delete_user_removes_credentials_and_cascades_private_data(self):
         self.store.replace_subjects(self.alice.id, {subject_key("Mathe")})
