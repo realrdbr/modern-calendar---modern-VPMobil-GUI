@@ -314,17 +314,29 @@ def render_week_table(
 
     header_cells = []
 
-    weekly_dates = weekly_dates or set()
     for plan_date in dates:
         day_name = DAY_NAMES.get(plan_date.weekday(), plan_date.strftime("%a"))
+        day_plan = week_plans[plan_date]
+        if day_plan is None:
+            day_plan_info = "<small>Keine Plandaten vorhanden</small>"
+        else:
+            timestamp = getattr(day_plan, "zeitstempel", None)
+            timestamp_text = timestamp.strftime("%d.%m.%Y %H:%M") if timestamp is not None else "unbekannt"
+            if timestamp is not None or not "unbekannt":
+                timestamp_text = timestamp.strftime("%d.%m.%Y %H:%M")
+                day_plan_info = f"<small>Planstand: {escape(timestamp_text)}</small>"
+            else:
+                day_plan_info = "<small>Plan nicht verfügbar</small>"
+
+
         header_cells.append(f"""
             <th>
                 <span>{escape(day_name)}</span>
                 <small>{plan_date.strftime("%d.%m.")}</small>
-                {"<small>Keine Plandaten vorhanden</small>" if week_plans[plan_date] is None else ""}
-                {f"<small>Normaler Stundenplan ({getattr(week_plans[plan_date], 'week_type', '')}-Woche)</small>" if plan_date in weekly_dates else ""}
+                {day_plan_info}
             </th>
         """)
+
 
     rows = []
 
