@@ -200,6 +200,7 @@ def render_teacher_week_table(
             <th>
                 <span>{escape(day_name)}</span>
                 <small>{plan_date.strftime("%d.%m.")}</small>
+                {"<small>Keine Plandaten vorhanden</small>" if week_plans[plan_date] is None else ""}
             </th>
         """)
 

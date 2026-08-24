@@ -40,8 +40,19 @@ _weekly_last_refresh: dict[date, float] = {}
 _weekly_cache_lock = Lock()
 
 
+def _json_env_list(name: str) -> list:
+    """Liest JSON-Listen auch aus Compose-Werten mit erhaltenen Shell-Quotes."""
+    raw = os.getenv(name, "[]").strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {"'", '"'}:
+        raw = raw[1:-1]
+    value = json.loads(raw or "[]")
+    if not isinstance(value, list):
+        raise ValueError(f"{name} muss eine JSON-Liste sein.")
+    return value
+
+
 # Feste Liste aller Räume, die grundsätzlich als verfügbar betrachtet werden können.
-ALL_ROOMS = json.loads(os.getenv("ALL_ROOMS", "[]"))
+ALL_ROOMS = _json_env_list("ALL_ROOMS")
 
 
 ALPHABET = "abcdefghijklmnopqrstuvwxyz"

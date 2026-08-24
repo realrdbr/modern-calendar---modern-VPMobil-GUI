@@ -1,5 +1,3 @@
-import json
-import os
 from datetime import date
 from html import escape
 from http.server import BaseHTTPRequestHandler
@@ -10,6 +8,7 @@ from dotenv import load_dotenv
 from vp_data import (
     ResourceNotFound,
     Unauthorized,
+    _json_env_list,
     find_free_rooms_in_plan,
     get_plan_for_page,
 )
@@ -28,9 +27,9 @@ from web_utils import (
 
 load_dotenv()
 
-GOOD_ROOMS = set(json.loads(os.getenv("GOOD_ROOMS")))
-MEDIUM_ROOMS = set(json.loads(os.getenv("MEDIUM_ROOMS")))
-BAD_ROOMS = set(json.loads(os.getenv("BAD_ROOMS")))
+GOOD_ROOMS = set(_json_env_list("GOOD_ROOMS"))
+MEDIUM_ROOMS = set(_json_env_list("MEDIUM_ROOMS"))
+BAD_ROOMS = set(_json_env_list("BAD_ROOMS"))
 
 
 def get_room_quality(room: int) -> str:
