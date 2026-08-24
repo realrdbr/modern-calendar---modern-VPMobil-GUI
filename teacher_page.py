@@ -2,9 +2,15 @@ import json
 from datetime import date, timedelta
 from html import escape
 from http.server import BaseHTTPRequestHandler
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlencode, urlparse
 
-from vp_data import ResourceNotFound, Unauthorized, get_week_plans_for_page
+from vp_data import (
+    ResourceNotFound,
+    Unauthorized,
+    get_official_weekly_plans_for_page,
+    get_week_plans_for_page,
+)
 from web_utils import (
     CALENDAR_PUBLIC_URL,
     COMMON_CSS,
@@ -69,9 +75,33 @@ def get_available_teachers(week_plans: dict[date, object | None]) -> list[str]:
         if plan is None:
             continue
 
-        teachers.update(plan.lehrer.keys())
+        if hasattr(plan, "lehrer"):
+            teachers.update(getattr(plan, "lehrer").keys())
+            continue
+
+        for class_item in getattr(plan, "klassen", {}).values():
+            for lesson_items in class_item.stunden.values():
+                for lesson in lesson_items:
+                    teachers.update(teacher for teacher in getattr(lesson, "lehrer", ()) if teacher)
 
     return sorted(teacher for teacher in teachers if teacher)
+
+
+def _normalize_teacher_lesson(lesson, class_name: str):
+    if hasattr(lesson, "klassen"):
+        return lesson
+
+    return SimpleNamespace(
+        fach=getattr(lesson, "fach", None),
+        klassen=(class_name,),
+        lehrer=getattr(lesson, "lehrer", ()),
+        räume=getattr(lesson, "räume", ()),
+        beginn=getattr(lesson, "beginn", None),
+        ende=getattr(lesson, "ende", None),
+        änderung=getattr(lesson, "änderung", False),
+        ausfall=getattr(lesson, "ausfall", False),
+        info=getattr(lesson, "info", None),
+    )
 
 
 def collect_teacher_lessons(
@@ -83,14 +113,28 @@ def collect_teacher_lessons(
     week_lessons: dict[int, dict[date, list]] = {}
 
     for plan_date, plan in week_plans.items():
-        if plan is None or selected_teacher not in plan.lehrer:
+        if plan is None:
             continue
 
-        teacher_item = plan.lehrer[selected_teacher]
+        if hasattr(plan, "lehrer"):
+            if selected_teacher not in plan.lehrer:
+                continue
 
-        for period, lesson_items in teacher_item.stunden.items():
-            for lesson in lesson_items:
-                week_lessons.setdefault(int(period), {}).setdefault(plan_date, []).append(lesson)
+            teacher_item = plan.lehrer[selected_teacher]
+
+            for period, lesson_items in teacher_item.stunden.items():
+                for lesson in lesson_items:
+                    week_lessons.setdefault(int(period), {}).setdefault(plan_date, []).append(lesson)
+            continue
+
+        for class_name, class_item in getattr(plan, "klassen", {}).items():
+            for period, lesson_items in class_item.stunden.items():
+                for lesson in lesson_items:
+                    if selected_teacher not in getattr(lesson, "lehrer", ()):
+                        continue
+
+                    normalized_lesson = _normalize_teacher_lesson(lesson, class_name)
+                    week_lessons.setdefault(int(period), {}).setdefault(plan_date, []).append(normalized_lesson)
 
     return week_lessons
 
@@ -321,6 +365,13 @@ def render_teacher_page(
         """
     else:
         week_plans = get_week_plans_for_page(selected_date)
+        try:
+            official_week_plans = get_official_weekly_plans_for_page(selected_date)
+            for plan_date, weekly_plan in official_week_plans.items():
+                if week_plans.get(plan_date) is None:
+                    week_plans[plan_date] = weekly_plan
+        except Exception:
+            pass
         week_title = get_week_title(week_plans)
         plan_timestamp_text = get_latest_timestamp_text(week_plans)
         week_version = get_week_version(week_plans)
