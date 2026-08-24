@@ -15,11 +15,11 @@ from urllib.parse import quote
 from dotenv import load_dotenv
 
 from account_page import render_login, render_subscriptions
-from accounts import AccountStore, Session
+from accounts import AccountStore, NotifySettings, Session
 from ntfy.service import NtfyService, resolve_ntfy_internal_url
 from plan_page import get_selected_subject_cookie_name, get_week_plans_for_page, get_week_version, render_plan_page
 from rooms_page import render_rooms_page
-from subscriptions import SubscriptionNotifier, subject_options_from_plans
+from subscriptions import SubscriptionNotifier, available_class_names_from_plans, subject_key, subject_options_from_plans
 from teacher_page import render_teacher_page
 from vp_data import ResourceNotFound, Unauthorized, fetch_plan, find_free_rooms_in_plan, get_plan_for_page, get_subject_catalog_plans, log
 from web_utils import format_week_value, join_cookie_list, make_cookie, parse_cookie_header, parse_hour, parse_week, query_value, query_values, redirect, send_html, split_cookie_list
@@ -126,6 +126,19 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         import secrets
         return secrets.compare_digest(self._field(data, "csrf_token"), session.csrf_token)
 
+    @staticmethod
+    def _split_time_list(raw_value: str) -> tuple[str, ...]:
+        values = []
+        for part in raw_value.replace("\n", ",").split(","):
+            cleaned = part.strip()
+            if cleaned:
+                values.append(cleaned)
+        return tuple(values)
+
+    @staticmethod
+    def _subject_field_name(class_name: str) -> str:
+        return f"subject__{quote(class_name, safe='')}"
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
@@ -178,13 +191,42 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/abos":
             try:
-                allowed = {option.key for option in subject_options_from_plans(
-                    get_subject_catalog_plans(), session.user.class_name
-                )}
-                selected = set(data.get("subject", []))
-                if not selected <= allowed:
-                    raise ValueError("Die Auswahl passt nicht zum aktuellen Stundenplan.")
-                self.store.replace_subjects(session.user.id, selected)
+                catalog_plans = get_subject_catalog_plans()
+                available_classes = set(available_class_names_from_plans(catalog_plans))
+                selected_classes = set(data.get("class_name", []))
+                if not selected_classes:
+                    raise ValueError("Bitte wähle mindestens eine Klasse aus.")
+                if not selected_classes <= available_classes:
+                    raise ValueError("Die Klassenauswahl passt nicht zum aktuellen Stundenplan.")
+                subject_selections: dict[str, set[str]] = {}
+                for class_name in selected_classes:
+                    allowed = {option.key for option in subject_options_from_plans(catalog_plans, class_name)}
+                    field_name = self._subject_field_name(class_name)
+                    selected_subjects = set(data.get(field_name, []))
+                    if not selected_subjects <= allowed:
+                        raise ValueError(f"Die Fachauswahl für Klasse {class_name} passt nicht zum aktuellen Stundenplan.")
+                    subject_selections[class_name] = selected_subjects
+                lesson_times = self._split_time_list(self._field(data, "lesson_notification_times"))
+                if not lesson_times:
+                    raise ValueError("Bitte hinterlege mindestens eine Uhrzeit für Stundenbenachrichtigungen.")
+                event_type_options = self.store.get_calendar_event_types()
+                allowed_event_types = {option.id for option in event_type_options}
+                selected_event_types = tuple(dict.fromkeys(data.get("calendar_event_type", [])))
+                if not set(selected_event_types) <= allowed_event_types:
+                    raise ValueError("Die ausgewählten Kalender-Kategorien sind ungültig.")
+                settings = NotifySettings(
+                    lesson_notifications_enabled=self._field(data, "lesson_notifications_enabled") == "on",
+                    lesson_notification_times=lesson_times,
+                    calendar_notifications_enabled=self._field(data, "calendar_notifications_enabled") == "on",
+                    calendar_notification_time=self._field(data, "calendar_notification_time").strip() or "16:00",
+                    calendar_notification_days_before=int(self._field(data, "calendar_notification_days_before") or "1"),
+                    calendar_notification_types=selected_event_types,
+                )
+                if settings.calendar_notifications_enabled and not settings.calendar_notification_types:
+                    raise ValueError("Bitte wähle mindestens eine Kalender-Kategorie aus.")
+                self.store.replace_selected_classes(session.user.id, selected_classes)
+                self.store.replace_subjects(session.user.id, subject_selections)
+                self.store.save_notify_settings(session.user.id, settings)
                 self.render_subscriptions(session, saved=True)
             except Exception as error:
                 self.render_subscriptions(session, error=str(error))
@@ -205,12 +247,57 @@ class AppRequestHandler(BaseHTTPRequestHandler):
 
     def render_subscriptions(self, session: Session, *, saved: bool = False, error: str | None = None) -> None:
         try:
-            options = subject_options_from_plans(
-                get_subject_catalog_plans(), session.user.class_name
-            )
+            catalog_plans = get_subject_catalog_plans()
+            class_options = available_class_names_from_plans(catalog_plans)
+            subject_options_by_class = {
+                class_name: subject_options_from_plans(catalog_plans, class_name)
+                for class_name in class_options
+            }
+            selected_classes, _ = self.store.get_selected_classes(session.user.id, session.user.class_name)
+            stored_subjects, has_subjects = self.store.get_subject_selections(session.user.id, session.user.class_name)
+            if has_subjects:
+                selected_subjects_by_class = stored_subjects
+            else:
+                calendar_courses = self.store.get_calendar_course_ids(session.user.username)
+                selected_subjects_by_class = {}
+                for class_name in selected_classes:
+                    allowed_keys = {option.key for option in subject_options_by_class.get(class_name, [])}
+                    defaults = {
+                        key for course_id in calendar_courses
+                        if (key := subject_key(course_id)) in allowed_keys
+                    }
+                    selected_subjects_by_class[class_name] = defaults
+            settings, has_settings = self.store.load_notify_settings(session.user.id)
+            event_type_options = self.store.get_calendar_event_types()
+            if not has_settings and not settings.calendar_notification_types:
+                settings = NotifySettings(
+                    lesson_notifications_enabled=settings.lesson_notifications_enabled,
+                    lesson_notification_times=settings.lesson_notification_times,
+                    calendar_notifications_enabled=settings.calendar_notifications_enabled,
+                    calendar_notification_time=settings.calendar_notification_time,
+                    calendar_notification_days_before=settings.calendar_notification_days_before,
+                    calendar_notification_types=tuple(option.id for option in event_type_options),
+                )
         except Exception as exception:
-            options, error = [], error or f"Kursliste konnte nicht geladen werden: {exception}"
-        send_html(self, render_subscriptions(session.user, options, self.store.get_subjects(session.user.id), session.csrf_token, os.getenv("NTFY_PUBLIC_URL", "http://127.0.0.1:8090"), saved, error))
+            class_options, subject_options_by_class, selected_classes, selected_subjects_by_class = [], {}, (session.user.class_name,), {}
+            settings, event_type_options = NotifySettings(), []
+            error = error or f"Kursliste konnte nicht geladen werden: {exception}"
+        send_html(
+            self,
+            render_subscriptions(
+                session.user,
+                class_options,
+                selected_classes,
+                subject_options_by_class,
+                selected_subjects_by_class,
+                settings,
+                event_type_options,
+                session.csrf_token,
+                os.getenv("NTFY_PUBLIC_URL", "http://127.0.0.1:8090"),
+                saved,
+                error,
+            ),
+        )
 
     def handle_subscriptions(self) -> None:
         session = self._require_session()

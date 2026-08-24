@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import os
 from pathlib import Path
 import secrets
@@ -18,6 +20,18 @@ def resolve_ntfy_internal_url() -> str:
     if Path("/.dockerenv").exists() and parsed.hostname in {"127.0.0.1", "localhost"}:
         return "http://ntfy"
     return requested
+
+
+def resolve_ntfy_publisher_auth() -> tuple[str, str]:
+    username = os.getenv("NTFY_SERVER_USERNAME", "vpmobil_server").strip() or "vpmobil_server"
+    password = os.getenv("NTFY_SERVER_PASSWORD", "").strip()
+    if password:
+        return username, password
+    seed = os.getenv("APP_ENCRYPTION_KEY", "").strip()
+    if not seed:
+        return username, "vpmobil-server-local-only"
+    derived = hashlib.sha256(seed.encode("utf-8")).digest() + hashlib.sha256((seed + ":ntfy").encode("utf-8")).digest()[:16]
+    return username, base64.urlsafe_b64encode(derived).decode("ascii").rstrip("=")
 
 
 class NtfyService:
@@ -56,6 +70,7 @@ class NtfyService:
             try:
                 response = requests.get(f"{self.internal_url}/v1/health", timeout=2)
                 if response.ok:
+                    self.ensure_server_publisher()
                     return
             except requests.RequestException:
                 pass
@@ -63,7 +78,7 @@ class NtfyService:
         raise RuntimeError(f"ntfy ist unter {self.internal_url} nach dem Start nicht erreichbar.")
 
     def create_reader(self) -> tuple[str, str, str]:
-        """Erzeugt einen ntfy-Account mit Leserecht auf genau ein zufälliges Topic."""
+        """Erzeugt einen ntfy-Account mit Lese- und Schreibrecht auf genau ein Topic."""
         username = "u_" + secrets.token_hex(12)
         password = secrets.token_urlsafe(32)
         topic = "vpmobil-" + secrets.token_urlsafe(32).replace("_", "a").replace("-", "b")
@@ -72,7 +87,7 @@ class NtfyService:
         )
         if add.returncode != 0:
             raise RuntimeError("ntfy-Nutzer konnte nicht angelegt werden: " + (add.stderr.strip() or add.stdout.strip()))
-        access = self._compose("exec", "-T", "ntfy", "ntfy", "access", username, topic, "read-only")
+        access = self._compose("exec", "-T", "ntfy", "ntfy", "access", username, topic, "read-write")
         if access.returncode != 0:
             self._compose("exec", "-T", "ntfy", "ntfy", "user", "del", username)
             raise RuntimeError("ntfy-Zugriffsrecht konnte nicht gesetzt werden: " + (access.stderr.strip() or access.stdout.strip()))
@@ -92,10 +107,31 @@ class NtfyService:
                     + (change.stderr.strip() or change.stdout.strip() or add.stderr.strip() or add.stdout.strip())
                 )
 
-        access = self._compose("exec", "-T", "ntfy", "ntfy", "access", username, topic, "read-only")
+        access = self._compose("exec", "-T", "ntfy", "ntfy", "access", username, topic, "read-write")
         if access.returncode != 0:
             raise RuntimeError(
                 "ntfy-Zugriffsrecht konnte nicht gesetzt werden: "
+                + (access.stderr.strip() or access.stdout.strip())
+            )
+
+    def ensure_server_publisher(self) -> None:
+        username, password = resolve_ntfy_publisher_auth()
+        add = self._compose(
+            "exec", "-T", "-e", f"NTFY_PASSWORD={password}", "ntfy", "ntfy", "user", "add", username
+        )
+        if add.returncode != 0:
+            change = self._compose(
+                "exec", "-T", "-e", f"NTFY_PASSWORD={password}", "ntfy", "ntfy", "user", "change-pass", username
+            )
+            if change.returncode != 0:
+                raise RuntimeError(
+                    "ntfy-Servernutzer konnte nicht angelegt/aktualisiert werden: "
+                    + (change.stderr.strip() or change.stdout.strip() or add.stderr.strip() or add.stdout.strip())
+                )
+        access = self._compose("exec", "-T", "ntfy", "ntfy", "access", username, "*", "write-only")
+        if access.returncode != 0:
+            raise RuntimeError(
+                "ntfy-Servernutzer konnte nicht autorisiert werden: "
                 + (access.stderr.strip() or access.stdout.strip())
             )
 

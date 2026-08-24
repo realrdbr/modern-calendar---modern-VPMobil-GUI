@@ -63,6 +63,7 @@ Hinweise:
 
 - Caddy startet dabei **nicht** automatisch.
 - `./start-all.sh` synchronisiert beim Start automatisch ntfy-Logins aus der VP-Datenbank (`sync-ntfy-users.sh`).
+- In Notify können Nutzer mehrere Klassen, individuelle Stunden-Uhrzeiten sowie Kalender-Erinnerungen pro Kategorie konfigurieren.
 
 ## 5) Nutzer/Benachrichtigungen verwalten
 
@@ -101,6 +102,7 @@ CALENDAR_PUBLIC_URL=https://cal11.de
 VERTRETUNGSPLAN_PUBLIC_URL=https://vp.cal11.de
 NTFY_PUBLIC_URL=https://notify.cal11.de
 NTFY_INTERNAL_URL=http://ntfy
+NTFY_AUTH_DEFAULT_ACCESS=deny-all
 TLS_EMAIL=deine-mail@beispiel.de
 COOKIE_SECURE=true
 NTFY_BEHIND_PROXY=true
@@ -141,6 +143,7 @@ Neben Caddy sind Templates für weitere Proxies vorhanden:
 - Login-Versuche werden begrenzt (Brute-Force-Schutz).
 - Sessions/CSRF serverseitig.
 - ntfy-Zugangsdaten sind verschlüsselt in der DB.
+- ntfy läuft standardmäßig mit `deny-all`; Nutzer dürfen nur ihr eigenes Topic lesen/schreiben, der Server nutzt einen separaten Systemzugang.
 - Für öffentliche Instanzen immer HTTPS + `COOKIE_SECURE=true`.
 
 ## 9) Tests

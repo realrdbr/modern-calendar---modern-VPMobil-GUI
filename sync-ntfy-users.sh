@@ -15,8 +15,7 @@ while IFS=$'\t' read -r username password topic; do
     docker compose exec -T -e "NTFY_PASSWORD=${password}" ntfy ntfy user change-pass "${username}" >/dev/null
   fi
 
-  docker compose exec -T ntfy ntfy access "${username}" "${topic}" read-only >/dev/null
-  docker compose exec -T ntfy ntfy access "${username}" "${topic}*" read-only >/dev/null
+  docker compose exec -T ntfy ntfy access "${username}" "${topic}" read-write >/dev/null
 done < <(
   docker compose exec -T vp python - <<'PY'
 from admin import store
