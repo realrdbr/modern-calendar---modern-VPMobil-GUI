@@ -802,7 +802,7 @@ def render_teacher_page(
             {render_week_navigation(selected_date, selected_teacher)}
 
             <div class="meta">
-                Neuester Planstand: {escape(plan_timestamp_text)}
+                Neuester Planstand: {escape("Keine Plandaten verfügbar" if plan_timestamp_text == "unbekannt" else plan_timestamp_text)}
             </div>
         </section>
 
