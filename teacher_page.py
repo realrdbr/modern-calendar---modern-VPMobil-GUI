@@ -245,7 +245,11 @@ def render_teacher_week_table(
         else:
             timestamp = getattr(day_plan, "zeitstempel", None)
             timestamp_text = timestamp.strftime("%d.%m.%Y %H:%M") if timestamp is not None else "unbekannt"
-            day_plan_info = f"<small>Planstand: {escape(timestamp_text)}</small>"
+            if timestamp is not None or not "unbekannt":
+                timestamp_text = timestamp.strftime("%d.%m.%Y %H:%M")
+                day_plan_info = f"<small>Planstand: {escape(timestamp_text)}</small>"
+            else:
+                day_plan_info = "<small>Plan nicht verfügbar</small>"
 
         header_cells.append(f"""
             <th>
