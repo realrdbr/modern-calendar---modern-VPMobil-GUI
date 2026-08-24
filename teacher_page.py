@@ -15,6 +15,7 @@ from web_utils import (
     CALENDAR_PUBLIC_URL,
     COMMON_CSS,
     format_week_value,
+    get_ab_week_label,
     make_cookie,
     parse_cookie_header,
     parse_week,
@@ -300,7 +301,8 @@ def get_week_title(week_plans: dict[date, object | None]) -> str:
     if not dates:
         return "Woche"
 
-    return f"{dates[0].strftime('%d.%m.')} - {dates[-1].strftime('%d.%m.%Y')}"
+    ab_label = get_ab_week_label(dates[0])
+    return f"{dates[0].strftime('%d.%m.')} - {dates[-1].strftime('%d.%m.%Y')} {ab_label}"
 
 
 def get_latest_timestamp_text(week_plans: dict[date, object | None]) -> str:
@@ -362,7 +364,7 @@ def render_teacher_page(
 ) -> str:
     """Erzeugt die komplette Lehrerplan-Seite."""
 
-    week_title = selected_date.strftime("%d.%m.%Y")
+    week_title = f"{selected_date.strftime('%d.%m.%Y')} {get_ab_week_label(selected_date)}"
     plan_timestamp_text = "unbekannt"
     week_version = ""
     content = ""
