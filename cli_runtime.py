@@ -15,7 +15,7 @@ def running_in_container() -> bool:
     return Path("/.dockerenv").exists()
 
 
-def _uses_internal_mariadb() -> bool:
+def uses_internal_mariadb() -> bool:
     database_url = os.getenv("APP_DATABASE_URL", "").strip().lower()
     db_host = os.getenv("DB_HOST", "").strip().lower()
     return "@mariadb" in database_url or db_host == "mariadb"
@@ -26,7 +26,7 @@ def maybe_delegate_to_vp_container(script_name: str) -> None:
 
     if running_in_container():
         return
-    if not _uses_internal_mariadb():
+    if not uses_internal_mariadb():
         return
     if os.getenv("VP_CLI_NO_DELEGATE", "false").lower() in {"1", "true", "yes"}:
         return

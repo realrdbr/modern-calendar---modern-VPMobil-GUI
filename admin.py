@@ -11,7 +11,7 @@ from urllib.parse import quote
 from dotenv import load_dotenv
 
 from accounts import AccountStore
-from cli_runtime import maybe_delegate_to_vp_container
+from cli_runtime import maybe_delegate_to_vp_container, running_in_container, uses_internal_mariadb
 from ntfy.service import NtfyService
 from subscriptions import SubscriptionNotifier
 from vp_data import fetch_plan
@@ -23,7 +23,9 @@ load_dotenv()
 
 def store() -> AccountStore:
     database_url = os.getenv("APP_DATABASE_URL", "").strip()
-    if not database_url and os.getenv("DB_HOST") and os.getenv("DB_USER") and os.getenv("DB_NAME"):
+    use_sqlite_fallback = uses_internal_mariadb() and not running_in_container()
+
+    if not database_url and not use_sqlite_fallback and os.getenv("DB_HOST") and os.getenv("DB_USER") and os.getenv("DB_NAME"):
         password = quote(os.getenv("DB_PASSWORD", ""), safe="")
         user = quote(os.getenv("DB_USER", ""), safe="")
         host = os.getenv("DB_HOST", "")
@@ -31,7 +33,7 @@ def store() -> AccountStore:
         name = quote(os.getenv("DB_NAME", ""), safe="")
         database_url = f"mariadb://{user}:{password}@{host}:{port}/{name}"
 
-    if database_url:
+    if database_url and not use_sqlite_fallback:
         return AccountStore(database_url, os.getenv("APP_ENCRYPTION_KEY", ""))
 
     return AccountStore(Path(os.getenv("APP_DATABASE", ROOT / "data" / "vpmobil.sqlite3")), os.getenv("APP_ENCRYPTION_KEY", ""))

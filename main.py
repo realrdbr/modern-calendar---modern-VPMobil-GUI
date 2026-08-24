@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 
 from account_page import render_login, render_subscriptions
 from accounts import AccountStore, NotifySettings, Session
+from cli_runtime import running_in_container, uses_internal_mariadb
 from ntfy.service import NtfyService, resolve_ntfy_internal_url
 from plan_page import get_selected_subject_cookie_name, get_week_plans_for_page, get_week_version, render_plan_page
 from rooms_page import render_rooms_page
@@ -40,7 +41,9 @@ def resolve_bind_host() -> str:
 
 def build_store() -> AccountStore:
     database_url = os.getenv("APP_DATABASE_URL", "").strip()
-    if not database_url and os.getenv("DB_HOST") and os.getenv("DB_USER") and os.getenv("DB_NAME"):
+    use_sqlite_fallback = uses_internal_mariadb() and not running_in_container()
+
+    if not database_url and not use_sqlite_fallback and os.getenv("DB_HOST") and os.getenv("DB_USER") and os.getenv("DB_NAME"):
         password = quote(os.getenv("DB_PASSWORD", ""), safe="")
         user = quote(os.getenv("DB_USER", ""), safe="")
         host = os.getenv("DB_HOST", "")
@@ -48,7 +51,7 @@ def build_store() -> AccountStore:
         name = quote(os.getenv("DB_NAME", ""), safe="")
         database_url = f"mariadb://{user}:{password}@{host}:{port}/{name}"
 
-    if database_url:
+    if database_url and not use_sqlite_fallback:
         retries = max(1, int(os.getenv("DB_CONNECT_RETRIES", "20")))
         wait_seconds = max(1, int(os.getenv("DB_CONNECT_WAIT_SECONDS", "2")))
         last_error: Exception | None = None
@@ -64,6 +67,11 @@ def build_store() -> AccountStore:
         raise RuntimeError(f"Datenbankverbindung fehlgeschlagen: {last_error}") from last_error
 
     path = Path(os.getenv("APP_DATABASE", str(ROOT / "data" / "vpmobil.sqlite3")))
+    if use_sqlite_fallback:
+        log(
+            "Docker-interne MariaDB-Konfiguration außerhalb des Containers erkannt. "
+            f"Nutze stattdessen SQLite unter {path}."
+        )
     return AccountStore(path, os.getenv("APP_ENCRYPTION_KEY", ""))
 
 
