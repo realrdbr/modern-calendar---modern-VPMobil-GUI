@@ -12,7 +12,7 @@ export default function InfoModal({ isOpen, onClose }: Props) {
       onClick={onClose}
     >
       <div 
-        className="bg-white rounded-3xl max-w-md w-full p-6 sm:p-7 shadow-2xl border border-slate-100 relative text-slate-800 space-y-5 animate-in zoom-in-95 duration-150"
+        className="bg-white rounded-lg max-w-md w-full p-5 shadow-lg border border-zinc-200 relative text-zinc-800 space-y-4"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -22,7 +22,7 @@ export default function InfoModal({ isOpen, onClose }: Props) {
           </h3>
           <button
             onClick={onClose}
-            className="text-slate-400 hover:text-[#e91e63] font-bold text-sm px-2 py-0.5 rounded transition-colors cursor-pointer"
+            className="text-zinc-400 hover:text-teal-700 font-semibold text-sm px-2 py-0.5 rounded transition-colors cursor-pointer"
             aria-label="Schließen"
           >
             ✕
@@ -46,7 +46,7 @@ export default function InfoModal({ isOpen, onClose }: Props) {
         <div className="pt-2">
           <button
             onClick={onClose}
-            className="w-full bg-[#e91e63] hover:bg-[#d81b60] text-white font-bold py-3.5 px-5 rounded-2xl transition-all active:scale-[0.99] text-xs sm:text-sm cursor-pointer shadow-md shadow-pink-500/20"
+            className="w-full bg-teal-700 hover:bg-teal-800 text-white font-semibold py-2.5 px-4 rounded-md transition-colors text-sm cursor-pointer"
           >
             Schließen
           </button>

@@ -203,6 +203,7 @@ def render_subject_filter(
     selected_class: str,
     selected_subjects: list[str],
     catalog_plans: list[object] | None = None,
+    filters_active: bool = True,
 ) -> str:
     """Rendert die Fachauswahl für die ausgewählte Klasse."""
 
@@ -223,8 +224,9 @@ def render_subject_filter(
 
     return f"""
         <section class="filter-card">
-            <details>
-                <summary>Fächer filtern</summary>
+            <div class="filter-card-header">
+              <details>
+                <summary class="filter-summary">Fächer filtern</summary>
 
                 <form method="get" action="/" class="subject-form">
                     <input type="hidden" name="woche" value="{selected_date.isoformat()}">
@@ -241,7 +243,11 @@ def render_subject_filter(
                         </a>
                     </div>
                 </form>
-            </details>
+              </details>
+              <a class="filter-toggle-button" href="/?{urlencode({'woche': format_week_value(selected_date), 'klasse': selected_class, **({'show_all': '1'} if filters_active else {})})}"
+                 aria-label="{'Ganzen Vertretungsplan anzeigen' if filters_active else 'Gespeicherte Filter wieder aktivieren'}"
+                 title="{'Ganzen Vertretungsplan anzeigen' if filters_active else 'Gespeicherte Filter wieder aktivieren'}">{'+' if filters_active else '-'}</a>
+            </div>
         </section>
     """
 
@@ -432,6 +438,8 @@ def render_plan_page(
     selected_class: str | None = None,
     selected_subjects: list[str] | None = None,
     error_message: str | None = None,
+    filters_active: bool = True,
+    logout_csrf_token: str | None = None,
 ) -> str:
     """Erzeugt die komplette Wochenplan-Seite."""
 
@@ -480,9 +488,9 @@ def render_plan_page(
                     </a>
                 </section>
 
-                {render_subject_filter(week_plans, selected_date, selected_class, selected_subjects, get_subject_catalog_plans())}
+                {render_subject_filter(week_plans, selected_date, selected_class, selected_subjects, get_subject_catalog_plans(), filters_active)}
 
-                {render_week_table(week_plans, selected_class, selected_subjects, weekly_dates)}
+                {render_week_table(week_plans, selected_class, selected_subjects if filters_active else [], weekly_dates)}
             """
 
     return f"""<!doctype html>
@@ -511,8 +519,17 @@ def render_plan_page(
             padding: 18px 20px;
             background: var(--surface);
             border: 1px solid var(--border);
-            border-radius: 16px;
+            border-radius: 8px;
         }}
+
+        .filter-card-header {{ display:flex; align-items:flex-start; gap:12px; }}
+        .filter-card-header details {{ flex:1 1 auto; min-width:0; }}
+        .filter-summary {{ min-height:32px; display:flex; align-items:center; font-weight:700; }}
+        .filter-summary::marker {{ color:var(--muted); }}
+        .filter-toggle-button {{ display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border-radius:6px; text-decoration:none; font-size:1.25rem; line-height:1; font-weight:800; color:white; background:var(--primary); }}
+        .logout-form {{ margin:0; display:flex; }}
+        .logout-button {{ min-height:36px !important; height:36px !important; padding:0 12px !important; border:1px solid var(--border) !important; border-radius:6px !important; background:var(--surface) !important; color:var(--text) !important; font-size:.875rem !important; font-weight:650 !important; }}
+        .logout-button:hover {{ border-color:var(--bad-border) !important; color:var(--bad-text) !important; }}
 
         details summary {{
             cursor: pointer;
@@ -536,7 +553,7 @@ def render_plan_page(
             min-height: 42px;
             padding: 9px 11px;
             border: 1px solid var(--border);
-            border-radius: 12px;
+            border-radius: 6px;
             background: var(--surface-muted);
             color: var(--text);
         }}
@@ -585,7 +602,7 @@ def render_plan_page(
             min-height: 64px;
             padding: 8px 14px;
             border: 1px solid var(--border);
-            border-radius: 16px;
+            border-radius: 8px;
             background: var(--surface-muted);
             color: var(--text);
             text-decoration: none;
@@ -621,8 +638,7 @@ def render_plan_page(
             overflow-x: auto;
             background: var(--surface);
             border: 1px solid var(--border);
-            border-radius: 18px;
-            box-shadow: 0 8px 24px rgba(16, 24, 40, 0.06);
+            border-radius: 8px;
         }}
 
         .week-table {{
@@ -698,7 +714,7 @@ def render_plan_page(
             min-height: 58px;
             padding: 7px;
             border: 1px solid var(--border);
-            border-radius: 10px;
+            border-radius: 6px;
             background: var(--surface);
             list-style: none;
         }}
@@ -738,8 +754,8 @@ def render_plan_page(
             padding: 14px;
             background: var(--surface);
             border: 1px solid var(--border);
-            border-radius: 14px;
-            box-shadow: 0 18px 48px rgba(16, 24, 40, 0.22);
+            border-radius: 8px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
         }}
 
         .week-lesson.popup-open-up .popup-content {{
@@ -949,6 +965,7 @@ def render_plan_page(
                 <a href="/raeume">Freie Räume</a>
                 <a href="/abos">Ankündigungen</a>
                 <a href="{escape(CALENDAR_PUBLIC_URL)}">Kalender</a>
+                {f'<form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf_token" value="{escape(logout_csrf_token)}"><button class="logout-button" type="submit">Abmelden</button></form>' if logout_csrf_token else ''}
                 {render_theme_toggle_button()}
             </nav>
         </header>

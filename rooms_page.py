@@ -138,7 +138,7 @@ def render_rooms_page(
             padding: 22px;
             background: var(--surface);
             border: 1px solid var(--border);
-            border-radius: 18px;
+            border-radius: 8px;
         }}
 
         .result h2 {{
@@ -197,7 +197,7 @@ def render_rooms_page(
         .room-card {{
             padding: 14px 10px;
             text-align: center;
-            border-radius: 12px;
+            border-radius: 6px;
             font-size: 1.15rem;
             font-weight: 900;
             border: 1px solid transparent;

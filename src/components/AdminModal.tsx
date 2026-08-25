@@ -150,7 +150,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
 
   // Category management
   const [newCatName, setNewCatName] = useState('');
-  const [newCatColor, setNewCatColor] = useState('#e91e63');
+  const [newCatColor, setNewCatColor] = useState('#0f766e');
 
   const handleAddCategory = async () => {
     if (!newCatName.trim()) return;
@@ -412,8 +412,8 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
 
   if (!isAuthenticated) {
     return (
-      <div className={`fixed inset-0 z-[100] flex items-center justify-center ${theme.overlay} backdrop-blur-sm p-4`}>
-        <div className={`w-full max-w-sm ${theme.bgModal} rounded-2xl shadow-xl border ${theme.border} overflow-hidden animate-in zoom-in-95 duration-200 p-6`}>
+      <div className={`fixed inset-0 z-[100] flex items-center justify-center ${theme.overlay} p-4`}>
+        <div className={`w-full max-w-sm ${theme.bgModal} rounded-lg shadow-lg border ${theme.border} overflow-hidden p-5`}>
           <div className="flex justify-between items-center mb-6">
             <h2 className={`text-xl font-bold ${theme.textMain}`}>
               Admin-Bereich
@@ -443,8 +443,8 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
   }
 
   return (
-    <div className={`fixed inset-0 z-[100] flex items-center justify-center ${theme.overlay} backdrop-blur-sm p-4 sm:p-6`}>
-      <div className={`w-full max-w-4xl max-h-[90vh] ${theme.bgModal} rounded-2xl shadow-2xl border ${theme.border} flex flex-col overflow-hidden animate-in zoom-in-95 duration-200`}>
+    <div className={`fixed inset-0 z-[100] flex items-center justify-center ${theme.overlay} p-4 sm:p-6`}>
+      <div className={`w-full max-w-4xl max-h-[90vh] ${theme.bgModal} rounded-lg shadow-lg border ${theme.border} flex flex-col overflow-hidden`}>
         
         <div className={`flex items-center justify-between px-6 py-4 border-b ${theme.border} ${theme.bgSidebar}`}>
           <h2 className={`text-xl font-bold ${theme.textMain} flex items-center gap-2`}>
@@ -643,7 +643,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
                           type="text" 
                           value={c.name}
                           onChange={(e) => handleUpdateCategory(c.id, e.target.value, c.color)}
-                          className={`font-semibold text-sm ${theme.textMain} bg-transparent border-none focus:outline-none focus:ring-1 focus:ring-[#e91e63] rounded px-1 w-full max-w-[200px]`}
+                          className={`font-semibold text-sm ${theme.textMain} bg-transparent border-none focus:outline-none focus:ring-1 focus:ring-teal-700 rounded px-1 w-full max-w-[200px]`}
                         />
                       </div>
                       <button
@@ -661,7 +661,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
               <div className="space-y-6">
                 <div>
                   <h3 className={`font-bold text-xl ${theme.textMain} mb-1 flex items-center gap-2`}>
-                    <Layers className="w-5 h-5 text-[#e91e63]" />
+                    <Layers className="w-5 h-5 text-teal-700" />
                     Kurse & Fächer verwalten
                   </h3>
                   <p className={`text-sm ${theme.textFaint}`}>
@@ -670,7 +670,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
                 </div>
 
                 {/* Add new course toolbar */}
-                <div className={`p-4 border ${theme.border} rounded-2xl ${theme.bgInput} space-y-3`}>
+                <div className={`p-4 border ${theme.border} rounded-md ${theme.bgInput} space-y-3`}>
                   <h4 className={`text-xs font-bold ${theme.textMuted} uppercase tracking-wider`}>Neuen Kurs anlegen</h4>
                   <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
                     <input
@@ -678,19 +678,19 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
                       value={newCourseName}
                       onChange={e => setNewCourseName(e.target.value)}
                       placeholder="Kursname (z.B. MA1, de1, Chor)"
-                      className={`px-3 py-2 border ${theme.borderInput} ${theme.bgModal} rounded-xl text-sm ${theme.textMain} focus:outline-none focus:ring-1 focus:ring-[#e91e63]`}
+                      className={`px-3 py-2 border ${theme.borderInput} ${theme.bgModal} rounded-md text-sm ${theme.textMain} focus:outline-none focus:ring-1 focus:ring-teal-700`}
                     />
                     <input
                       type="text"
                       value={newCourseTeacher}
                       onChange={e => setNewCourseTeacher(e.target.value)}
                       placeholder="Lehrer (z.B. Kön, Hof1)"
-                      className={`px-3 py-2 border ${theme.borderInput} ${theme.bgModal} rounded-xl text-sm ${theme.textMain} focus:outline-none focus:ring-1 focus:ring-[#e91e63]`}
+                      className={`px-3 py-2 border ${theme.borderInput} ${theme.bgModal} rounded-md text-sm ${theme.textMain} focus:outline-none focus:ring-1 focus:ring-teal-700`}
                     />
                     <select
                       value={newCourseType}
                       onChange={e => setNewCourseType(e.target.value as any)}
-                      className={`px-3 py-2 border ${theme.borderInput} ${theme.bgModal} rounded-xl text-sm font-semibold ${theme.textMain} focus:outline-none focus:ring-1 focus:ring-[#e91e63] cursor-pointer`}
+                      className={`px-3 py-2 border ${theme.borderInput} ${theme.bgModal} rounded-md text-sm font-semibold ${theme.textMain} focus:outline-none focus:ring-1 focus:ring-teal-700 cursor-pointer`}
                     >
                       <option value="LK">Leistungskurs (LK)</option>
                       <option value="GK">Grundkurs (GK)</option>
@@ -712,7 +712,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
                 {/* Course Sections: LK, GK, AG */}
                 {(
                   [
-                    { type: 'LK' as const, title: 'Leistungskurse (LK)', list: lks, color: '#e91e63' },
+                    { type: 'LK' as const, title: 'Leistungskurse (LK)', list: lks, color: '#0f766e' },
                     { type: 'GK' as const, title: 'Grundkurse (GK)', list: gks, color: '#3b82f6' },
                     { type: 'AG' as const, title: 'Arbeitsgemeinschaften (AG)', list: ags, color: '#10b981' }
                   ]
@@ -723,8 +723,8 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
                       key={type}
                       onDragOver={(e) => handleDragOverSection(e, type)}
                       onDrop={(e) => handleDropOnSection(e, type)}
-                      className={`p-4 rounded-2xl border transition-all ${
-                        isTargetSection ? 'border-[#e91e63] bg-pink-500/5 ring-1 ring-[#e91e63]' : `${theme.border} ${theme.bgSidebar}`
+                      className={`p-4 rounded-md border transition-colors ${
+                        isTargetSection ? 'border-teal-700 bg-teal-500/5 ring-1 ring-teal-700' : `${theme.border} ${theme.bgSidebar}`
                       }`}
                     >
                       <div className="flex items-center justify-between mb-3">
@@ -763,9 +763,9 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
                                 onDrop={(e) => handleDropOnCard(e, c)}
                                 className={`group relative p-2.5 rounded-xl border transition-all flex flex-col justify-between select-none ${
                                   isBeingDragged
-                                    ? 'opacity-30 scale-95 border-dashed border-[#e91e63]'
+                                    ? 'opacity-30 border-dashed border-teal-700'
                                     : isDragOver
-                                    ? 'ring-2 ring-[#e91e63] bg-pink-500/10 border-transparent shadow-md'
+                                    ? 'ring-1 ring-teal-700 bg-teal-500/10 border-transparent'
                                     : `${isDark ? 'bg-[#222] border-[#383838] hover:border-[#555]' : 'bg-white border-[#e5e7eb] hover:border-[#cbd5e1]'} shadow-2xs`
                                 }`}
                               >
@@ -784,7 +784,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
                                           type="text"
                                           value={c.name}
                                           onChange={(e) => handleUpdateCourse(c.id, e.target.value, c.teacher, c.type)}
-                                          className={`font-bold text-sm ${theme.textMain} bg-transparent border-none p-0 focus:outline-none focus:ring-1 focus:ring-[#e91e63] rounded w-full`}
+                                          className={`font-bold text-sm ${theme.textMain} bg-transparent border-none p-0 focus:outline-none focus:ring-1 focus:ring-teal-700 rounded w-full`}
                                           placeholder="Name"
                                           title="Kursname bearbeiten"
                                         />
@@ -795,7 +795,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
                                           type="text"
                                           value={c.teacher}
                                           onChange={(e) => handleUpdateCourse(c.id, c.name, e.target.value, c.type)}
-                                          className={`text-xs ${theme.textMuted} bg-transparent border-none p-0 focus:outline-none focus:ring-1 focus:ring-[#e91e63] rounded w-full`}
+                                          className={`text-xs ${theme.textMuted} bg-transparent border-none p-0 focus:outline-none focus:ring-1 focus:ring-teal-700 rounded w-full`}
                                           placeholder="Lehrer"
                                           title="Lehrer bearbeiten"
                                         />

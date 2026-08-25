@@ -114,6 +114,7 @@ class NotifySettings:
     lesson_notification_times: tuple[str, ...] = DEFAULT_LESSON_NOTIFICATION_TIMES
     calendar_notifications_enabled: bool = False
     calendar_notification_time: str = DEFAULT_CALENDAR_NOTIFICATION_TIME
+    calendar_notification_times: dict[str, str] | None = None
     calendar_notification_days_before: int = DEFAULT_CALENDAR_NOTIFICATION_DAYS_BEFORE
     calendar_notification_types: tuple[str, ...] = ()
 
@@ -443,6 +444,17 @@ class AccountStore:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """,
                 """
+                CREATE TABLE IF NOT EXISTS app_sessions (
+                    token_hash CHAR(64) PRIMARY KEY,
+                    username VARCHAR(64) NOT NULL,
+                    csrf_token VARCHAR(255) NOT NULL,
+                    expires_at DATETIME(3) NOT NULL,
+                    created_at DATETIME(3) NOT NULL,
+                    INDEX idx_app_sessions_user (username),
+                    INDEX idx_app_sessions_expiry (expires_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+                """
                 CREATE TABLE IF NOT EXISTS vp_login_attempts (
                     id BIGINT AUTO_INCREMENT PRIMARY KEY,
                     username VARCHAR(64) NOT NULL,
@@ -561,6 +573,12 @@ class AccountStore:
         days_before = int(data.get("calendar_notification_days_before", DEFAULT_CALENDAR_NOTIFICATION_DAYS_BEFORE))
         if days_before < 0:
             raise ValueError("Kalender-Erinnerungen dürfen nicht in der Vergangenheit liegen.")
+        raw_category_times = data.get("calendar_notification_times", {})
+        category_times = {
+            str(event_type).strip(): self._normalize_notification_time(str(value))
+            for event_type, value in raw_category_times.items()
+            if str(event_type).strip()
+        } if isinstance(raw_category_times, dict) else {}
         return NotifySettings(
             lesson_notifications_enabled=bool(data.get("lesson_notifications_enabled", True)),
             lesson_notification_times=lesson_times,
@@ -568,6 +586,7 @@ class AccountStore:
             calendar_notification_time=self._normalize_notification_time(
                 str(data.get("calendar_notification_time", DEFAULT_CALENDAR_NOTIFICATION_TIME))
             ),
+            calendar_notification_times=category_times,
             calendar_notification_days_before=days_before,
             calendar_notification_types=calendar_types,
         )
@@ -877,6 +896,14 @@ class AccountStore:
                 f"INSERT INTO {table}(token_hash, user_id, csrf_token, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
                 (self._token_hash(token), user_id, csrf_token, to_db_time(utcnow() + SESSION_LIFETIME), to_db_time(utcnow())),
             )
+            if self._backend == "mysql":
+                user_row = self._get_user_row_by_id(connection, user_id)
+                self._run(
+                    connection,
+                    "INSERT INTO app_sessions(token_hash, username, csrf_token, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (self._token_hash(token), user_row["username"].lower(), csrf_token,
+                     (utcnow() + SESSION_LIFETIME).replace(tzinfo=None), utcnow().replace(tzinfo=None)),
+                )
         return token, csrf_token
 
     def get_session(self, token: str | None) -> Session | None:
@@ -901,6 +928,15 @@ class AccountStore:
                     (self._token_hash(token), to_db_time(utcnow())),
                 )
                 self._run(connection, "DELETE FROM vp_sessions WHERE expires_at <= ?", (to_db_time(utcnow()),))
+                if row is None:
+                    row = self._fetchone(
+                        connection,
+                        """SELECT vp_users.*, app_sessions.csrf_token
+                        FROM app_sessions JOIN vp_users ON LOWER(vp_users.username) = LOWER(app_sessions.username)
+                        WHERE app_sessions.token_hash = ? AND app_sessions.expires_at > ? AND vp_users.active = 1""",
+                        (self._token_hash(token), utcnow().replace(tzinfo=None)),
+                    )
+                self._run(connection, "DELETE FROM app_sessions WHERE expires_at <= ?", (utcnow().replace(tzinfo=None),))
         return Session(self._user_from_row(row), row["csrf_token"]) if row else None
 
     def delete_session(self, token: str | None) -> None:
@@ -909,6 +945,8 @@ class AccountStore:
         table = "sessions" if self._backend == "sqlite" else "vp_sessions"
         with self._connection() as connection:
             self._run(connection, f"DELETE FROM {table} WHERE token_hash = ?", (self._token_hash(token),))
+            if self._backend == "mysql":
+                self._run(connection, "DELETE FROM app_sessions WHERE token_hash = ?", (self._token_hash(token),))
 
     def load_notify_settings(self, user_id: int) -> tuple[NotifySettings, bool]:
         with self._connection() as connection:
@@ -923,6 +961,11 @@ class AccountStore:
             ) or DEFAULT_LESSON_NOTIFICATION_TIMES,
             calendar_notifications_enabled=settings.calendar_notifications_enabled,
             calendar_notification_time=self._normalize_notification_time(settings.calendar_notification_time),
+            calendar_notification_times={
+                event_type.strip(): self._normalize_notification_time(value)
+                for event_type, value in (settings.calendar_notification_times or {}).items()
+                if event_type.strip()
+            },
             calendar_notification_days_before=max(0, int(settings.calendar_notification_days_before)),
             calendar_notification_types=tuple(
                 dict.fromkeys(event_type.strip() for event_type in settings.calendar_notification_types if event_type.strip())
@@ -934,6 +977,7 @@ class AccountStore:
                 "lesson_notification_times": list(normalized.lesson_notification_times),
                 "calendar_notifications_enabled": normalized.calendar_notifications_enabled,
                 "calendar_notification_time": normalized.calendar_notification_time,
+                "calendar_notification_times": normalized.calendar_notification_times,
                 "calendar_notification_days_before": normalized.calendar_notification_days_before,
                 "calendar_notification_types": list(normalized.calendar_notification_types),
             },
@@ -1133,6 +1177,16 @@ class AccountStore:
             for course_id in courses
             if isinstance(course_id, str) and str(course_id).strip()
         }
+
+    def replace_calendar_course_ids(self, username: str, course_ids: set[str]) -> None:
+        """Spiegelt eine VP-Fachauswahl in die Kursauswahl des Kalenders."""
+        normalized = sorted({value.strip() for value in course_ids if value.strip()})
+        with self._connection() as connection:
+            self._run(
+                connection,
+                f"UPDATE {self._calendar_users_table()} SET courses = ? WHERE LOWER(username) = LOWER(?)",
+                (json.dumps(normalized), username),
+            )
 
     def get_calendar_event_types(self) -> list[CalendarEventTypeOption]:
         with self._connection() as connection:

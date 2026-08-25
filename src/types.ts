@@ -14,6 +14,7 @@ export interface EventCategory {
 
 export interface UserPreferences {
   darkMode: boolean;
+  themeMode?: 'system' | 'light' | 'dark';
   accentColor: string;
   colorKlausur: string;
   colorHausaufgabe: string;

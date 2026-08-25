@@ -156,8 +156,8 @@ export default function EventModal({ isOpen, onClose, onSave, onDelete, initialD
 
   if (isViewMode) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-        <div className={`${theme.bgApp} shadow-xl w-full max-w-md border ${theme.border} text-black flex flex-col max-h-[90vh]`}>
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-3">
+        <div className={`${theme.bgApp} shadow-lg rounded-lg w-full max-w-md border ${theme.border} text-black flex flex-col max-h-[90vh]`}>
           <div className={`flex items-center justify-between px-4 py-3 border-b ${theme.border} ${theme.bgHeader}`}>
             <h2 className={`text-lg font-bold ${theme.textMain}`}>Termindetails</h2>
             <button onClick={onClose} className={`${theme.textMuted} hover:${theme.textMain} font-bold text-xl leading-none`}>
@@ -245,8 +245,8 @@ export default function EventModal({ isOpen, onClose, onSave, onDelete, initialD
 
   // Edit Mode
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className={`${theme.bgApp} shadow-xl w-full max-w-md border ${theme.border} text-black flex flex-col max-h-[90vh]`}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-3">
+      <div className={`${theme.bgApp} shadow-lg rounded-lg w-full max-w-md border ${theme.border} text-black flex flex-col max-h-[90vh]`}>
         <div className={`flex items-center justify-between px-4 py-3 border-b ${theme.border} ${theme.bgHeader}`}>
           <h2 className={`text-lg font-bold ${theme.textMain}`}>
             {event ? 'Termin bearbeiten' : 'Neuer Termin'}

@@ -29,6 +29,7 @@ import {
   generateSessionToken,
   verifySessionToken,
   getSessionUsername,
+  deleteSessionToken,
   dbGetAdmins,
   dbIsAdmin,
   dbAddAdmin,
@@ -168,7 +169,7 @@ async function startServer() {
 
     if (user.pin) {
       if (sessionToken) {
-        if (!verifySessionToken(uname, sessionToken)) {
+        if (!(await verifySessionToken(uname, sessionToken))) {
           return res.status(401).json({ error: 'Sitzung abgelaufen oder ungültig. Bitte erneut anmelden.' });
         }
       } else {
@@ -183,8 +184,9 @@ async function startServer() {
     }
 
     resetFailedAttempt(rateLimitKey);
-    const token = generateSessionToken(uname);
-    res.json({ user: sanitizeUser(user), sessionToken: token });
+    const token = await generateSessionToken(uname);
+    res.setHeader('Set-Cookie', sessionCookie(token));
+    res.json({ user: sanitizeUser(user) });
   });
 
   // Authentication middleware
@@ -195,13 +197,15 @@ async function startServer() {
       token = authHeader.substring(7);
     } else if (req.headers['x-session-token']) {
       token = req.headers['x-session-token'] as string;
+    } else {
+      token = cookieToken(req);
     }
 
     if (!token) {
       return res.status(401).json({ error: 'Nicht authentifiziert (Session-Token fehlt).' });
     }
 
-    const username = getSessionUsername(token);
+    const username = await getSessionUsername(token);
     if (!username) {
       return res.status(401).json({ error: 'Ungültige oder abgelaufene Sitzung. Bitte erneut anmelden.' });
     }
@@ -276,8 +280,21 @@ async function startServer() {
       pin: pinToSave
     });
 
-    const token = generateSessionToken(username);
-    res.json({ user: sanitizeUser(updated), sessionToken: token });
+    const token = await generateSessionToken(username);
+    res.setHeader('Set-Cookie', sessionCookie(token));
+    res.json({ user: sanitizeUser(updated) });
+  });
+
+  app.get('/api/session', requireAuth, async (req, res) => {
+    const user = await dbGetUser((req as any).authenticatedUser);
+    res.json({ user: sanitizeUser(user) });
+  });
+
+  app.post('/api/logout', requireAuth, async (req, res) => {
+    const token = cookieToken(req) || (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.substring(7) : '');
+    await deleteSessionToken(token);
+    res.setHeader('Set-Cookie', sessionCookie('', 0));
+    res.json({ success: true });
   });
 
   app.get('/api/events', async (req, res) => {
@@ -608,3 +625,17 @@ async function startServer() {
 }
 
 startServer();
+  const SESSION_COOKIE = 'cal11_session';
+  const cookieSecure = (process.env.COOKIE_SECURE || 'true').toLowerCase() === 'true';
+  const cookieDomain = (process.env.COOKIE_DOMAIN || '').trim();
+  function cookieToken(req: express.Request): string {
+    const raw = req.headers.cookie || '';
+    for (const part of raw.split(';')) {
+      const [name, ...value] = part.trim().split('=');
+      if (name === SESSION_COOKIE) return decodeURIComponent(value.join('='));
+    }
+    return '';
+  }
+  function sessionCookie(token: string, maxAgeSeconds = 30 * 86400): string {
+    return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Max-Age=${maxAgeSeconds}; Path=/; HttpOnly; SameSite=Lax${cookieSecure ? '; Secure' : ''}${cookieDomain ? `; Domain=${cookieDomain}` : ''}`;
+  }

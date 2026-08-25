@@ -11,6 +11,7 @@ from web_utils import CALENDAR_PUBLIC_URL, COMMON_CSS, render_theme_script, rend
 
 
 def _layout(title: str, body: str) -> str:
+    main_class = ' class="login-root"' if title.startswith("Anmelden") else ""
     return f"""<!doctype html><html lang=\"de\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{escape(title)}</title><style>{COMMON_CSS}
 :root {{ color-scheme: light; }}
 body {{ background: var(--background); color: var(--text); font-family: Inter, "Segoe UI", sans-serif; }}
@@ -94,20 +95,71 @@ code {{ word-break:break-all; }}
   .calendar-row {{ grid-template-columns:1fr; }}
   .save-row button {{ width:100%; }}
 }}
-</style></head><body><main>{body}</main>{render_theme_script()}</body></html>"""
+/* Compact dashboard treatment */
+.topbar {{ max-width:1180px; padding:16px 16px 0; }}
+.nav {{ gap:6px; }}
+.nav a {{ min-height:36px; padding:6px 10px; border-radius:6px; font-size:.875rem; font-weight:650; }}
+.panel {{ max-width:1180px; margin-top:16px; padding-left:16px; padding-right:16px; }}
+.auth-card {{ max-width:440px; margin-top:8vh; display:grid; gap:20px; padding:24px; border:1px solid var(--border); border-radius:8px; background:var(--surface); }}
+.login-heading {{ display:grid; gap:6px; padding-bottom:16px; border-bottom:1px solid var(--border); }}
+.login-heading h1, .login-heading p {{ margin:0; }}
+.login-heading h1 {{ font-size:1.5rem; letter-spacing:-.02em; }}
+.login-heading p {{ color:var(--muted); font-size:.875rem; line-height:1.5; }}
+.login-account {{ display:flex; justify-content:space-between; align-items:center; gap:12px; padding:10px 12px; border:1px solid var(--border); border-radius:6px; background:var(--surface-muted); font-size:.875rem; }}
+.login-account span {{ color:var(--muted); }}
+.settings-card {{ gap:12px; padding:16px; border-radius:8px; box-shadow:none; }}
+input, select {{ min-height:38px; border-radius:6px; padding:7px 10px; }}
+button:not(.theme-toggle) {{ min-height:38px; border:1px solid var(--primary); border-radius:6px; padding:8px 14px; background:var(--primary); font-weight:650; box-shadow:none; gap:6px; }}
+.notice {{ border-radius:6px; }}
+.choice-pill, .chip, .subject-card, .section-group, .time-tab {{ border-radius:6px; }}
+.choice-pill input:checked + span, .chip input:checked + span {{ background:var(--primary); }}
+.save-row {{ bottom:8px; padding:8px; border-radius:8px; background:var(--surface); backdrop-filter:none; }}
+.calendar-login {{ min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:space-between; background:var(--surface); color:var(--text); }}
+.login-root {{ width:100%; max-width:none; min-height:100vh; margin:0; padding:0; overflow:hidden; }}
+.calendar-login-shell {{ width:calc(100% - 48px); max-width:432px; margin:auto; padding:32px 0; display:flex; flex-direction:column; align-items:center; }}
+.calendar-login-header {{ margin-bottom:24px; text-align:center; }}
+.calendar-login-header h1 {{ margin:0 0 8px; font-size:clamp(1.75rem, 5vw, 2rem); line-height:1.15; letter-spacing:-.025em; }}
+.calendar-login-header p {{ max-width:330px; margin:0 auto; color:var(--muted); font-size:.94rem; line-height:1.4; font-weight:500; }}
+.calendar-login-header a {{ display:inline-flex; margin-top:12px; min-height:36px; align-items:center; padding:6px 12px; border:1px solid var(--border); border-radius:8px; color:var(--text); background:var(--surface); text-decoration:none; font-size:.78rem; font-weight:650; }}
+.calendar-login-form {{ width:100%; display:grid; gap:12px; }}
+.calendar-login-control {{ width:100%; display:flex; align-items:center; padding:6px 6px 6px 14px; border:1.5px solid var(--border); border-radius:12px; background:var(--surface); transition:border-color .15s; }}
+.calendar-login-control:focus-within {{ border-color:#e91e63; }}
+.calendar-login-control input {{ flex:1 1 auto; width:auto; min-width:0; min-height:38px; padding:0; border:0; outline:0; background:transparent; color:var(--text); }}
+.calendar-login-control button {{ flex:0 0 auto; width:auto; min-height:40px; padding:8px 16px; border:0; border-radius:8px; background:#e91e63; font-weight:750; }}
+.calendar-login-back {{ justify-self:center; min-height:auto !important; padding:4px 8px !important; border:0 !important; background:transparent !important; color:var(--muted) !important; font-size:.78rem !important; }}
+.calendar-login .notice {{ width:100%; margin:0 0 12px; }}
+.calendar-login-footer {{ width:100%; padding:16px 24px; border-top:1px solid var(--border); display:flex; justify-content:space-between; color:var(--muted); font-size:.8rem; font-weight:650; }}
+.calendar-login-footer a {{ color:var(--text); text-decoration:none; }}
+</style></head><body><main{main_class}>{body}</main>{render_theme_script()}</body></html>"""
 
 
-def render_login(error: str | None = None) -> str:
+def render_login(error: str | None = None, *, username: str = "", pin_step: bool = False) -> str:
     notice = f'<p class="notice">{escape(error)}</p>' if error else ""
+    if pin_step:
+        form = f"""
+        <form class="calendar-login-form" method="post" action="/login">
+          <input type="hidden" name="stage" value="pin">
+          <input type="hidden" name="username" value="{escape(username)}">
+          <div class="calendar-login-control"><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{{4}}" minlength="4" maxlength="4"
+              autocomplete="current-password" aria-label="Vierstellige PIN für {escape(username)}" placeholder="PIN für {escape(username)}" required autofocus data-pin-input>
+            <button type="submit">Entsperren <span aria-hidden="true">→</span></button></div>
+          <button class="calendar-login-back" type="submit" name="stage" value="restart" formnovalidate>‹ Anderen Benutzer verwenden</button>
+        </form>
+        <script>(() => {{ const input=document.querySelector('[data-pin-input]'); if(input) input.addEventListener('input',()=>input.value=input.value.replace(/\\D/g,'').slice(0,4)); }})();</script>
+        """
+        step_label = "Schritt 2 von 2 · PIN"
+    else:
+        form = f"""
+        <form class="calendar-login-form" method="post" action="/login">
+          <input type="hidden" name="stage" value="username">
+          <div class="calendar-login-control"><input name="username" value="{escape(username)}" autocomplete="username" placeholder="z.B. SophiaM" aria-label="Dein Benutzername" required minlength="3" maxlength="64" autofocus spellcheck="false">
+            <button type="submit">Weiter <span aria-hidden="true">→</span></button></div>
+        </form>
+        """
+        step_label = "Schritt 1 von 2 · Konto"
     return _layout("Anmelden · VpMobil", f"""
-    <header class="topbar"><div class="brand"><h1>VPrintfy</h1><p>Ankündigungen für deine Kurse</p></div>
-      <nav class="nav"><a href="/">Stundenplan</a><a href="{escape(CALENDAR_PUBLIC_URL)}">Kalender</a>{render_theme_toggle_button()}</nav></header>
-    <section class=\"panel auth-card\"><div class=\"brand\"><h1>VPrintfy</h1><p>Ankündigungen für deine Kurse</p></div>
-    {notice}<form class=\"stack\" method=\"post\" action=\"/login\">
-      <label>Benutzername<input name=\"username\" autocomplete=\"username\" required maxlength=\"64\"></label>
-      <label>Vierstellige PIN<input name=\"pin\" type=\"password\" inputmode=\"numeric\" pattern=\"[0-9]{{4}}\" autocomplete=\"current-password\" required></label>
-      <button type=\"submit\">Anmelden</button>
-    </form></section>""")
+    <div class="calendar-login"><section class="calendar-login-shell"><header class="calendar-login-header"><h1>Vertretungsplan</h1><p>Stundenplan, Änderungen und persönliche Ankündigungen auf einen Blick.</p><a href="{escape(CALENDAR_PUBLIC_URL)}">Zum Kalender</a></header>
+    {notice}{form}</section><footer class="calendar-login-footer"><span>{step_label}</span><a href="{escape(CALENDAR_PUBLIC_URL)}">cal11.de</a></footer></div>""")
 
 
 def _choice_checkbox(name: str, value: str, label: str, *, checked: bool) -> str:
@@ -161,7 +213,10 @@ def render_subscriptions(
         )
 
     event_type_checkboxes = "".join(
-        _choice_checkbox("calendar_event_type", option.id, option.label, checked=option.id in notify_settings.calendar_notification_types)
+        '<div class="calendar-row">'
+        + _choice_checkbox("calendar_event_type", option.id, option.label, checked=option.id in notify_settings.calendar_notification_types)
+        + f'<label>Uhrzeit für {escape(option.label)}<input type="time" name="calendar_notification_time__{quote(option.id, safe="")}" '
+          f'value="{escape((notify_settings.calendar_notification_times or {}).get(option.id, notify_settings.calendar_notification_time))}" required step="60"></label></div>'
         for option in calendar_event_types
     ) or "<p class=\"muted\">Im Kalender sind aktuell keine Kategorien verfügbar.</p>"
 
@@ -199,9 +254,8 @@ def render_subscriptions(
             <div class=\"settings-card-header\"><div><div class=\"settings-kicker\">Kalender</div><h2>Erinnerungen</h2></div></div>
             <div class=\"field-grid\">
               <label class=\"toggle-row\"><input type=\"checkbox\" id=\"calendar_notifications_enabled\" name=\"calendar_notifications_enabled\"{" checked" if notify_settings.calendar_notifications_enabled else ""}><span>Kalender-Benachrichtigungen aktiv</span></label>
-              <div class=\"calendar-row\"><label>Uhrzeit<input type=\"time\" name=\"calendar_notification_time\" value=\"{escape(notify_settings.calendar_notification_time)}\" required step=\"60\"></label>
-              <label>Tage vorher<input name=\"calendar_notification_days_before\" type=\"number\" inputmode=\"numeric\" min=\"0\" value=\"{notify_settings.calendar_notification_days_before}\"></label></div>
-              <div class=\"category-block\"><h3>Kategorien</h3><div class=\"option-list\">{event_type_checkboxes}</div></div>
+              <label>Tage vorher<input name=\"calendar_notification_days_before\" type=\"number\" inputmode=\"numeric\" min=\"0\" value=\"{notify_settings.calendar_notification_days_before}\"></label>
+              <div class=\"category-block\"><h3>Kategorien und Uhrzeiten</h3><div class=\"field-grid\">{event_type_checkboxes}</div></div>
             </div>
           </article>
         </div>

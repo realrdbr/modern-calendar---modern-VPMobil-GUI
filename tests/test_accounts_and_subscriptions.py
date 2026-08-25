@@ -11,6 +11,7 @@ from cryptography.fernet import Fernet
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from accounts import AccountStore, NotifySettings
+from account_page import render_login
 from ntfy.service import resolve_ntfy_internal_url
 from subscriptions import SubscriptionNotifier, subject_key, subject_options
 from vp_data import get_future_week_dates, get_future_week_plans, get_subject_catalog_plans
@@ -43,6 +44,35 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         session = self.store.get_session(token)
         self.assertEqual(session.user.username, "alice")
         self.assertEqual(session.csrf_token, csrf)
+
+    def test_login_is_two_step_and_pin_is_restricted_to_four_digits(self):
+        username_page = render_login()
+        self.assertIn('name="stage" value="username"', username_page)
+        self.assertNotIn('name="pin"', username_page)
+
+        pin_page = render_login(username="alice", pin_step=True)
+        self.assertIn('name="stage" value="pin"', pin_page)
+        self.assertIn('inputmode="numeric"', pin_page)
+        self.assertIn('pattern="[0-9]{4}"', pin_page)
+        self.assertIn('maxlength="4"', pin_page)
+
+    def test_calendar_categories_keep_individual_notification_times(self):
+        settings = NotifySettings(
+            calendar_notifications_enabled=True,
+            calendar_notification_types=("KLAUSUR", "HAUSAUFGABE"),
+            calendar_notification_times={"KLAUSUR": "07:30", "HAUSAUFGABE": "18:15"},
+        )
+        self.store.save_notify_settings(self.alice.id, settings)
+        loaded, exists = self.store.load_notify_settings(self.alice.id)
+        self.assertTrue(exists)
+        self.assertEqual(loaded.calendar_notification_times["KLAUSUR"], "07:30")
+        self.assertEqual(loaded.calendar_notification_times["HAUSAUFGABE"], "18:15")
+
+        event = SimpleNamespace(date="2026-08-27", event_type="HAUSAUFGABE")
+        self.assertEqual(
+            SubscriptionNotifier._calendar_notification_at(event, loaded),
+            datetime(2026, 8, 26, 18, 15),
+        )
 
     def test_local_ntfy_compose_hostname_resolves_to_loopback_port(self):
         with patch.dict("os.environ", {"NTFY_INTERNAL_URL": "http://ntfy", "NTFY_PORT": "8099"}, clear=False), patch(

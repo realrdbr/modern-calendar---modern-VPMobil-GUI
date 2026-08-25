@@ -1,15 +1,9 @@
-import { getCookie, setCookie } from './auth';
-
 export const API_URL = '';
 
 function getHeaders() {
-  const token = getCookie('cal11_active_token');
   const headers: Record<string, string> = {
     'Content-Type': 'application/json'
   };
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
   return headers;
 }
 
@@ -17,6 +11,16 @@ export async function checkUser(username?: string) {
   const url = username ? `${API_URL}/api/check?username=${encodeURIComponent(username)}` : `${API_URL}/api/check`;
   const res = await fetch(url, { headers: getHeaders() });
   return res.json();
+}
+
+export async function fetchCurrentSession() {
+  const res = await fetch(`${API_URL}/api/session`, { headers: getHeaders(), credentials: 'same-origin' });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function logoutSession() {
+  await fetch(`${API_URL}/api/logout`, { method: 'POST', headers: getHeaders(), credentials: 'same-origin' });
 }
 
 export async function registerUser(username: string, pin?: string) {
@@ -30,9 +34,6 @@ export async function registerUser(username: string, pin?: string) {
     throw new Error(error.error || 'Register failed');
   }
   const data = await res.json();
-  if (data.sessionToken) {
-    setCookie('cal11_active_token', data.sessionToken, 7);
-  }
   return data;
 }
 
@@ -47,9 +48,6 @@ export async function loginUser(username: string, pin?: string) {
     throw new Error(error.error || 'Login failed');
   }
   const data = await res.json();
-  if (data.sessionToken) {
-    setCookie('cal11_active_token', data.sessionToken, 7);
-  }
   return data;
 }
 
@@ -64,9 +62,6 @@ export async function loginWithSessionToken(username: string, sessionToken: stri
     throw new Error(error.error || 'Session ungültig');
   }
   const data = await res.json();
-  if (data.sessionToken) {
-    setCookie('cal11_active_token', data.sessionToken, 7);
-  }
   return data;
 }
 

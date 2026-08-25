@@ -372,9 +372,12 @@ class SubscriptionNotifier:
     @staticmethod
     def _calendar_notification_at(event: CalendarEvent, settings: NotifySettings) -> datetime:
         event_date = date.fromisoformat(event.date)
+        notification_time = (settings.calendar_notification_times or {}).get(
+            event.event_type, settings.calendar_notification_time
+        )
         return datetime.combine(
             event_date - timedelta(days=settings.calendar_notification_days_before),
-            datetime.strptime(settings.calendar_notification_time, "%H:%M").time(),
+            datetime.strptime(notification_time, "%H:%M").time(),
         )
 
     @staticmethod
@@ -464,7 +467,8 @@ class SubscriptionNotifier:
                     title, message = self._calendar_message(event)
                     sent += self._deliver(
                         user,
-                        f"calendar:{event.id}:{settings.calendar_notification_days_before}:{settings.calendar_notification_time}",
+                        f"calendar:{event.id}:{settings.calendar_notification_days_before}:"
+                        f"{(settings.calendar_notification_times or {}).get(event.event_type, settings.calendar_notification_time)}",
                         message,
                         title,
                         "high",

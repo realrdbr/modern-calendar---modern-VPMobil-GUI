@@ -84,7 +84,7 @@ def parse_cookie_header(cookie_header: str | None) -> dict[str, str]:
 
 def make_cookie(
     name: str, value: str, max_age: int = 60 * 60 * 24 * 180, *,
-    http_only: bool = False, secure: bool = False,
+    http_only: bool = False, secure: bool = False, domain: str | None = None,
 ) -> str:
     """Erzeugt einen Cookie-Header."""
 
@@ -97,6 +97,8 @@ def make_cookie(
         cookie[name]["httponly"] = True
     if secure:
         cookie[name]["secure"] = True
+    if domain:
+        cookie[name]["domain"] = domain
 
     return cookie.output(header="").strip()
 
@@ -233,14 +235,14 @@ def render_theme_script() -> str:
 
 COMMON_CSS = """
 :root {
-    --background: #f4f6f8;
+    --background: #ffffff;
     --surface: #ffffff;
-    --surface-muted: #f8fafc;
-    --primary: #2454d6;
-    --primary-dark: #1d43aa;
-    --text: #172033;
-    --muted: #667085;
-    --border: #d0d5dd;
+    --surface-muted: #f8f9fa;
+    --primary: #e91e63;
+    --primary-dark: #d81b60;
+    --text: #0f172a;
+    --muted: #64748b;
+    --border: #cbd5e1;
     --changed-bg: #fee2e2;
     --changed-border: #fca5a5;
     --cancelled-bg: #fef2f2;
@@ -266,12 +268,12 @@ html[data-theme="system"] {
 
 @media (prefers-color-scheme: dark) {
     html[data-theme="system"] {
-        --background: #111827;
-        --surface: #1f2937;
-        --surface-muted: #111827;
-        --text: #f3f4f6;
-        --muted: #9ca3af;
-        --border: #374151;
+        --background: #121212;
+        --surface: #1e1e1e;
+        --surface-muted: #181818;
+        --text: #eeeeee;
+        --muted: #aaaaaa;
+        --border: #333333;
         --error-bg: #3f1d1d;
         --error-text: #fecaca;
         --changed-bg: #4b1d1d;
@@ -293,12 +295,12 @@ html[data-theme="system"] {
 
 html[data-theme="dark"] {
     color-scheme: dark;
-    --background: #111827;
-    --surface: #1f2937;
-    --surface-muted: #111827;
-    --text: #f3f4f6;
-    --muted: #9ca3af;
-    --border: #374151;
+    --background: #121212;
+    --surface: #1e1e1e;
+    --surface-muted: #181818;
+    --text: #eeeeee;
+    --muted: #aaaaaa;
+    --border: #333333;
     --error-bg: #3f1d1d;
     --error-text: #fecaca;
     --changed-bg: #4b1d1d;
@@ -334,9 +336,9 @@ body {
 }
 
 main {
-    width: min(1180px, calc(100% - 32px));
+    width: min(1380px, calc(100% - 32px));
     margin: 0 auto;
-    padding: 32px 0;
+    padding: 20px 0 32px;
 }
 
 .topbar {
@@ -345,13 +347,14 @@ main {
     gap: 14px;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 22px;
+    margin-bottom: 16px;
 }
 
 .brand h1 {
     margin: 0 0 6px;
-    font-size: clamp(2rem, 4vw, 3rem);
-    line-height: 1.1;
+    font-size: clamp(1.25rem, 2vw, 1.65rem);
+    line-height: 1.2;
+    letter-spacing: -0.02em;
 }
 
 .brand p {
@@ -362,7 +365,7 @@ main {
 .nav {
     display: flex;
     flex-wrap: wrap;
-    gap: 10px;
+    gap: 6px;
     justify-content: flex-end;
 }
 
@@ -370,22 +373,23 @@ main {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-height: 42px;
-    padding: 0 16px;
-    border-radius: 10px;
+    min-height: 36px;
+    padding: 0 12px;
+    border-radius: 6px;
     background: var(--surface);
     border: 1px solid var(--border);
     color: var(--text);
     text-decoration: none;
-    font-weight: 800;
+    font-size: .875rem;
+    font-weight: 650;
 }
 
 .theme-toggle {
     display: inline-flex;
     align-items: center;
-    min-height: 42px;
+    min-height: 36px;
     padding: 4px;
-    border-radius: 10px;
+    border-radius: 6px;
     background: var(--surface);
     border: 1px solid var(--border);
     color: var(--text);
@@ -481,15 +485,14 @@ main {
 .panel {
     display: flex;
     flex-wrap: wrap;
-    gap: 14px;
+    gap: 12px;
     align-items: end;
     justify-content: space-between;
-    padding: 20px;
-    margin-bottom: 20px;
+    padding: 16px;
+    margin-bottom: 16px;
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 18px;
-    box-shadow: 0 12px 32px rgba(16, 24, 40, 0.08);
+    border-radius: 8px;
 }
 
 .form-row {
@@ -509,8 +512,8 @@ label {
 input,
 select,
 button {
-    height: 42px;
-    border-radius: 10px;
+    height: 38px;
+    border-radius: 6px;
     font: inherit;
 }
 
@@ -527,15 +530,15 @@ button:not(.theme-toggle),
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-height: 42px;
+    min-height: 38px;
     border: 0;
-    border-radius: 10px;
+    border-radius: 6px;
     padding: 0 18px;
     background: var(--primary);
     color: white;
     cursor: pointer;
     font: inherit;
-    font-weight: 800;
+    font-weight: 650;
     text-decoration: none;
 }
 
@@ -554,11 +557,11 @@ button:not(.theme-toggle):hover,
 }
 
 .message {
-    padding: 18px 20px;
-    margin-bottom: 18px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 16px;
+    border-radius: 8px;
 }
 
 .message h2 {
@@ -581,29 +584,28 @@ button:not(.theme-toggle):hover,
     padding: 20px;
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 16px;
+    border-radius: 8px;
     color: var(--muted);
 }
 
 .choice-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
-    gap: 12px;
+    gap: 8px;
 }
 
 .choice-card {
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 58px;
-    padding: 12px;
+    min-height: 44px;
+    padding: 8px 10px;
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 14px;
+    border-radius: 6px;
     color: var(--text);
     text-decoration: none;
-    font-weight: 900;
-    box-shadow: 0 6px 18px rgba(16, 24, 40, 0.06);
+    font-weight: 700;
 }
 
 .choice-card:hover {

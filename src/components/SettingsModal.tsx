@@ -41,6 +41,7 @@ export default function SettingsModal({
 
   // Design / Allgemein State
   const [darkMode, setDarkMode] = useState(preferences.darkMode);
+  const [themeMode, setThemeMode] = useState<'system' | 'light' | 'dark'>(preferences.themeMode || 'system');
   const [accentColor, setAccentColor] = useState(preferences.accentColor);
   const [colorKlausur, setColorKlausur] = useState(preferences.colorKlausur || '#e65176');
   const [colorHausaufgabe, setColorHausaufgabe] = useState(preferences.colorHausaufgabe || '#59b3cb');
@@ -92,6 +93,7 @@ export default function SettingsModal({
     onSave(
       {
         darkMode,
+        themeMode,
         accentColor,
         colorKlausur: categoryColors['KLAUSUR'] || colorKlausur,
         colorHausaufgabe: categoryColors['HAUSAUFGABE'] || colorHausaufgabe,
@@ -126,7 +128,9 @@ export default function SettingsModal({
   const gks = allCourses.filter((c) => c.type === 'GK');
   const ags = allCourses.filter((c) => c.type === 'AG');
 
-  const isDark = preferences.darkMode;
+  const isDark = themeMode === 'system'
+    ? (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+    : themeMode === 'dark';
   const theme = {
     bgModal: isDark ? 'bg-[#1e1e1e]' : 'bg-white',
     bgSidebar: isDark ? 'bg-[#181818]' : 'bg-[#fafafa]',
@@ -158,7 +162,7 @@ export default function SettingsModal({
               key={course.id}
               type="button"
               onClick={() => toggleCourse(course.id)}
-              className={`text-left p-2.5 rounded-xl border transition-all cursor-pointer ${
+              className={`text-left p-2.5 rounded-md border transition-colors cursor-pointer ${
                 isSelected
                   ? 'border-opacity-100 shadow-xs'
                   : `${isDark ? 'bg-[#222] border-[#383838] hover:border-[#555]' : 'bg-white border-[#e5e7eb] hover:border-[#cbd5e1]'}`
@@ -188,9 +192,9 @@ export default function SettingsModal({
   );
 
   return (
-    <div className={`fixed inset-0 z-50 flex items-center justify-center ${theme.overlay} backdrop-blur-xs p-3 sm:p-4`}>
+    <div className={`fixed inset-0 z-50 flex items-center justify-center ${theme.overlay} p-3 sm:p-4`}>
       <div
-        className={`${theme.bgModal} shadow-2xl w-full max-w-[880px] max-h-[92vh] border ${theme.border} rounded-2xl flex flex-col md:flex-row overflow-hidden`}
+        className={`${theme.bgModal} shadow-lg w-full max-w-[880px] max-h-[92vh] border ${theme.border} rounded-lg flex flex-col md:flex-row overflow-hidden`}
       >
         {/* MOBILE TOP HEADER */}
         <div className={`flex items-center justify-between px-4 py-3.5 border-b ${theme.border} md:hidden ${theme.bgSidebar}`}>
@@ -328,7 +332,7 @@ export default function SettingsModal({
                   </div>
 
                   <div
-                    className={`flex flex-col sm:flex-row sm:items-center justify-between p-4 ${theme.bgInput} rounded-2xl border ${theme.borderInput} gap-3`}
+                    className={`flex flex-col sm:flex-row sm:items-center justify-between p-4 ${theme.bgInput} rounded-md border ${theme.borderInput} gap-3`}
                   >
                     <div className={`text-sm font-bold ${theme.textMain}`}>Erscheinungsbild</div>
                     
@@ -339,25 +343,30 @@ export default function SettingsModal({
                     >
                       <button
                         type="button"
-                        onClick={() => setDarkMode(false)}
+                        onClick={() => { setThemeMode('system'); setDarkMode(window.matchMedia('(prefers-color-scheme: dark)').matches); }}
                         className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                          !darkMode
+                          themeMode === 'system'
                             ? 'bg-white text-gray-900 shadow-xs'
                             : `${theme.textMuted} hover:${theme.textMain}`
                         }`}
                       >
-                        Hell
+                        System
                       </button>
                       <button
                         type="button"
-                        onClick={() => setDarkMode(true)}
+                        onClick={() => { setThemeMode('light'); setDarkMode(false); }}
+                        className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${themeMode === 'light' ? 'bg-white text-gray-900 shadow-xs' : `${theme.textMuted} hover:${theme.textMain}`}`}
+                      >Hell</button>
+                      <button
+                        type="button"
+                        onClick={() => { setThemeMode('dark'); setDarkMode(true); }}
                         className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                          darkMode
+                          themeMode === 'dark'
                             ? 'text-white shadow-xs'
                             : `${theme.textMuted} hover:${theme.textMain}`
                         }`}
                         style={{
-                          backgroundColor: darkMode ? accentColor : 'transparent'
+                          backgroundColor: themeMode === 'dark' ? accentColor : 'transparent'
                         }}
                       >
                         Dunkel

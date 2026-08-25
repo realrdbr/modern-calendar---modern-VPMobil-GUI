@@ -54,18 +54,31 @@ export function verifyPin(inputPin: string, storedPin: string | undefined | null
   return false;
 }
 
-// Active dynamic session tokens: token -> { username: string, expiresAt: number }
 const activeSessions = new Map<string, { username: string; expiresAt: number }>();
 
-export function generateSessionToken(username: string): string {
+export async function generateSessionToken(username: string): Promise<string> {
   const token = crypto.randomBytes(32).toString('hex');
   const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000; // 30 Tage Gültigkeit
+  if (isConnected && pool) {
+    await pool.query(
+      `INSERT INTO app_sessions (token_hash, username, csrf_token, expires_at, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      [crypto.createHash('sha256').update(token).digest('hex'), username.toLowerCase(), crypto.randomBytes(32).toString('hex'), new Date(expiresAt), new Date()]
+    );
+  }
   activeSessions.set(token, { username: username.toLowerCase(), expiresAt });
   return token;
 }
 
-export function getSessionUsername(sessionToken: string): string | null {
+export async function getSessionUsername(sessionToken: string): Promise<string | null> {
   if (!sessionToken) return null;
+  if (isConnected && pool) {
+    const hash = crypto.createHash('sha256').update(sessionToken).digest('hex');
+    const [rows]: any = await pool.query(
+      'SELECT username FROM app_sessions WHERE token_hash = ? AND expires_at > NOW()', [hash]
+    );
+    if (rows.length) return String(rows[0].username).toLowerCase();
+  }
   const session = activeSessions.get(sessionToken);
   if (!session) return null;
   if (Date.now() > session.expiresAt) {
@@ -75,15 +88,23 @@ export function getSessionUsername(sessionToken: string): string | null {
   return session.username;
 }
 
-export function verifySessionToken(username: string, sessionToken: string): boolean {
-  const sessionUser = getSessionUsername(sessionToken);
+export async function verifySessionToken(username: string, sessionToken: string): Promise<boolean> {
+  const sessionUser = await getSessionUsername(sessionToken);
   if (!sessionUser) return false;
   return sessionUser === username.toLowerCase();
 }
 
+export async function deleteSessionToken(sessionToken: string): Promise<void> {
+  activeSessions.delete(sessionToken);
+  if (isConnected && pool && sessionToken) {
+    await pool.query('DELETE FROM app_sessions WHERE token_hash = ?', [crypto.createHash('sha256').update(sessionToken).digest('hex')]);
+  }
+}
+
 export const DEFAULT_PREFERENCES = {
   darkMode: false,
-  accentColor: '#e91e63',
+  themeMode: 'system',
+  accentColor: '#0f766e',
   colorKlausur: '#e65176',
   colorHausaufgabe: '#59b3cb',
   colorSonstiges: '#3d60c7',
@@ -172,6 +193,19 @@ export async function initDatabase() {
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
+
+      await conn.query(`
+        CREATE TABLE IF NOT EXISTS app_sessions (
+          token_hash CHAR(64) PRIMARY KEY,
+          username VARCHAR(64) NOT NULL,
+          csrf_token VARCHAR(255) NOT NULL,
+          expires_at DATETIME(3) NOT NULL,
+          created_at DATETIME(3) NOT NULL,
+          INDEX idx_app_sessions_user (username),
+          INDEX idx_app_sessions_expiry (expires_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+      `);
+      await conn.query('DELETE FROM app_sessions WHERE expires_at <= NOW()');
 
       // Ensure pin column in existing tables is widened to VARCHAR(255)
       try {
@@ -334,12 +368,18 @@ export async function dbGetUser(username: string) {
     const row = rows[0];
     const rawCourses = typeof row.courses === 'string' ? JSON.parse(row.courses || '[]') : (row.courses || []);
     const normalizedCourses = Array.from(new Set(rawCourses.map((c: string) => c === 'Chor' ? 'CHO' : c)));
+    const parsedPreferences = typeof row.preferences === 'string' ? JSON.parse(row.preferences || '{}') : (row.preferences || {});
+    const themeMode = parsedPreferences.themeMode || (
+      Object.prototype.hasOwnProperty.call(parsedPreferences, 'darkMode')
+        ? (parsedPreferences.darkMode ? 'dark' : 'light')
+        : 'system'
+    );
     return {
       username: row.username,
       courses: normalizedCourses,
       pin: row.pin || undefined,
       status: row.status || 'ACTIVE',
-      preferences: typeof row.preferences === 'string' ? { ...DEFAULT_PREFERENCES, ...JSON.parse(row.preferences || '{}') } : { ...DEFAULT_PREFERENCES, ...(row.preferences || {}) }
+      preferences: { ...DEFAULT_PREFERENCES, ...parsedPreferences, themeMode }
     };
   }
   return null;
@@ -385,6 +425,31 @@ export async function dbSaveUser(username: string, data: { courses?: string[]; p
        ON DUPLICATE KEY UPDATE courses = VALUES(courses), pin = VALUES(pin), preferences = VALUES(preferences), status = VALUES(status)`,
       [uname, JSON.stringify(courses), hashedPin, JSON.stringify(preferences), status]
     );
+    if (data.courses !== undefined) {
+      const [vpRows]: any = await pool.query('SELECT id, class_name FROM vp_users WHERE LOWER(username) = LOWER(?)', [uname]);
+      if (vpRows.length) {
+        const vpUser = vpRows[0];
+        const connection = await pool.getConnection();
+        try {
+          await connection.beginTransaction();
+          await connection.query('DELETE FROM vp_user_selected_classes WHERE user_id = ?', [vpUser.id]);
+          await connection.query('INSERT INTO vp_user_selected_classes(user_id, class_name) VALUES (?, ?)', [vpUser.id, vpUser.class_name]);
+          await connection.query('DELETE FROM vp_user_subject_selections WHERE user_id = ?', [vpUser.id]);
+          for (const courseId of courses) {
+            await connection.query(
+              'INSERT INTO vp_user_subject_selections(user_id, class_name, subject_key) VALUES (?, ?, ?)',
+              [vpUser.id, vpUser.class_name, `subject:${courseId}`]
+            );
+          }
+          await connection.commit();
+        } catch (error) {
+          await connection.rollback();
+          throw error;
+        } finally {
+          connection.release();
+        }
+      }
+    }
     return { username: uname, courses, pin: hashedPin || undefined, preferences, status };
   }
 

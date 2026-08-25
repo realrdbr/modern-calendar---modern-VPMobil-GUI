@@ -32,7 +32,19 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
   const [isAdmin, setIsAdmin] = useState(false);
 
   const { preferences } = user;
-  const isDark = preferences.darkMode;
+  const [systemPrefersDark, setSystemPrefersDark] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches
+  );
+  const isDark = preferences.themeMode === 'system' || !preferences.themeMode
+    ? systemPrefersDark
+    : preferences.themeMode === 'dark';
+
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const update = () => setSystemPrefersDark(media.matches);
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
 
   // Reactively filter events based on current user's enrolled courses
   const events = useMemo(() => {
@@ -55,18 +67,18 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
   
   // Theming variables
   const theme = {
-    bgApp: isDark ? 'bg-[#121212]' : 'bg-white',
-    bgSidebar: isDark ? 'bg-[#1e1e1e]' : 'bg-[#f8f9fa]',
-    bgToolbar: isDark ? 'bg-[#1e1e1e]' : 'bg-[#f8f9fa]',
-    bgGridHeader: isDark ? 'bg-[#1e1e1e]' : 'bg-white',
-    bgCell: isDark ? 'bg-[#121212]' : 'bg-white',
-    bgCellAlt: isDark ? 'bg-[#1a1a1a]' : 'bg-[#f5f5f5]',
-    bgCellWeekend: isDark ? 'bg-[#161616]' : 'bg-[#fafafa]',
-    bgCellToday: isDark ? 'bg-[#2a2a1a]' : 'bg-[#fffbe6]',
-    textMain: isDark ? 'text-[#eee]' : 'text-[#333]',
-    textMuted: isDark ? 'text-[#aaa]' : 'text-[#666]',
-    textFaint: isDark ? 'text-[#777]' : 'text-[#888]',
-    border: isDark ? 'border-[#333]' : 'border-[#ccc]',
+    bgApp: isDark ? 'bg-[#09090b]' : 'bg-[#ffffff]',
+    bgSidebar: isDark ? 'bg-[#111113]' : 'bg-[#f7f7f8]',
+    bgToolbar: isDark ? 'bg-[#111113]' : 'bg-[#fafafa]',
+    bgGridHeader: isDark ? 'bg-[#18181b]' : 'bg-[#fafafa]',
+    bgCell: isDark ? 'bg-[#09090b]' : 'bg-white',
+    bgCellAlt: isDark ? 'bg-[#111113]' : 'bg-[#f7f7f8]',
+    bgCellWeekend: isDark ? 'bg-[#0d0d0f]' : 'bg-[#fafafa]',
+    bgCellToday: isDark ? 'bg-[#102522]' : 'bg-[#f0fdfa]',
+    textMain: isDark ? 'text-[#fafafa]' : 'text-[#18181b]',
+    textMuted: isDark ? 'text-[#a1a1aa]' : 'text-[#52525b]',
+    textFaint: isDark ? 'text-[#71717a]' : 'text-[#71717a]',
+    border: isDark ? 'border-[#27272a]' : 'border-[#e4e4e7]',
     accent: preferences.accentColor
   };
 
@@ -266,10 +278,10 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
       )}
 
       {/* Left Sidebar */}
-      <div className={`fixed inset-y-0 left-0 z-50 transform ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} md:relative md:translate-x-0 transition-transform duration-200 w-64 md:w-56 border-r ${theme.border} flex flex-col shrink-0 ${theme.bgSidebar}`}>
-        <div className={`p-4 border-b ${theme.border} ${theme.bgApp} flex justify-between items-center`}>
+      <aside className={`fixed inset-y-0 left-0 z-50 transform ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} md:relative md:translate-x-0 transition-transform duration-200 w-64 md:w-60 border-r ${theme.border} flex flex-col shrink-0 ${theme.bgSidebar}`}>
+        <div className={`px-4 py-3 border-b ${theme.border} ${theme.bgApp} flex justify-between items-center`}>
           <div>
-            <h1 className="font-bold text-lg mb-1">Cal 11</h1>
+            <h1 className="font-semibold text-base tracking-tight mb-0.5">Jahrgangskalender</h1>
             <div className="text-sm font-medium flex items-center gap-1.5 flex-wrap">
               <span>{user.username}</span>
               {isReadOnly && (
@@ -288,11 +300,11 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
           </button>
         </div>
         
-        <div className="p-4 flex-1 flex flex-col">
+        <div className="p-3 flex-1 flex flex-col">
           <div className={`font-bold text-xs uppercase ${theme.textMuted} mb-2 flex justify-between`}>
             <span>Legende</span>
           </div>
-          <div className="space-y-1">
+          <div className="space-y-0.5">
             {categories.length > 0 ? (
               categories.map(cat => (
                 <div key={cat.id} className="flex items-center text-sm">
@@ -326,7 +338,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
             )}
           </div>
           
-          <div className="mt-auto pt-4 flex flex-col items-start border-t border-[#eee] border-opacity-10 gap-3">
+          <div className={`mt-auto pt-3 flex flex-col items-stretch border-t ${theme.border} gap-1`}>
             <a
               href={VERTRETUNGSPLAN_URL}
               className="text-sm font-semibold hover:opacity-80 transition-opacity"
@@ -372,12 +384,12 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
             )}
           </div>
         </div>
-      </div>
+      </aside>
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Header toolbar */}
-        <header className={`flex items-center px-4 py-2 border-b ${theme.border} ${theme.bgToolbar} gap-2 md:gap-4 flex-wrap`}>
+        <header className={`flex items-center px-3 py-2 border-b ${theme.border} ${theme.bgToolbar} gap-2 md:gap-3 flex-wrap`}>
           <button 
             className="md:hidden p-1 mr-1 rounded-lg hover:opacity-75"
             onClick={() => setIsMobileMenuOpen(true)}
@@ -413,7 +425,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
             {!isReadOnly && (
               <button
                 onClick={() => openNewEventModal()}
-                className="text-white px-4 py-1.5 text-sm font-semibold rounded"
+                className="text-white px-3 py-1.5 text-sm font-semibold rounded-md border border-black/10"
                 style={{ backgroundColor: theme.accent }}
               >
                 + Neu
@@ -428,7 +440,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
             /* --- HOURLY WEEK VIEW --- */
             <div className="flex-1 overflow-auto flex flex-col min-w-[700px]">
               {/* Week View Header */}
-              <div className={`grid grid-cols-[60px_1fr_1fr_1fr_1fr_1fr_1fr_1fr] border-b ${theme.border} ${theme.bgGridHeader} sticky top-0 z-20 shadow-sm`}>
+              <div className={`grid grid-cols-[60px_1fr_1fr_1fr_1fr_1fr_1fr_1fr] border-b ${theme.border} ${theme.bgGridHeader} sticky top-0 z-20`}>
                 <div className={`p-2 border-r ${theme.border} text-center font-bold text-xs ${theme.textFaint} flex items-center justify-center`}>
                   Uhrzeit
                 </div>
@@ -484,7 +496,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
                         <div
                           key={e.id}
                           onClick={(ev) => openEditEventModal(e, ev)}
-                          className="rounded px-1.5 py-1 text-xs cursor-pointer shadow-sm flex flex-col justify-center leading-tight transition-transform hover:scale-[1.02]"
+                          className="rounded-sm border border-black/10 px-1.5 py-1 text-xs cursor-pointer flex flex-col justify-center leading-tight"
                           style={getEventTypeStyle(e.type)}
                           title={`${e.title} (${getCourseName(e.courseId)})`}
                         >
@@ -526,7 +538,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
                               <div
                                 key={e.id}
                                 onClick={(ev) => openEditEventModal(e, ev)}
-                                className="rounded p-1.5 text-xs cursor-pointer shadow flex flex-col justify-center leading-tight transition-transform hover:scale-[1.02] border border-black/10"
+                                className="rounded-sm p-1.5 text-xs cursor-pointer flex flex-col justify-center leading-tight border border-black/10"
                                 style={getEventTypeStyle(e.type)}
                                 title={`${e.title} (${getCourseName(e.courseId)}) - ${e.startTime}${e.endTime ? ` bis ${e.endTime}` : ''}`}
                               >
@@ -676,7 +688,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
                         {slotted.map(se => (
                           <div
                             key={se.event.id}
-                            className="pointer-events-auto mx-1 rounded-sm px-1.5 py-1 text-xs cursor-pointer shadow-sm flex flex-col justify-center leading-tight overflow-hidden"
+                            className="pointer-events-auto mx-1 rounded-sm border border-black/10 px-1.5 py-1 text-xs cursor-pointer flex flex-col justify-center leading-tight overflow-hidden"
                             style={{
                               ...getEventTypeStyle(se.event.type),
                               gridColumnStart: se.colStart,
@@ -722,7 +734,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
           allCourses={allCourses}
           categories={categories}
           username={user.username}
-          preferences={preferences}
+          preferences={{ ...preferences, darkMode: isDark }}
           isReadOnly={isReadOnly}
           isAdmin={isAdmin}
         />
@@ -732,7 +744,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
         <SettingsModal
           isOpen={isSettingsOpen}
           onClose={() => setIsSettingsOpen(false)}
-          preferences={preferences}
+          preferences={{ ...preferences, darkMode: isDark }}
           hasPin={user.hasPin}
           initialCourses={user.courses}
           allCourses={allCourses}
@@ -752,7 +764,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
             loadCategories();
           }}
           username={user.username}
-          preferences={preferences}
+          preferences={{ ...preferences, darkMode: isDark }}
         />
       )}
     </div>

@@ -40,25 +40,13 @@ export function getStoredSession(username: string): StoredSession | null {
     localStorage.removeItem('cal11_session_token');
   } catch (e) {}
 
-  const raw = getCookie(key);
-  if (!raw) return null;
-
-  try {
-    const session: StoredSession = JSON.parse(raw);
-    if (Date.now() - session.timestamp > SESSION_DAYS * 24 * 60 * 60 * 1000) {
-      deleteCookie(key);
-      deleteCookie('cal11_active_token');
-      return null;
-    }
-    setCookie('cal11_active_token', session.sessionToken, SESSION_DAYS);
-    return session;
-  } catch (e) {
-    return null;
-  }
+  deleteCookie(key);
+  deleteCookie('cal11_active_token');
+  return null;
 }
 
 export function saveStoredSession(username: string, sessionToken?: string) {
-  if (!username || !sessionToken) return;
+  if (!username) return;
   const key = `cal11_session_${username.toLowerCase()}`;
   
   try {
@@ -66,14 +54,9 @@ export function saveStoredSession(username: string, sessionToken?: string) {
     localStorage.removeItem('cal11_session_token');
   } catch (e) {}
 
-  const session: StoredSession = {
-    username: username.toLowerCase(),
-    sessionToken,
-    timestamp: Date.now()
-  };
-  
-  setCookie(key, JSON.stringify(session), SESSION_DAYS);
-  setCookie('cal11_active_token', sessionToken, SESSION_DAYS);
+  // Sitzungen werden ausschließlich als HttpOnly-Cookie vom Server verwaltet.
+  deleteCookie(key);
+  deleteCookie('cal11_active_token');
 }
 
 export function clearStoredSession(username: string) {
