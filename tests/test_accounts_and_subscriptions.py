@@ -77,6 +77,25 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         })
         self.assertEqual(store.get_login_identity("gustavd"), ("gustavd", True))
 
+    def test_shared_calendar_pin_rejects_matching_stale_vp_pin(self):
+        store = object.__new__(AccountStore)
+        store._backend = "mysql"
+        store._connection = lambda: nullcontext(object())
+        store._fetchall = Mock(return_value=[])
+        store._fetchone = Mock(return_value={
+            "id": 7, "username": "gustavd", "class_name": "11", "active": 1,
+            "ntfy_topic": "vp-gustavd", "ntfy_username": "vp_gustavd",
+            "ntfy_password_encrypted": b"unused", "pin_hash": "old-vp-hash",
+            "calendar_username": "gustavd", "calendar_pin": "1234",
+            "calendar_status": "ACTIVE",
+        })
+        store._run = Mock()
+        store._hasher = Mock()
+        store._hasher.verify.return_value = True
+
+        self.assertIsNone(store.authenticate("gustavd", "9999", "127.0.0.1"))
+        store._hasher.verify.assert_not_called()
+
     def test_calendar_categories_keep_individual_notification_times(self):
         settings = NotifySettings(
             calendar_notifications_enabled=True,
@@ -519,6 +538,33 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         )
         self.assertEqual(reopened.load_notify_settings(self.alice.id)[0].calendar_notification_time, "15:30")
 
+    def test_legacy_subject_table_is_migrated_and_removed(self):
+        database = Path(self.temp.name) / "accounts.sqlite"
+        with self.store._connection() as connection:
+            connection.execute(
+                """CREATE TABLE user_subjects (
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    subject_key TEXT NOT NULL,
+                    PRIMARY KEY (user_id, subject_key)
+                )""",
+            )
+            connection.execute(
+                "INSERT INTO user_subjects(user_id, subject_key) VALUES (?, ?)",
+                (self.alice.id, subject_key("Mathe")),
+            )
+
+        reopened = AccountStore(database, self.encryption_key)
+
+        self.assertEqual(
+            reopened.get_subject_selections(self.alice.id),
+            ({"11": {subject_key("Mathe")}}, True),
+        )
+        with reopened._connection() as connection:
+            table = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'user_subjects'",
+            ).fetchone()
+        self.assertIsNone(table)
+
     def test_delete_user_removes_credentials_and_cascades_private_data(self):
         self.store.replace_subjects(self.alice.id, {subject_key("Mathe")})
         self.store.replace_selected_classes(self.alice.id, {"11", "12"})
@@ -530,7 +576,7 @@ class AccountAndSubscriptionTests(unittest.TestCase):
 
         self.assertIsNone(self.store.authenticate("alice", "1234", "127.0.0.1"))
         with self.store._connection() as connection:
-            for table in ("users", "user_subjects", "user_selected_classes", "user_subject_selections", "user_notification_settings", "sessions", "notification_deliveries"):
+            for table in ("users", "user_selected_classes", "user_subject_selections", "user_notification_settings", "sessions", "notification_deliveries"):
                 count = connection.execute(f"SELECT COUNT(*) FROM {table} WHERE user_id = ?", (self.alice.id,)).fetchone()[0] if table != "users" else connection.execute("SELECT COUNT(*) FROM users WHERE id = ?", (self.alice.id,)).fetchone()[0]
                 self.assertEqual(count, 0, table)
 

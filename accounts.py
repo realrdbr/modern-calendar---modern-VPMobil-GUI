@@ -306,11 +306,6 @@ class AccountStore:
                         ntfy_password_encrypted BLOB NOT NULL,
                         created_at TEXT NOT NULL
                     );
-                    CREATE TABLE IF NOT EXISTS user_subjects (
-                        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                        subject_key TEXT NOT NULL,
-                        PRIMARY KEY (user_id, subject_key)
-                    );
                     CREATE TABLE IF NOT EXISTS user_selected_classes (
                         user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                         class_name TEXT NOT NULL,
@@ -375,6 +370,19 @@ class AccountStore:
                     );
                     """
                 )
+                legacy_subjects_exists = self._fetchone(
+                    connection,
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'user_subjects'",
+                )
+                if legacy_subjects_exists:
+                    self._run(
+                        connection,
+                        """INSERT OR IGNORE INTO user_subject_selections(user_id, class_name, subject_key)
+                        SELECT legacy.user_id, users.class_name, legacy.subject_key
+                        FROM user_subjects legacy
+                        JOIN users ON users.id = legacy.user_id""",
+                    )
+                    self._run(connection, "DROP TABLE user_subjects")
                 return
 
             statements = [
@@ -389,16 +397,6 @@ class AccountStore:
                     ntfy_username VARCHAR(255) NOT NULL UNIQUE,
                     ntfy_password_encrypted LONGBLOB NOT NULL,
                     created_at VARCHAR(40) NOT NULL
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS vp_user_subjects (
-                    user_id BIGINT NOT NULL,
-                    subject_key VARCHAR(160) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
-                    PRIMARY KEY (user_id, subject_key),
-                    CONSTRAINT fk_vp_user_subjects_user
-                        FOREIGN KEY (user_id) REFERENCES vp_users(id)
-                        ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """,
                 """
@@ -427,18 +425,6 @@ class AccountStore:
                     user_id BIGINT PRIMARY KEY,
                     settings_json LONGTEXT NOT NULL,
                     CONSTRAINT fk_vp_user_notification_settings_user
-                        FOREIGN KEY (user_id) REFERENCES vp_users(id)
-                        ON DELETE CASCADE
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS vp_sessions (
-                    token_hash CHAR(64) PRIMARY KEY,
-                    user_id BIGINT NOT NULL,
-                    csrf_token VARCHAR(255) NOT NULL,
-                    expires_at VARCHAR(40) NOT NULL,
-                    created_at VARCHAR(40) NOT NULL,
-                    CONSTRAINT fk_vp_sessions_user
                         FOREIGN KEY (user_id) REFERENCES vp_users(id)
                         ON DELETE CASCADE
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -485,16 +471,54 @@ class AccountStore:
                 self._run(connection, "ALTER TABLE vp_users ADD COLUMN pin_hash VARCHAR(255) NOT NULL DEFAULT ''")
             except Exception:
                 pass
+            # `users.pin` is the sole credential source for shared accounts.  The
+            # legacy column remains in place so older schemas/binaries still run
+            # and VP-only accounts can be migrated on their next successful login.
             try:
                 self._run(
                     connection,
-                    """
-                    ALTER TABLE vp_user_subjects
-                    MODIFY subject_key VARCHAR(160) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL
-                    """,
+                    """UPDATE vp_users vp
+                    INNER JOIN users u ON LOWER(u.username) = LOWER(vp.username)
+                    SET vp.pin_hash = ''
+                    WHERE vp.pin_hash <> ''""",
                 )
             except Exception:
+                # The calendar container may create `users` moments later.
+                # Authentication still performs the same migration lazily.
                 pass
+            legacy_subjects_exists = self._fetchone(connection, "SHOW TABLES LIKE 'vp_user_subjects'")
+            if legacy_subjects_exists:
+                self._run(
+                    connection,
+                    """INSERT IGNORE INTO vp_user_subject_selections(user_id, class_name, subject_key)
+                    SELECT legacy.user_id, users.class_name, legacy.subject_key
+                    FROM vp_user_subjects legacy
+                    JOIN vp_users users ON users.id = legacy.user_id""",
+                )
+                self._run(connection, "DROP TABLE vp_user_subjects")
+
+            legacy_sessions_exists = self._fetchone(connection, "SHOW TABLES LIKE 'vp_sessions'")
+            if legacy_sessions_exists:
+                legacy_sessions = self._fetchall(
+                    connection,
+                    """SELECT sessions.token_hash, users.username, sessions.csrf_token,
+                              sessions.expires_at, sessions.created_at
+                    FROM vp_sessions sessions
+                    JOIN vp_users users ON users.id = sessions.user_id""",
+                )
+                for session in legacy_sessions:
+                    self._run(
+                        connection,
+                        """INSERT IGNORE INTO app_sessions
+                        (token_hash, username, csrf_token, expires_at, created_at)
+                        VALUES (?, ?, ?, ?, ?)""",
+                        (
+                            session["token_hash"], session["username"].lower(), session["csrf_token"],
+                            from_db_time(session["expires_at"]).replace(tzinfo=None),
+                            from_db_time(session["created_at"]).replace(tzinfo=None),
+                        ),
+                    )
+                self._run(connection, "DROP TABLE vp_sessions")
 
     def _decrypt(self, value: bytes) -> str:
         try:
@@ -504,9 +528,6 @@ class AccountStore:
 
     def _users_table(self) -> str:
         return "users" if self._backend == "sqlite" else "vp_users"
-
-    def _legacy_subjects_table(self) -> str:
-        return "user_subjects" if self._backend == "sqlite" else "vp_user_subjects"
 
     def _selected_classes_table(self) -> str:
         return "user_selected_classes" if self._backend == "sqlite" else "vp_user_selected_classes"
@@ -648,7 +669,7 @@ class AccountStore:
                 VALUES (?, ?, ?, 1, ?, ?, ?, ?)""",
                 (
                     resolved_username,
-                    self._hasher.hash(pin) if pin else "",
+                    "",
                     class_name,
                     ntfy_topic,
                     ntfy_username,
@@ -662,7 +683,8 @@ class AccountStore:
         return self._fetchone(
             connection,
             """
-            SELECT vp.*, u.pin AS calendar_pin, u.status AS calendar_status
+            SELECT vp.*, u.pin AS calendar_pin, u.status AS calendar_status,
+                   u.username AS calendar_username
             FROM vp_users vp
             LEFT JOIN users u ON LOWER(u.username) = LOWER(vp.username)
             WHERE LOWER(vp.username) = LOWER(?)
@@ -747,7 +769,7 @@ class AccountStore:
                     VALUES (?, ?, ?, 1, ?, ?, ?, ?)""",
                     (
                         username,
-                        self._hasher.hash(pin),
+                        "",
                         class_name.strip(),
                         ntfy_topic,
                         ntfy_username,
@@ -810,7 +832,6 @@ class AccountStore:
                     (username, "[]", _hash_shared_pin(pin), json.dumps({}), "ACTIVE"),
                 )
             else:
-                self._run(connection, "UPDATE vp_users SET pin_hash = ? WHERE LOWER(username) = LOWER(?)", (self._hasher.hash(pin), username))
                 self._run(
                     connection,
                     """
@@ -820,6 +841,7 @@ class AccountStore:
                     """,
                     (username.lower(), "[]", _hash_shared_pin(pin), json.dumps({}), "ACTIVE"),
                 )
+                self._run(connection, "UPDATE vp_users SET pin_hash = '' WHERE LOWER(username) = LOWER(?)", (username,))
                 cursor = self._execute(connection, "SELECT COUNT(*) AS c FROM vp_users WHERE LOWER(username) = LOWER(?)", (username,))
                 changed = int(cursor.fetchone()["c"])
             if self._backend == "mysql":
@@ -841,7 +863,7 @@ class AccountStore:
                 cursor = self._execute(connection, "UPDATE vp_users SET active = ? WHERE LOWER(username) = LOWER(?)", (int(active), username))
                 rowcount = cursor.rowcount
                 if rowcount == 1 and not active:
-                    self._run(connection, "DELETE FROM vp_sessions WHERE user_id IN (SELECT id FROM vp_users WHERE LOWER(username) = LOWER(?))", (username,))
+                    self._run(connection, "DELETE FROM app_sessions WHERE LOWER(username) = LOWER(?)", (username,))
             if self._backend == "mysql":
                 cursor.close()
             if rowcount != 1:
@@ -889,6 +911,7 @@ class AccountStore:
                     connection,
                     """
                     SELECT vp.*, u.pin AS calendar_pin, u.status AS calendar_status
+                        , u.username AS calendar_username
                     FROM vp_users vp
                     LEFT JOIN users u ON LOWER(u.username) = LOWER(vp.username)
                     WHERE LOWER(vp.username) = LOWER(?)
@@ -898,15 +921,21 @@ class AccountStore:
                 if user_row is None:
                     user_row = self._bootstrap_vp_user_from_calendar(connection, username, pin)
                 if user_row is not None and bool(user_row["active"]) and (user_row.get("calendar_status") or "ACTIVE") != "BLOCKED":
-                    calendar_valid = not user_row.get("calendar_pin") or _verify_shared_pin(pin, user_row.get("calendar_pin"))
-                    vp_valid = False
-                    try:
-                        vp_valid = self._hasher.verify(user_row.get("pin_hash", ""), pin)
-                    except (VerificationError, InvalidHashError):
-                        vp_valid = False
-                    valid = calendar_valid or vp_valid
-                    if valid and not calendar_valid:
+                    if user_row.get("calendar_username") is not None:
+                        calendar_pin = user_row.get("calendar_pin")
+                        valid = not calendar_pin or _verify_shared_pin(pin, calendar_pin)
+                    else:
+                        try:
+                            valid = self._hasher.verify(user_row.get("pin_hash", ""), pin)
+                        except (VerificationError, InvalidHashError):
+                            valid = False
+                    if valid and user_row.get("calendar_username") is None:
                         self._ensure_shared_calendar_user(connection, username, pin)
+                        self._run(
+                            connection,
+                            "UPDATE vp_users SET pin_hash = '' WHERE id = ?",
+                            (user_row["id"],),
+                        )
                 self._run(
                     connection,
                     "INSERT INTO vp_login_attempts(username, ip_address, attempted_at, successful) VALUES (?, ?, ?, ?)",
@@ -926,14 +955,14 @@ class AccountStore:
     def create_session(self, user_id: int) -> tuple[str, str]:
         token = secrets.token_urlsafe(32)
         csrf_token = secrets.token_urlsafe(32)
-        table = "sessions" if self._backend == "sqlite" else "vp_sessions"
         with self._connection() as connection:
-            self._run(
-                connection,
-                f"INSERT INTO {table}(token_hash, user_id, csrf_token, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
-                (self._token_hash(token), user_id, csrf_token, to_db_time(utcnow() + SESSION_LIFETIME), to_db_time(utcnow())),
-            )
-            if self._backend == "mysql":
+            if self._backend == "sqlite":
+                self._run(
+                    connection,
+                    "INSERT INTO sessions(token_hash, user_id, csrf_token, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (self._token_hash(token), user_id, csrf_token, to_db_time(utcnow() + SESSION_LIFETIME), to_db_time(utcnow())),
+                )
+            else:
                 user_row = self._get_user_row_by_id(connection, user_id)
                 self._run(
                     connection,
@@ -958,31 +987,21 @@ class AccountStore:
             else:
                 row = self._fetchone(
                     connection,
-                    """SELECT vp_users.*, vp_sessions.csrf_token
-                    FROM vp_sessions
-                    JOIN vp_users ON vp_users.id = vp_sessions.user_id
-                    WHERE vp_sessions.token_hash = ? AND vp_sessions.expires_at > ? AND vp_users.active = 1""",
-                    (self._token_hash(token), to_db_time(utcnow())),
+                    """SELECT vp_users.*, app_sessions.csrf_token
+                    FROM app_sessions JOIN vp_users ON LOWER(vp_users.username) = LOWER(app_sessions.username)
+                    WHERE app_sessions.token_hash = ? AND app_sessions.expires_at > ? AND vp_users.active = 1""",
+                    (self._token_hash(token), utcnow().replace(tzinfo=None)),
                 )
-                self._run(connection, "DELETE FROM vp_sessions WHERE expires_at <= ?", (to_db_time(utcnow()),))
-                if row is None:
-                    row = self._fetchone(
-                        connection,
-                        """SELECT vp_users.*, app_sessions.csrf_token
-                        FROM app_sessions JOIN vp_users ON LOWER(vp_users.username) = LOWER(app_sessions.username)
-                        WHERE app_sessions.token_hash = ? AND app_sessions.expires_at > ? AND vp_users.active = 1""",
-                        (self._token_hash(token), utcnow().replace(tzinfo=None)),
-                    )
                 self._run(connection, "DELETE FROM app_sessions WHERE expires_at <= ?", (utcnow().replace(tzinfo=None),))
         return Session(self._user_from_row(row), row["csrf_token"]) if row else None
 
     def delete_session(self, token: str | None) -> None:
         if not token:
             return
-        table = "sessions" if self._backend == "sqlite" else "vp_sessions"
         with self._connection() as connection:
-            self._run(connection, f"DELETE FROM {table} WHERE token_hash = ?", (self._token_hash(token),))
-            if self._backend == "mysql":
+            if self._backend == "sqlite":
+                self._run(connection, "DELETE FROM sessions WHERE token_hash = ?", (self._token_hash(token),))
+            else:
                 self._run(connection, "DELETE FROM app_sessions WHERE token_hash = ?", (self._token_hash(token),))
 
     def load_notify_settings(self, user_id: int) -> tuple[NotifySettings, bool]:
@@ -1073,7 +1092,6 @@ class AccountStore:
                 f"INSERT INTO {self._selected_classes_table()}(user_id, class_name) VALUES (?, ?)",
                 [(user_id, class_name) for class_name in sorted(normalized_classes)],
             )
-            self._run(connection, f"DELETE FROM {self._legacy_subjects_table()} WHERE user_id = ?", (user_id,))
             self._run(connection, f"DELETE FROM {self._subject_selections_table()} WHERE user_id = ?", (user_id,))
             selection_rows = [
                 (user_id, class_name, subject_key)
@@ -1085,14 +1103,6 @@ class AccountStore:
                     connection,
                     f"INSERT INTO {self._subject_selections_table()}(user_id, class_name, subject_key) VALUES (?, ?, ?)",
                     selection_rows,
-                )
-            legacy_class = min(normalized_selections)
-            legacy_rows = [(user_id, key) for key in sorted(normalized_selections[legacy_class])]
-            if legacy_rows:
-                self._executemany(
-                    connection,
-                    f"INSERT INTO {self._legacy_subjects_table()}(user_id, subject_key) VALUES (?, ?)",
-                    legacy_rows,
                 )
             self._save_notify_settings_with_connection(connection, user_id, settings_payload)
 
@@ -1142,18 +1152,7 @@ class AccountStore:
                 for row in rows:
                     selections.setdefault(row["class_name"], set()).add(row["subject_key"])
                 return selections, True
-            legacy_rows = self._fetchall(
-                connection,
-                f"SELECT subject_key FROM {self._legacy_subjects_table()} WHERE user_id = ? ORDER BY subject_key ASC",
-                (user_id,),
-            )
-            if not legacy_rows:
-                return {}, False
-            user_row = self._get_user_row_by_id(connection, user_id) if fallback_class_name is None else None
-        resolved_fallback = fallback_class_name or (user_row["class_name"] if user_row is not None else None)
-        if not resolved_fallback:
-            return {}, False
-        return ({resolved_fallback: {row["subject_key"] for row in legacy_rows}}, False)
+        return {}, False
 
     def get_subjects(self, user_id: int) -> set[str]:
         selections, _ = self.get_subject_selections(user_id)
@@ -1176,7 +1175,6 @@ class AccountStore:
                 raise ValueError("Benutzer nicht gefunden.")
             selections = {user_row["class_name"]: self._validate_subject_keys(set(subject_keys))}
         with self._connection() as connection:
-            self._run(connection, f"DELETE FROM {self._legacy_subjects_table()} WHERE user_id = ?", (user_id,))
             self._run(connection, f"DELETE FROM {self._subject_selections_table()} WHERE user_id = ?", (user_id,))
             selection_rows = [
                 (user_id, class_name, subject_key)
@@ -1188,14 +1186,6 @@ class AccountStore:
                     connection,
                     f"INSERT INTO {self._subject_selections_table()}(user_id, class_name, subject_key) VALUES (?, ?, ?)",
                     selection_rows,
-                )
-            legacy_class = min(selections) if selections else None
-            legacy_rows = [(user_id, key) for key in sorted(selections.get(legacy_class, set()))] if legacy_class else []
-            if legacy_rows:
-                self._executemany(
-                    connection,
-                    f"INSERT INTO {self._legacy_subjects_table()}(user_id, subject_key) VALUES (?, ?)",
-                    legacy_rows,
                 )
 
     def get_calendar_course_ids(self, username: str) -> set[str]:
@@ -1290,10 +1280,6 @@ class AccountStore:
                 ORDER BY user_id ASC, class_name ASC, subject_key ASC
                 """,
             )
-            legacy_rows = self._fetchall(
-                connection,
-                f"SELECT user_id, subject_key FROM {self._legacy_subjects_table()} ORDER BY user_id ASC, subject_key ASC",
-            )
             settings_rows = self._fetchall(
                 connection,
                 f"SELECT user_id, settings_json FROM {self._settings_table()} ORDER BY user_id ASC",
@@ -1304,9 +1290,6 @@ class AccountStore:
         selections_by_user: dict[int, dict[str, set[str]]] = {}
         for row in selection_rows:
             selections_by_user.setdefault(int(row["user_id"]), {}).setdefault(row["class_name"], set()).add(row["subject_key"])
-        legacy_by_user: dict[int, set[str]] = {}
-        for row in legacy_rows:
-            legacy_by_user.setdefault(int(row["user_id"]), set()).add(row["subject_key"])
         settings_by_user = {
             int(row["user_id"]): self._settings_from_row(row)
             for row in settings_rows
@@ -1316,8 +1299,6 @@ class AccountStore:
             user = self._user_from_row(row)
             selected_classes = tuple(selected_classes_by_user.get(user.id) or [user.class_name])
             subject_selections = selections_by_user.get(user.id)
-            if subject_selections is None and legacy_by_user.get(user.id):
-                subject_selections = {user.class_name: set(legacy_by_user[user.id])}
             recipients.append(
                 NotificationRecipient(
                     user=user,

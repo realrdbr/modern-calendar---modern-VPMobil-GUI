@@ -219,6 +219,18 @@ export async function initDatabase() {
         await conn.query("ALTER TABLE users ADD COLUMN status VARCHAR(20) DEFAULT 'ACTIVE';");
       } catch (e) {}
 
+      // Migrate the former standalone admin list into the authoritative user
+      // status before removing the redundant table.
+      const [legacyAdminTables]: any = await conn.query("SHOW TABLES LIKE 'admins'");
+      if (legacyAdminTables.length > 0) {
+        await conn.query(`
+          UPDATE users
+          INNER JOIN admins ON LOWER(admins.username) = LOWER(users.username)
+          SET users.status = 'ADMIN'
+        `);
+        await conn.query('DROP TABLE admins');
+      }
+
       // Create categories table
       await conn.query(`
         CREATE TABLE IF NOT EXISTS event_categories (
@@ -280,15 +292,6 @@ export async function initDatabase() {
           date VARCHAR(64)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
-
-      // Create admins table
-      await conn.query(`
-        CREATE TABLE IF NOT EXISTS admins (
-          username VARCHAR(64) PRIMARY KEY,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-      `);
-      await conn.query(`INSERT IGNORE INTO admins (username) VALUES ('gustavd');`);
 
       // Seed default accounts if users table is empty
       const [rows]: any = await conn.query('SELECT COUNT(*) as count FROM users');
@@ -425,6 +428,17 @@ export async function dbSaveUser(username: string, data: { courses?: string[]; p
        ON DUPLICATE KEY UPDATE courses = VALUES(courses), pin = VALUES(pin), preferences = VALUES(preferences), status = VALUES(status)`,
       [uname, JSON.stringify(courses), hashedPin, JSON.stringify(preferences), status]
     );
+    // Calendar `users.pin` is authoritative. Keep the legacy VP column only
+    // for rolling compatibility and VP-only account migration.
+    if (data.pin !== undefined) {
+      try {
+        await pool.query('UPDATE vp_users SET pin_hash = ? WHERE LOWER(username) = LOWER(?)', ['', uname]);
+      } catch (error: any) {
+        // During a rolling/fresh start, the VP service may not have created its
+        // compatibility table yet. `users.pin` is already saved successfully.
+        if (error?.code !== 'ER_NO_SUCH_TABLE') throw error;
+      }
+    }
     if (data.courses !== undefined) {
       const [vpRows]: any = await pool.query('SELECT id, class_name FROM vp_users WHERE LOWER(username) = LOWER(?)', [uname]);
       if (vpRows.length) {
@@ -713,14 +727,8 @@ export async function dbCreateFeedback(feedback: any) {
 export async function dbGetAdmins(): Promise<string[]> {
   const set = new Set<string>();
   if (isConnected && pool) {
-    try {
-      const [userAdmins]: any = await pool.query("SELECT username FROM users WHERE status = 'ADMIN'");
-      userAdmins.forEach((r: any) => set.add(r.username.toLowerCase()));
-    } catch (e) {}
-    try {
-      const [tableAdmins]: any = await pool.query("SELECT username FROM admins");
-      tableAdmins.forEach((r: any) => set.add(r.username.toLowerCase()));
-    } catch (e) {}
+    const [userAdmins]: any = await pool.query("SELECT username FROM users WHERE status = 'ADMIN'");
+    userAdmins.forEach((r: any) => set.add(r.username.toLowerCase()));
     return Array.from(set);
   }
   memoryStore.admins.forEach(a => set.add(a.toLowerCase()));
@@ -734,19 +742,8 @@ export async function dbIsAdmin(username: string): Promise<boolean> {
   if (!username) return false;
   const uname = username.toLowerCase().trim();
   if (isConnected && pool) {
-    try {
-      const [userRows]: any = await pool.query("SELECT status FROM users WHERE username = ?", [uname]);
-      if (userRows.length > 0 && userRows[0].status === 'ADMIN') {
-        return true;
-      }
-    } catch (e) {}
-    try {
-      const [adminRows]: any = await pool.query("SELECT username FROM admins WHERE username = ?", [uname]);
-      if (adminRows.length > 0) {
-        return true;
-      }
-    } catch (e) {}
-    return false;
+    const [userRows]: any = await pool.query("SELECT status FROM users WHERE username = ?", [uname]);
+    return userRows.length > 0 && userRows[0].status === 'ADMIN';
   }
   const memUser = memoryStore.users[uname];
   if (memUser && memUser.status === 'ADMIN') return true;
@@ -757,7 +754,7 @@ export async function dbAddAdmin(username: string): Promise<string[]> {
   if (!username) return dbGetAdmins();
   const uname = username.toLowerCase().trim();
   if (isConnected && pool) {
-    await pool.query('INSERT IGNORE INTO admins (username) VALUES (?)', [uname]);
+    await pool.query("UPDATE users SET status = 'ADMIN' WHERE username = ?", [uname]);
   } else {
     if (!memoryStore.admins.includes(uname)) {
       memoryStore.admins.push(uname);
@@ -773,7 +770,7 @@ export async function dbRemoveAdmin(username: string): Promise<string[]> {
     return dbGetAdmins(); // Super admin cannot be removed
   }
   if (isConnected && pool) {
-    await pool.query('DELETE FROM admins WHERE username = ?', [uname]);
+    await pool.query("UPDATE users SET status = 'ACTIVE' WHERE username = ?", [uname]);
   } else {
     memoryStore.admins = memoryStore.admins.filter(a => a !== uname);
   }
