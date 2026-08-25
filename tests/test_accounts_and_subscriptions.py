@@ -1,10 +1,11 @@
 from datetime import date, datetime, time
 from pathlib import Path
+from contextlib import nullcontext
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from cryptography.fernet import Fernet
 
@@ -55,6 +56,26 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         self.assertIn('inputmode="numeric"', pin_page)
         self.assertIn('pattern="[0-9]{4}"', pin_page)
         self.assertIn('maxlength="4"', pin_page)
+
+    def test_shared_calendar_identity_without_pin_does_not_require_pin(self):
+        store = object.__new__(AccountStore)
+        store._backend = "mysql"
+        store._connection = lambda: nullcontext(object())
+        store._fetchone = Mock(return_value={
+            "username": "gustavd", "pin": None, "status": "ACTIVE",
+            "active": None, "pin_hash": None,
+        })
+        self.assertEqual(store.get_login_identity("gustavd"), ("gustavd", False))
+
+    def test_shared_calendar_identity_with_pin_requires_pin(self):
+        store = object.__new__(AccountStore)
+        store._backend = "mysql"
+        store._connection = lambda: nullcontext(object())
+        store._fetchone = Mock(return_value={
+            "username": "gustavd", "pin": "scrypt$salt$hash", "status": "ACTIVE",
+            "active": 1, "pin_hash": "argon-hash",
+        })
+        self.assertEqual(store.get_login_identity("gustavd"), ("gustavd", True))
 
     def test_calendar_categories_keep_individual_notification_times(self):
         settings = NotifySettings(

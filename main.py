@@ -187,13 +187,19 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 return
             if stage == "username":
                 try:
-                    user = self.store.get_user(username)
-                    if not user.active:
-                        raise ValueError("Benutzer nicht gefunden.")
+                    resolved_username, requires_pin = self.store.get_login_identity(username)
                 except ValueError:
                     send_html(self, render_login("Dieser Benutzername existiert nicht.", username=username))
                     return
-                send_html(self, render_login(username=user.username, pin_step=True))
+                if not requires_pin:
+                    user = self.store.authenticate(resolved_username, "", self._client_ip())
+                    if user is None:
+                        send_html(self, render_login("Anmeldung momentan nicht möglich.", username=resolved_username))
+                        return
+                    token, _csrf = self.store.create_session(user.id)
+                    redirect(self, "/", [make_cookie(SESSION_COOKIE, token, max_age=14 * 86400, http_only=True, secure=COOKIE_SECURE, domain=COOKIE_DOMAIN)])
+                    return
+                send_html(self, render_login(username=resolved_username, pin_step=True))
                 return
             pin = self._field(data, "pin")
             if len(pin) != 4 or not pin.isascii() or not pin.isdigit():

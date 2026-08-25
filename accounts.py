@@ -615,7 +615,7 @@ class AccountStore:
             (username.lower(), "[]", _hash_shared_pin(pin), json.dumps({}), "ACTIVE"),
         )
 
-    def _bootstrap_vp_user_from_calendar(self, connection: Any, username: str, pin: str) -> Any | None:
+    def _bootstrap_vp_user_from_calendar(self, connection: Any, username: str, pin: str | None) -> Any | None:
         if self._backend != "mysql":
             return None
         calendar_row = self._fetchone(
@@ -627,7 +627,8 @@ class AccountStore:
             return None
         if (calendar_row.get("status") or "ACTIVE") == "BLOCKED":
             return None
-        if not _verify_shared_pin(pin, calendar_row.get("pin")):
+        calendar_pin = calendar_row.get("pin")
+        if calendar_pin and (pin is None or not _verify_shared_pin(pin, calendar_pin)):
             return None
 
         resolved_username = calendar_row["username"]
@@ -647,7 +648,7 @@ class AccountStore:
                 VALUES (?, ?, ?, 1, ?, ?, ?, ?)""",
                 (
                     resolved_username,
-                    self._hasher.hash(pin),
+                    self._hasher.hash(pin) if pin else "",
                     class_name,
                     ntfy_topic,
                     ntfy_username,
@@ -668,6 +669,42 @@ class AccountStore:
             """,
             (resolved_username,),
         )
+
+    def get_login_identity(self, username: str) -> tuple[str, bool]:
+        """Löst ein gemeinsames Kalender-/VP-Konto auf und meldet, ob eine PIN nötig ist."""
+        username = validate_username(username)
+        with self._connection() as connection:
+            if self._backend == "sqlite":
+                row = self._fetchone(
+                    connection,
+                    "SELECT username, pin_hash, active FROM users WHERE username = ? COLLATE NOCASE",
+                    (username,),
+                )
+                if row is None or not bool(row["active"]):
+                    raise ValueError("Benutzer nicht gefunden.")
+                return row["username"], bool(row["pin_hash"])
+
+            row = self._fetchone(
+                connection,
+                """SELECT u.username, u.pin, u.status, vp.active, vp.pin_hash
+                FROM users u
+                LEFT JOIN vp_users vp ON LOWER(vp.username) = LOWER(u.username)
+                WHERE LOWER(u.username) = LOWER(?)""",
+                (username,),
+            )
+            if row is not None:
+                if (row.get("status") or "ACTIVE") == "BLOCKED" or row.get("active") == 0:
+                    raise ValueError("Benutzer nicht gefunden.")
+                return row["username"], bool(row.get("pin"))
+
+            vp_row = self._fetchone(
+                connection,
+                "SELECT username, pin_hash, active FROM vp_users WHERE LOWER(username) = LOWER(?)",
+                (username,),
+            )
+            if vp_row is None or not bool(vp_row["active"]):
+                raise ValueError("Benutzer nicht gefunden.")
+            return vp_row["username"], bool(vp_row.get("pin_hash"))
 
     def create_user(
         self, username: str, pin: str, class_name: str, *, ntfy_topic: str,
@@ -861,7 +898,7 @@ class AccountStore:
                 if user_row is None:
                     user_row = self._bootstrap_vp_user_from_calendar(connection, username, pin)
                 if user_row is not None and bool(user_row["active"]) and (user_row.get("calendar_status") or "ACTIVE") != "BLOCKED":
-                    calendar_valid = _verify_shared_pin(pin, user_row.get("calendar_pin"))
+                    calendar_valid = not user_row.get("calendar_pin") or _verify_shared_pin(pin, user_row.get("calendar_pin"))
                     vp_valid = False
                     try:
                         vp_valid = self._hasher.verify(user_row.get("pin_hash", ""), pin)
