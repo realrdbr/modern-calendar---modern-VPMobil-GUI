@@ -122,9 +122,12 @@ def send_html(handler: BaseHTTPRequestHandler, html: str, cookie_headers: list[s
 
 def redirect(handler: BaseHTTPRequestHandler, location: str, cookie_headers: list[str] | None = None) -> None:
     """Leitet den Browser weiter."""
+    safe_location = (location or "/").replace("\r", "").replace("\n", "")
+    if not safe_location.startswith("/") or safe_location.startswith("//"):
+        safe_location = "/"
 
     handler.send_response(303)
-    handler.send_header("Location", location)
+    handler.send_header("Location", safe_location)
 
     for cookie_header in cookie_headers or []:
         handler.send_header("Set-Cookie", cookie_header)
