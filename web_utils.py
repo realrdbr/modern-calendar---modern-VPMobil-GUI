@@ -240,7 +240,7 @@ def render_vp_navigation(active: str, calendar_target: str, *, csrf_token: str |
         ("ankuendigungen", "/abos", "Ankündigungen"),
     ]
     links = "".join(
-        f'<a{" class=\\"active\\"" if key == active else ""} href="{href}">{label}</a>'
+        f'<a{" class=\"active\"" if key == active else ""} href="{href}">{label}</a>'
         for key, href, label in menu_items
     )
     switcher = (
