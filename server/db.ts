@@ -101,6 +101,15 @@ export async function deleteSessionToken(sessionToken: string): Promise<void> {
   }
 }
 
+export async function dbRecordCalendarLoginAttempt(username: string, ipAddress: string, successful: boolean): Promise<void> {
+  if (isConnected && pool) {
+    await pool.query(
+      'INSERT INTO calendar_login_attempts(username, ip_address, attempted_at, successful) VALUES (?, ?, ?, ?)',
+      [username, ipAddress, new Date().toISOString(), successful ? 1 : 0]
+    );
+  }
+}
+
 export const DEFAULT_PREFERENCES = {
   darkMode: false,
   themeMode: 'system',
@@ -207,6 +216,20 @@ export async function initDatabase() {
       `);
       await conn.query('DELETE FROM app_sessions WHERE expires_at <= NOW()');
 
+      await conn.query(`
+        CREATE TABLE IF NOT EXISTS calendar_login_attempts (
+          id BIGINT AUTO_INCREMENT PRIMARY KEY,
+          username VARCHAR(64) NOT NULL,
+          ip_address VARCHAR(64) NOT NULL,
+          attempted_at VARCHAR(40) NOT NULL,
+          successful TINYINT(1) NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+      `);
+      await conn.query(`
+        CREATE INDEX IF NOT EXISTS idx_calendar_login_attempts_lookup
+        ON calendar_login_attempts(username, ip_address, attempted_at)
+      `);
+
       // Ensure pin column in existing tables is widened to VARCHAR(255)
       try {
         await conn.query('ALTER TABLE users MODIFY COLUMN pin VARCHAR(255) DEFAULT NULL;');
@@ -256,6 +279,7 @@ export async function initDatabase() {
           author VARCHAR(64),
           attachments LONGTEXT,
           deleted_at DATETIME NULL,
+          deleted_by VARCHAR(64) DEFAULT NULL,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
@@ -265,6 +289,9 @@ export async function initDatabase() {
       } catch (e) {}
       try {
         await conn.query('ALTER TABLE events ADD COLUMN end_time VARCHAR(16) DEFAULT NULL;');
+      } catch (e) {}
+      try {
+        await conn.query('ALTER TABLE events ADD COLUMN deleted_by VARCHAR(64) DEFAULT NULL;');
       } catch (e) {}
 
       // Create courses table for dynamic courses & custom ordering (utf8mb4_bin for case-sensitive DE1 vs de1)
@@ -581,7 +608,8 @@ export async function dbGetEvents(includeDeleted = false) {
       description: r.description || '',
       author: r.author || '',
       attachments: typeof r.attachments === 'string' ? JSON.parse(r.attachments || '[]') : (r.attachments || []),
-      deletedAt: r.deleted_at || undefined
+      deletedAt: r.deleted_at || undefined,
+      deletedBy: r.deleted_by || undefined
     }));
   }
   return memoryStore.events
@@ -606,7 +634,8 @@ export async function dbGetEventById(id: string) {
       description: r.description || '',
       author: r.author || '',
       attachments: typeof r.attachments === 'string' ? JSON.parse(r.attachments || '[]') : (r.attachments || []),
-      deletedAt: r.deleted_at || undefined
+      deletedAt: r.deleted_at || undefined,
+      deletedBy: r.deleted_by || undefined
     };
   }
   const found = memoryStore.events.find(e => e.id === id);
@@ -685,14 +714,15 @@ export async function dbUpdateEvent(id: string, data: any) {
 }
 
 // Soft Delete
-export async function dbDeleteEvent(id: string) {
+export async function dbDeleteEvent(id: string, deletedBy: string) {
   if (isConnected && pool) {
-    await pool.query('UPDATE events SET deleted_at = NOW() WHERE id = ?', [id]);
+    await pool.query('UPDATE events SET deleted_at = NOW(), deleted_by = ? WHERE id = ?', [deletedBy, id]);
     return true;
   }
   const event = memoryStore.events.find(e => e.id === id);
   if (event) {
     event.deletedAt = new Date().toISOString();
+    event.deletedBy = deletedBy;
   }
   return true;
 }
@@ -700,12 +730,13 @@ export async function dbDeleteEvent(id: string) {
 // Restore
 export async function dbRestoreEvent(id: string) {
   if (isConnected && pool) {
-    await pool.query('UPDATE events SET deleted_at = NULL WHERE id = ?', [id]);
+    await pool.query('UPDATE events SET deleted_at = NULL, deleted_by = NULL WHERE id = ?', [id]);
     return true;
   }
   const event = memoryStore.events.find(e => e.id === id);
   if (event) {
     delete event.deletedAt;
+    delete event.deletedBy;
   }
   return true;
 }

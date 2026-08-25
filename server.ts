@@ -14,6 +14,7 @@ import {
   dbCreateEvent,
   dbUpdateEvent,
   dbDeleteEvent,
+  dbRecordCalendarLoginAttempt,
   dbGetEventById,
   dbCreateFeedback,
   dbGetCourses,
@@ -151,30 +152,36 @@ async function startServer() {
     const uname = (username || '').toLowerCase();
     const ipAddress = req.ip || req.socket.remoteAddress || 'unknown';
     const rateLimitKey = loginKey(uname, ipAddress);
+    const recordLoginAttempt = (successful: boolean) => dbRecordCalendarLoginAttempt(uname, ipAddress, successful);
 
     const rateCheck = checkRateLimit(rateLimitKey);
     if (!rateCheck.allowed) {
+      await recordLoginAttempt(false);
       return res.status(429).json({ error: `Zu viele fehlerhafte Anmeldeversuche. Bitte warte ${rateCheck.remainingSeconds} Sekunden.` });
     }
 
     const user = await dbGetUser(uname);
     if (!user) {
       recordFailedAttempt(rateLimitKey);
+      await recordLoginAttempt(false);
       return res.status(404).json({ error: 'Benutzer nicht gefunden' });
     }
 
     if (user.status === 'BLOCKED') {
+      await recordLoginAttempt(false);
       return res.status(403).json({ error: 'Dein Konto wurde aufgrund unangemessener Aktivitäten gesperrt.' });
     }
 
     if (user.pin) {
       if (sessionToken) {
         if (!(await verifySessionToken(uname, sessionToken))) {
+          await recordLoginAttempt(false);
           return res.status(401).json({ error: 'Sitzung abgelaufen oder ungültig. Bitte erneut anmelden.' });
         }
       } else {
         if (!verifyPin(pin, user.pin)) {
           recordFailedAttempt(rateLimitKey);
+          await recordLoginAttempt(false);
           return res.status(401).json({ error: 'Falscher PIN' });
         }
         if (typeof user.pin === 'string' && !user.pin.startsWith('scrypt$')) {
@@ -184,6 +191,7 @@ async function startServer() {
     }
 
     resetFailedAttempt(rateLimitKey);
+    await recordLoginAttempt(true);
     const token = await generateSessionToken(uname);
     res.setHeader('Set-Cookie', sessionCookie(token));
     res.json({ user: sanitizeUser(user) });
@@ -353,7 +361,7 @@ async function startServer() {
         return res.status(403).json({ error: 'Nur Admins dürfen Ferientermine löschen.' });
       }
     }
-    await dbDeleteEvent(id);
+    await dbDeleteEvent(id, (req as any).authenticatedUser);
     res.json({ success: true });
   });
 
