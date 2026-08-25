@@ -54,6 +54,8 @@ export interface AppEvent {
   description?: string;
   author: string;
   attachments?: Attachment[];
+  deletedAt?: string;
+  deletedBy?: string;
 }
 
 export const COURSES: Course[] = [
