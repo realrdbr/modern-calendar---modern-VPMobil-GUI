@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from accounts import AccountStore, NotifySettings
 from account_page import render_login
-from ntfy.service import resolve_ntfy_internal_url
+from ntfy.service import NtfyService, resolve_ntfy_internal_url
 from subscriptions import SubscriptionNotifier, subject_key, subject_options
 from vp_data import get_future_week_dates, get_future_week_plans, get_subject_catalog_plans
 
@@ -119,6 +119,21 @@ class AccountAndSubscriptionTests(unittest.TestCase):
             "ntfy.service.Path.exists", return_value=False,
         ):
             self.assertEqual(resolve_ntfy_internal_url(), "http://127.0.0.1:8099")
+
+    def test_ntfy_reader_uses_signed_internal_provisioner(self):
+        response = Mock(ok=True, status_code=200)
+        with patch.dict("os.environ", {
+            "NTFY_PROVISIONER_URL": "http://ntfy-provisioner:8080",
+            "NTFY_PROVISIONER_SECRET": "test-secret",
+        }, clear=False), patch("ntfy.service.requests.post", return_value=response) as post:
+            NtfyService(Path(self.temp.name)).ensure_reader_credentials(
+                "vp-alice", "vp_alice", "a-secure-password-123",
+            )
+
+        args, kwargs = post.call_args
+        self.assertEqual(args[0], "http://ntfy-provisioner:8080/ensure")
+        self.assertIn("X-Provisioner-Signature", kwargs["headers"])
+        self.assertNotIn(b"test-secret", kwargs["data"])
 
     def test_subject_options_include_courses_without_today_lesson(self):
         plan = SimpleNamespace(klassen={"11": SimpleNamespace(

@@ -68,6 +68,22 @@ services:
     networks:
       - cal11_net
 
+  ntfy-provisioner:
+    build:
+      context: .
+      dockerfile: Dockerfile.ntfy-provisioner
+    container_name: ${NTFY_PROVISIONER_CONTAINER_NAME:-vpmobil-ntfy-provisioner}
+    restart: unless-stopped
+    depends_on:
+      - ntfy
+    environment:
+      NTFY_AUTH_FILE: /var/lib/ntfy/auth.db
+      NTFY_PROVISIONER_SECRET: ${APP_ENCRYPTION_KEY}
+    volumes:
+      - ./data/ntfy:/var/lib/ntfy
+    networks:
+      - cal11_net
+
   vp:
     build:
       context: .
@@ -77,6 +93,7 @@ services:
     depends_on:
       - mariadb
       - ntfy
+      - ntfy-provisioner
     environment:
       HOST: ${HOST:-0.0.0.0}
       BIND_HOST: ${BIND_HOST:-0.0.0.0}
@@ -93,6 +110,8 @@ services:
       NTFY_PUBLIC_URL: ${NTFY_PUBLIC_URL:-http://127.0.0.1:8090}
       NTFY_INTERNAL_URL: ${NTFY_INTERNAL_URL:-http://ntfy}
       NTFY_AUTOSTART: "false"
+      NTFY_PROVISIONER_URL: http://ntfy-provisioner:8080
+      NTFY_PROVISIONER_SECRET: ${APP_ENCRYPTION_KEY}
       CALENDAR_PUBLIC_URL: ${CALENDAR_PUBLIC_URL:-http://127.0.0.1:3000}
       VERTRETUNGSPLAN_PUBLIC_URL: ${VERTRETUNGSPLAN_PUBLIC_URL:-http://127.0.0.1:8000}
       SCHULNUMMER: ${SCHULNUMMER}

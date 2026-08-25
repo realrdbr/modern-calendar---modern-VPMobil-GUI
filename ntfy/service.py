@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
+import json
 import os
 from pathlib import Path
 import secrets
@@ -50,6 +52,24 @@ class NtfyService:
                 self.compose_file = fallback
         self.base_url = os.getenv("NTFY_PUBLIC_URL", "http://127.0.0.1:8090").rstrip("/")
         self.internal_url = resolve_ntfy_internal_url()
+        self.provisioner_url = os.getenv("NTFY_PROVISIONER_URL", "").rstrip("/")
+        self.provisioner_secret = os.getenv("NTFY_PROVISIONER_SECRET", os.getenv("APP_ENCRYPTION_KEY", "")).encode("utf-8")
+
+    def _provision(self, operation: str, **values: str) -> None:
+        if not self.provisioner_url:
+            raise RuntimeError("Der interne ntfy-Provisionierungsdienst ist nicht konfiguriert.")
+        if not self.provisioner_secret:
+            raise RuntimeError("Das ntfy-Provisionierungs-Secret fehlt.")
+        payload = {**values, "timestamp": int(time.time())}
+        body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        signature = hmac.new(self.provisioner_secret, body, hashlib.sha256).hexdigest()
+        response = requests.post(
+            f"{self.provisioner_url}/{operation}", data=body,
+            headers={"Content-Type": "application/json", "X-Provisioner-Signature": signature},
+            timeout=35,
+        )
+        if not response.ok:
+            raise RuntimeError(f"ntfy-Provisionierung wurde abgelehnt (HTTP {response.status_code}).")
 
     def _compose(self, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         command = ["docker", "compose", "-f", str(self.compose_file), *args]
@@ -99,6 +119,9 @@ class NtfyService:
         return topic, username, password
 
     def ensure_reader_credentials(self, topic: str, username: str, password: str) -> None:
+        if self.provisioner_url:
+            self._provision("ensure", topic=topic, username=username, password=password)
+            return
         add = self._compose(
             "exec", "-T", "-e", f"NTFY_PASSWORD={password}", "ntfy", "ntfy", "user", "add", username
         )
@@ -144,6 +167,9 @@ class NtfyService:
             )
 
     def delete_reader(self, username: str) -> None:
+        if self.provisioner_url:
+            self._provision("delete", username=username)
+            return
         result = self._compose("exec", "-T", "ntfy", "ntfy", "user", "del", username)
         if result.returncode != 0:
             raise RuntimeError("ntfy-Nutzer konnte nicht gelöscht werden: " + (result.stderr.strip() or result.stdout.strip()))

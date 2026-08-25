@@ -1,0 +1,14 @@
+FROM binwiederhier/ntfy:v2.25.0 AS ntfy
+
+FROM python:3.13-slim
+
+WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+COPY --from=ntfy /usr/bin/ntfy /usr/local/bin/ntfy
+COPY ntfy/provisioner.py ./provisioner.py
+
+EXPOSE 8080
+
+CMD ["python", "provisioner.py"]
