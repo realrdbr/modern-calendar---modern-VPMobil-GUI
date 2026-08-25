@@ -6,7 +6,7 @@ import { AppEvent, Course, COURSES, User, EventCategory } from '../types';
 import EventModal from './EventModal';
 import SettingsModal from './SettingsModal';
 import AdminModal from './AdminModal';
-import { Menu, X, Settings, Shield, LogOut } from 'lucide-react';
+import { Menu, X, Settings, Shield, LogOut, ChevronLeft, ChevronRight } from 'lucide-react';
 import { VERTRETUNGSPLAN_URL } from '../lib/externalLinks';
 
 interface Props {
@@ -327,13 +327,25 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
           </div>
           
           <div className="mt-auto pt-4 flex flex-col items-start border-t border-[#eee] border-opacity-10 gap-3">
-            <a
-              href={VERTRETUNGSPLAN_URL}
-              className="text-sm font-semibold hover:opacity-80 transition-opacity"
-              style={{ color: theme.accent }}
-            >
-              Zum Vertretungsplan
-            </a>
+            <div className="w-full">
+              <p className={`text-[11px] uppercase tracking-wide font-bold mb-2 ${theme.textFaint}`}>Apps</p>
+              <div className={`w-full flex items-center border ${theme.border} rounded-lg overflow-hidden ${theme.bgApp}`}>
+                <span
+                  aria-current="page"
+                  className="flex-1 text-center text-xs font-bold px-2 py-1.5"
+                  style={{ backgroundColor: theme.accent, color: '#fff' }}
+                >
+                  Kalender
+                </span>
+                <a
+                  href={VERTRETUNGSPLAN_URL}
+                  className={`flex-1 text-center text-xs font-semibold px-2 py-1.5 border-l ${theme.border} hover:opacity-80 transition-opacity`}
+                  style={{ color: theme.accent }}
+                >
+                  Vertretungsplan
+                </a>
+              </div>
+            </div>
             {isAdmin && (
               <button 
                 onClick={() => {
@@ -386,15 +398,29 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
             <Menu className="w-5 h-5" />
           </button>
           
-          <div className={`flex items-center border ${theme.border} rounded ${theme.bgApp} overflow-hidden text-sm`}>
-            <button onClick={navigatePrev} className={`px-2 md:px-3 py-1 hover:opacity-80 border-r ${theme.border}`}>&lt;</button>
+          <div className={`flex items-center border ${theme.border} rounded-lg ${theme.bgApp} overflow-hidden text-sm`}>
+            <button
+              onClick={navigatePrev}
+              className={`px-2 md:px-3 py-1.5 hover:opacity-80 border-r ${theme.border}`}
+              aria-label={view === 'month' ? 'Vorheriger Monat' : 'Vorherige Woche'}
+              title={view === 'month' ? 'Vorheriger Monat' : 'Vorherige Woche'}
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
             <button onClick={navigateToday} className={`px-3 md:px-4 py-1 hover:opacity-80 border-r ${theme.border}`}>Heute</button>
-            <button onClick={navigateNext} className={`px-2 md:px-3 py-1 hover:opacity-80`}>&gt;</button>
+            <button
+              onClick={navigateNext}
+              className={`px-2 md:px-3 py-1.5 hover:opacity-80`}
+              aria-label={view === 'month' ? 'Nächster Monat' : 'Nächste Woche'}
+              title={view === 'month' ? 'Nächster Monat' : 'Nächste Woche'}
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
           </div>
           
-          <div className={`hidden md:flex items-center border ${theme.border} rounded ${theme.bgApp} overflow-hidden text-sm`}>
-            <button onClick={() => setView('month')} className={`px-3 py-1 hover:opacity-80 ${view === 'month' ? 'font-bold' : ''}`} style={{ backgroundColor: view === 'month' ? theme.border : 'transparent' }}>Monat</button>
-            <button onClick={() => setView('week')} className={`px-3 py-1 hover:opacity-80 border-l ${theme.border} ${view === 'week' ? 'font-bold' : ''}`} style={{ backgroundColor: view === 'week' ? theme.border : 'transparent' }}>Woche</button>
+          <div className={`hidden md:flex items-center border ${theme.border} rounded-lg ${theme.bgApp} overflow-hidden text-sm`}>
+            <button onClick={() => setView('month')} className={`px-3 py-1 hover:opacity-80 ${view === 'month' ? 'font-bold' : ''}`} style={{ backgroundColor: view === 'month' ? theme.border : 'transparent' }}>Monatsansicht</button>
+            <button onClick={() => setView('week')} className={`px-3 py-1 hover:opacity-80 border-l ${theme.border} ${view === 'week' ? 'font-bold' : ''}`} style={{ backgroundColor: view === 'week' ? theme.border : 'transparent' }}>Wochenansicht</button>
           </div>
 
           <div className="font-bold text-sm md:text-lg flex items-center gap-1 md:gap-2">
@@ -406,9 +432,25 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
           </div>
 
           <div className="ml-auto flex items-center gap-2">
-            <div className={`md:hidden flex items-center border ${theme.border} rounded ${theme.bgApp} overflow-hidden text-xs`}>
-              <button onClick={() => setView('month')} className={`px-2 py-1 ${view === 'month' ? 'font-bold' : ''}`} style={{ backgroundColor: view === 'month' ? theme.border : 'transparent' }}>M</button>
-              <button onClick={() => setView('week')} className={`px-2 py-1 border-l ${theme.border} ${view === 'week' ? 'font-bold' : ''}`} style={{ backgroundColor: view === 'week' ? theme.border : 'transparent' }}>W</button>
+            <div className={`hidden sm:flex items-center border ${theme.border} rounded-lg ${theme.bgApp} overflow-hidden text-xs md:text-sm`}>
+              <span
+                aria-current="page"
+                className="px-3 py-1.5 font-bold"
+                style={{ backgroundColor: theme.accent, color: '#fff' }}
+              >
+                Kalender
+              </span>
+              <a
+                href={VERTRETUNGSPLAN_URL}
+                className={`px-3 py-1.5 border-l ${theme.border} font-semibold hover:opacity-80 transition-opacity`}
+                style={{ color: theme.accent }}
+              >
+                Vertretungsplan
+              </a>
+            </div>
+            <div className={`md:hidden flex items-center border ${theme.border} rounded-lg ${theme.bgApp} overflow-hidden text-xs`}>
+              <button onClick={() => setView('month')} className={`px-2.5 py-1 ${view === 'month' ? 'font-bold' : ''}`} style={{ backgroundColor: view === 'month' ? theme.border : 'transparent' }}>Monat</button>
+              <button onClick={() => setView('week')} className={`px-2.5 py-1 border-l ${theme.border} ${view === 'week' ? 'font-bold' : ''}`} style={{ backgroundColor: view === 'week' ? theme.border : 'transparent' }}>Woche</button>
             </div>
             {!isReadOnly && (
               <button

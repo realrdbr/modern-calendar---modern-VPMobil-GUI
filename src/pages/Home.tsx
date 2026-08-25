@@ -86,12 +86,15 @@ export default function Home() {
           <p className="text-sm sm:text-[15px] text-[#64748b] leading-snug max-w-[320px] mx-auto font-medium">
             Klausuren, Hausaufgaben und Termine auf einen Blick.
           </p>
-          <a
-            href={VERTRETUNGSPLAN_URL}
-            className="mt-3 inline-flex items-center rounded-lg border border-[#cbd5e1] px-3 py-2 text-xs font-semibold text-[#0f172a] hover:border-[#e91e63] hover:text-[#e91e63] transition-colors"
-          >
-            Zum Vertretungsplan
-          </a>
+          <div className="mt-4 inline-flex items-center rounded-xl border border-[#cbd5e1] overflow-hidden bg-white">
+            <span className="px-3.5 py-2 text-xs font-bold bg-[#e91e63] text-white">Kalender</span>
+            <a
+              href={VERTRETUNGSPLAN_URL}
+              className="px-3.5 py-2 text-xs font-semibold text-[#0f172a] border-l border-[#cbd5e1] hover:text-[#e91e63] hover:bg-[#fff1f6] transition-colors"
+            >
+              Vertretungsplan
+            </a>
+          </div>
         </header>
 
         {/* ONE-LINE FORMULAR */}
