@@ -268,14 +268,6 @@ class AppRequestHandler(BaseHTTPRequestHandler):
     def render_subscriptions(
         self, session: Session, *, saved: bool = False, test_sent: bool = False, error: str | None = None,
     ) -> None:
-        # Stelle sicher, dass der ntfy-Nutzer im ntfy-Server existiert.
-        user = session.user
-        def _sync_ntfy_reader() -> None:
-            try:
-                NtfyService(ROOT).ensure_reader_credentials(user.ntfy_topic, user.ntfy_username, user.ntfy_password)
-            except Exception as exc:
-                log(f"ntfy-Leserzugang für {user.ntfy_username} konnte nicht synchronisiert werden: {exc}")
-        Thread(target=_sync_ntfy_reader, daemon=True).start()
         try:
             catalog_plans = get_subject_catalog_plans()
             class_options = available_class_names_from_plans(catalog_plans)

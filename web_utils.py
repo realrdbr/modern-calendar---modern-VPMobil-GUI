@@ -48,11 +48,6 @@ def format_week_value(selected_date: date) -> str:
     return f"{year}-W{week:02d}"
 
 
-def get_ab_week_label(d: date) -> str:
-    """Gibt '(A)' für gerade ISO-Wochen (A-Woche) und '(B)' für ungerade (B-Woche) zurück."""
-    return "(A)" if d.isocalendar().week % 2 == 0 else "(B)"
-
-
 def parse_hour(value: str | None) -> int:
     """Wandelt einen Formularwert in eine gültige Unterrichtsstunde um."""
 
