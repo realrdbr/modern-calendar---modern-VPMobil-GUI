@@ -29,7 +29,7 @@ from web_utils import (
     split_cookie_list,
     start_server, DEFAULT_PORT,
     render_theme_script,
-    render_theme_toggle_button,
+    render_vp_navigation,
 )
 
 DAY_NAMES = {
@@ -432,11 +432,14 @@ def render_plan_page(
     selected_class: str | None = None,
     selected_subjects: list[str] | None = None,
     error_message: str | None = None,
+    username: str | None = None,
+    csrf_token: str | None = None,
 ) -> str:
     """Erzeugt die komplette Wochenplan-Seite."""
 
     selected_subjects = selected_subjects or []
     content = ""
+    calendar_target = f"{CALENDAR_PUBLIC_URL}/{username}" if username else CALENDAR_PUBLIC_URL
     week_title = f"{selected_date.strftime('%d.%m.%Y')} {get_ab_week_label(selected_date)}"
     plan_timestamp_text = "unbekannt"
     week_version = ""
@@ -943,14 +946,7 @@ def render_plan_page(
                 <p>Woche {escape(week_title)}</p>
             </div>
 
-            <nav class="nav">
-                <a class="active" href="/">Klassen</a>
-                <a href="/lehrer">Lehrer</a>
-                <a href="/raeume">Freie Räume</a>
-                <a href="/abos">Ankündigungen</a>
-                <a href="{escape(CALENDAR_PUBLIC_URL)}">Kalender</a>
-                {render_theme_toggle_button()}
-            </nav>
+            <nav class="nav">{render_vp_navigation("klassen", calendar_target, csrf_token=csrf_token)}</nav>
         </header>
 
         <section class="panel">

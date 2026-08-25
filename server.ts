@@ -29,6 +29,7 @@ import {
   generateSessionToken,
   verifySessionToken,
   getSessionUsername,
+  invalidateSessionToken,
   dbGetAdmins,
   dbIsAdmin,
   dbAddAdmin,
@@ -187,15 +188,43 @@ async function startServer() {
     res.json({ user: sanitizeUser(user), sessionToken: token });
   });
 
+  function resolveAuthToken(req: express.Request): string {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      return authHeader.substring(7);
+    }
+    if (req.headers['x-session-token']) {
+      return req.headers['x-session-token'] as string;
+    }
+    return '';
+  }
+
+  app.get('/api/session', async (req, res) => {
+    const token = resolveAuthToken(req);
+    if (!token) {
+      return res.status(401).json({ error: 'Session-Token fehlt.' });
+    }
+    const username = getSessionUsername(token);
+    if (!username) {
+      return res.status(401).json({ error: 'Session ungültig oder abgelaufen.' });
+    }
+    const user = await dbGetUser(username);
+    if (!user || user.status === 'BLOCKED') {
+      invalidateSessionToken(token);
+      return res.status(401).json({ error: 'Session ungültig.' });
+    }
+    return res.json({ user: sanitizeUser(user), sessionToken: token });
+  });
+
+  app.post('/api/logout', async (req, res) => {
+    const token = resolveAuthToken(req);
+    invalidateSessionToken(token);
+    return res.json({ success: true });
+  });
+
   // Authentication middleware
   const requireAuth = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const authHeader = req.headers.authorization;
-    let token = '';
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      token = authHeader.substring(7);
-    } else if (req.headers['x-session-token']) {
-      token = req.headers['x-session-token'] as string;
-    }
+    const token = resolveAuthToken(req);
 
     if (!token) {
       return res.status(401).json({ error: 'Nicht authentifiziert (Session-Token fehlt).' });

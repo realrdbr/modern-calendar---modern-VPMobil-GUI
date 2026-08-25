@@ -1,5 +1,6 @@
 import os
 from datetime import date, datetime, timedelta
+from html import escape
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -231,6 +232,34 @@ def render_theme_script() -> str:
     """
 
 
+def render_vp_navigation(active: str, calendar_target: str, *, csrf_token: str | None = None) -> str:
+    menu_items = [
+        ("klassen", "/", "Klassen"),
+        ("lehrer", "/lehrer", "Lehrer"),
+        ("raeume", "/raeume", "Räume"),
+        ("ankuendigungen", "/abos", "Ankündigungen"),
+    ]
+    links = "".join(
+        f'<a{" class=\\"active\\"" if key == active else ""} href="{href}">{label}</a>'
+        for key, href, label in menu_items
+    )
+    switcher = (
+        f'<div class="app-switch" aria-label="App-Wechsel">'
+        f'<span class="app-switch-current">Vertretungsplan</span>'
+        f'<a class="app-switch-target" href="{escape(calendar_target)}">Kalender</a>'
+        f"</div>"
+    )
+    logout_form = ""
+    if csrf_token:
+        logout_form = (
+            '<form class="nav-form" method="post" action="/logout">'
+            f'<input type="hidden" name="csrf_token" value="{escape(csrf_token)}">'
+            '<button type="submit">Abmelden</button>'
+            "</form>"
+        )
+    return f'{links}{switcher}{render_theme_toggle_button()}{logout_form}'
+
+
 COMMON_CSS = """
 :root {
     --background: #f4f6f8;
@@ -364,6 +393,7 @@ main {
     flex-wrap: wrap;
     gap: 10px;
     justify-content: flex-end;
+    align-items: center;
 }
 
 .nav a {
@@ -476,6 +506,48 @@ main {
     background: var(--primary);
     border-color: var(--primary);
     color: white;
+}
+
+.app-switch {
+    display: inline-flex;
+    align-items: stretch;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    min-height: 42px;
+    background: var(--surface);
+}
+
+.app-switch-current,
+.app-switch-target {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 14px;
+    font-weight: 800;
+    text-decoration: none;
+}
+
+.app-switch-current {
+    background: var(--primary);
+    color: white;
+}
+
+.app-switch-target {
+    color: var(--text);
+    border-left: 1px solid var(--border);
+}
+
+.app-switch-target:hover {
+    color: var(--primary);
+}
+
+.nav-form {
+    margin: 0;
+}
+
+.nav-form button {
+    width: auto;
 }
 
 .panel {

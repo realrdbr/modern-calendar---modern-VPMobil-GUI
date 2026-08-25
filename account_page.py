@@ -8,6 +8,7 @@ from urllib.parse import quote
 from accounts import CalendarEventTypeOption, NotifySettings, User
 from subscriptions import SubjectOption
 from web_utils import CALENDAR_PUBLIC_URL, COMMON_CSS, render_theme_script, render_theme_toggle_button
+from web_utils import render_vp_navigation
 
 
 def _layout(title: str, body: str) -> str:
@@ -97,13 +98,14 @@ code {{ word-break:break-all; }}
 </style></head><body><main>{body}</main>{render_theme_script()}</body></html>"""
 
 
-def render_login(error: str | None = None) -> str:
+def render_login(error: str | None = None, next_path: str = "/") -> str:
     notice = f'<p class="notice">{escape(error)}</p>' if error else ""
     return _layout("Anmelden · VpMobil", f"""
-    <header class="topbar"><div class="brand"><h1>VPrintfy</h1><p>Ankündigungen für deine Kurse</p></div>
-      <nav class="nav"><a href="/">Stundenplan</a><a href="{escape(CALENDAR_PUBLIC_URL)}">Kalender</a>{render_theme_toggle_button()}</nav></header>
-    <section class=\"panel auth-card\"><div class=\"brand\"><h1>VPrintfy</h1><p>Ankündigungen für deine Kurse</p></div>
+    <header class="topbar"><div class="brand"><h1>Schulportal</h1><p>Ein Login für Vertretungsplan und Kalender</p></div>
+      <nav class="nav"><div class="app-switch"><span class="app-switch-current">Vertretungsplan</span><a class="app-switch-target" href="{escape(CALENDAR_PUBLIC_URL)}">Kalender</a></div>{render_theme_toggle_button()}</nav></header>
+    <section class=\"panel auth-card\"><div class=\"brand\"><h1>Anmeldung</h1><p>Melde dich an, um Vertretungsplan und Kalender zu öffnen.</p></div>
     {notice}<form class=\"stack\" method=\"post\" action=\"/login\">
+      <input type=\"hidden\" name=\"next\" value=\"{escape(next_path)}\">
       <label>Benutzername<input name=\"username\" autocomplete=\"username\" required maxlength=\"64\"></label>
       <label>Vierstellige PIN<input name=\"pin\" type=\"password\" inputmode=\"numeric\" pattern=\"[0-9]{{4}}\" autocomplete=\"current-password\" required></label>
       <button type=\"submit\">Anmelden</button>
@@ -177,7 +179,7 @@ def render_subscriptions(
     )
     return _layout("Ankündigungen · VpMobil", f"""
     <header class=\"topbar\"><div class=\"brand\"><h1>Meine Ankündigungen</h1><p>{escape(user.username)} · Klasse {escape(user.class_name)}</p></div>
-      <nav class=\"nav\"><a href=\"/\">Stundenplan</a><a href=\"{escape(CALENDAR_PUBLIC_URL)}\">Kalender</a>{render_theme_toggle_button()}<form method=\"post\" action=\"/logout\" style=\"margin:0;\"><input type=\"hidden\" name=\"csrf_token\" value=\"{escape(csrf_token)}\"><button type=\"submit\">Abmelden</button></form></nav></header>
+      <nav class=\"nav\">{render_vp_navigation("ankuendigungen", CALENDAR_PUBLIC_URL, csrf_token=csrf_token)}</nav></header>
     {message}<section class=\"panel\"><form class=\"stack\" method=\"post\" action=\"/abos\">
       <input type=\"hidden\" name=\"csrf_token\" value=\"{escape(csrf_token)}\">
       {class_inputs}

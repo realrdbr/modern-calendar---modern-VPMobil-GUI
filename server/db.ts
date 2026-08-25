@@ -60,7 +60,7 @@ const activeSessions = new Map<string, { username: string; expiresAt: number }>(
 
 export function generateSessionToken(username: string): string {
   const token = crypto.randomBytes(32).toString('hex');
-  const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000; // 30 Tage Gültigkeit
+  const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 Tage Gültigkeit
   activeSessions.set(token, { username: username.toLowerCase(), expiresAt });
   return token;
 }
@@ -80,6 +80,11 @@ export function verifySessionToken(username: string, sessionToken: string): bool
   const sessionUser = getSessionUsername(sessionToken);
   if (!sessionUser) return false;
   return sessionUser === username.toLowerCase();
+}
+
+export function invalidateSessionToken(sessionToken: string | undefined | null): void {
+  if (!sessionToken) return;
+  activeSessions.delete(sessionToken);
 }
 
 export const DEFAULT_PREFERENCES = {

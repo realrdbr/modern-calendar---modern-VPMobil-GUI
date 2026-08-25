@@ -21,7 +21,7 @@ from web_utils import (
     parse_hour,
     query_value,
     render_theme_script,
-    render_theme_toggle_button,
+    render_vp_navigation,
     send_html,
     start_server,
 )
@@ -70,6 +70,8 @@ def render_rooms_page(
     free_rooms: list[int] | None = None,
     error_message: str | None = None,
     plan_version: str = "",
+    username: str | None = None,
+    csrf_token: str | None = None,
 ) -> str:
     """Erzeugt die HTML-Seite für freie Räume."""
 
@@ -120,6 +122,8 @@ def render_rooms_page(
         f'<option value="{hour}" {"selected" if hour == selected_hour else ""}>{hour}. Stunde</option>'
         for hour in range(1, 9)
     )
+
+    calendar_target = f"{CALENDAR_PUBLIC_URL}/{username}" if username else CALENDAR_PUBLIC_URL
 
     return f"""<!doctype html>
 <html lang="de">
@@ -248,14 +252,7 @@ def render_rooms_page(
                 <p>Freie Räume nach Datum und Stunde anzeigen.</p>
             </div>
 
-            <nav class="nav">
-                <a href="/">Klassen</a>
-                <a href="/lehrer">Lehrer</a>
-                <a class="active" href="/raeume">Freie Räume</a>
-                <a href="/abos">Ankündigungen</a>
-                <a href="{escape(CALENDAR_PUBLIC_URL)}">Kalender</a>
-                {render_theme_toggle_button()}
-            </nav>
+            <nav class="nav">{render_vp_navigation("raeume", calendar_target, csrf_token=csrf_token)}</nav>
         </header>
 
         <section class="panel">

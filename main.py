@@ -30,6 +30,7 @@ load_dotenv()
 ROOT = Path(__file__).resolve().parent
 SESSION_COOKIE = "vpmobil_session"
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "true").lower() in {"1", "true", "yes"}
+SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 
 def resolve_bind_host() -> str:
@@ -124,10 +125,16 @@ class AppRequestHandler(BaseHTTPRequestHandler):
     def _field(data: dict[str, list[str]], name: str) -> str:
         return data.get(name, [""])[0]
 
-    def _require_session(self) -> Session | None:
+    def _sanitize_next(self, value: str | None) -> str:
+        if not value or not value.startswith("/") or value.startswith("//"):
+            return "/"
+        return value
+
+    def _require_session(self, next_path: str | None = None) -> Session | None:
         session = self._session()
         if session is None:
-            redirect(self, "/login")
+            target = self._sanitize_next(next_path or self.path)
+            redirect(self, f"/login?next={quote(target, safe='/?=&')}")
         return session
 
     def _validate_csrf(self, session: Session, data: dict[str, list[str]]) -> bool:
@@ -150,14 +157,18 @@ class AppRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
+        next_path = self._sanitize_next(self._field(query, "next")) if parsed.path == "/login" else "/"
         if parsed.path == "/login":
             if self._session():
-                redirect(self, "/abos")
+                redirect(self, next_path)
             else:
-                send_html(self, render_login())
+                send_html(self, render_login(next_path=next_path))
+            return
+        session = self._require_session(self.path)
+        if session is None:
             return
         if parsed.path == "/abos":
-            self.handle_subscriptions()
+            self.handle_subscriptions(session)
             return
         if parsed.path == "/api/plan-version":
             selected_date = parse_week(query_value(query, "woche"))
@@ -169,12 +180,12 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"version": str(getattr(plan, "zeitstempel", "") or "")})
             return
         if parsed.path == "/raeume":
-            self.handle_rooms_page(query)
+            self.handle_rooms_page(query, session)
             return
         if parsed.path == "/lehrer":
-            self.handle_teacher_page(query)
+            self.handle_teacher_page(query, session)
             return
-        self.handle_plan_page(query)
+        self.handle_plan_page(query, session)
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
@@ -185,11 +196,18 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/login":
             user = self.store.authenticate(self._field(data, "username"), self._field(data, "pin"), self._client_ip())
+            next_path = self._sanitize_next(self._field(data, "next"))
             if user is None:
-                send_html(self, render_login("Anmeldung nicht möglich. Prüfe Benutzername und PIN oder versuche es später erneut."))
+                send_html(
+                    self,
+                    render_login(
+                        "Anmeldung nicht möglich. Prüfe Benutzername und PIN oder versuche es später erneut.",
+                        next_path=next_path,
+                    ),
+                )
                 return
             token, _csrf = self.store.create_session(user.id)
-            redirect(self, "/abos", [make_cookie(SESSION_COOKIE, token, max_age=14 * 86400, http_only=True, secure=COOKIE_SECURE)])
+            redirect(self, next_path, [make_cookie(SESSION_COOKIE, token, max_age=SESSION_MAX_AGE_SECONDS, http_only=True, secure=COOKIE_SECURE)])
             return
         session = self._require_session()
         if session is None:
@@ -330,12 +348,10 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             ),
         )
 
-    def handle_subscriptions(self) -> None:
-        session = self._require_session()
-        if session:
-            self.render_subscriptions(session)
+    def handle_subscriptions(self, session: Session) -> None:
+        self.render_subscriptions(session)
 
-    def handle_plan_page(self, query: dict[str, list[str]]) -> None:
+    def handle_plan_page(self, query: dict[str, list[str]], session: Session) -> None:
         selected_date = parse_week(query_value(query, "woche"))
         cookies = self._cookies()
         selected_class = query_value(query, "klasse") or cookies.get("selected_class")
@@ -357,16 +373,31 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if selected_class and subject_cookie_name and "fach" in query:
             headers.append(make_cookie(subject_cookie_name, join_cookie_list(selected_subjects)))
         try:
-            html = render_plan_page(selected_date, selected_class, selected_subjects)
+            html = render_plan_page(selected_date, selected_class, selected_subjects, username=session.user.username, csrf_token=session.csrf_token)
         except ResourceNotFound:
-            html = render_plan_page(selected_date, selected_class, selected_subjects, error_message="Für diese Woche wurden keine Vertretungsplandaten gefunden.")
+            html = render_plan_page(
+                selected_date, selected_class, selected_subjects,
+                error_message="Für diese Woche wurden keine Vertretungsplandaten gefunden.",
+                username=session.user.username,
+                csrf_token=session.csrf_token,
+            )
         except Unauthorized:
-            html = render_plan_page(selected_date, selected_class, selected_subjects, error_message="Die Zugangsdaten sind ungültig oder haben keinen Zugriff auf diese Daten.")
+            html = render_plan_page(
+                selected_date, selected_class, selected_subjects,
+                error_message="Die Zugangsdaten sind ungültig oder haben keinen Zugriff auf diese Daten.",
+                username=session.user.username,
+                csrf_token=session.csrf_token,
+            )
         except Exception as error:
-            html = render_plan_page(selected_date, selected_class, selected_subjects, error_message=f"Beim Laden der Daten ist ein Fehler aufgetreten: {error}")
+            html = render_plan_page(
+                selected_date, selected_class, selected_subjects,
+                error_message=f"Beim Laden der Daten ist ein Fehler aufgetreten: {error}",
+                username=session.user.username,
+                csrf_token=session.csrf_token,
+            )
         send_html(self, html, headers)
 
-    def handle_teacher_page(self, query: dict[str, list[str]]) -> None:
+    def handle_teacher_page(self, query: dict[str, list[str]], session: Session) -> None:
         selected_date = parse_week(query_value(query, "woche"))
         cookies = self._cookies()
         teacher = query_value(query, "lehrer") or cookies.get("selected_teacher")
@@ -381,22 +412,41 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if teacher:
             headers.append(make_cookie("selected_teacher", teacher))
         try:
-            send_html(self, render_teacher_page(selected_date, teacher), headers)
+            send_html(self, render_teacher_page(selected_date, teacher, username=session.user.username, csrf_token=session.csrf_token), headers)
         except Exception as error:
             send_html(
                 self,
-                render_teacher_page(selected_date, teacher, error_message=f"Beim Laden der Daten ist ein Fehler aufgetreten: {error}"),
+                render_teacher_page(
+                    selected_date, teacher,
+                    error_message=f"Beim Laden der Daten ist ein Fehler aufgetreten: {error}",
+                    username=session.user.username,
+                    csrf_token=session.csrf_token,
+                ),
                 headers,
             )
 
-    def handle_rooms_page(self, query: dict[str, list[str]]) -> None:
+    def handle_rooms_page(self, query: dict[str, list[str]], session: Session) -> None:
         from web_utils import parse_date
         selected_date, selected_hour = parse_date(query_value(query, "datum")), parse_hour(query_value(query, "stunde"))
         try:
             plan = get_plan_for_page(selected_date)
-            html = render_rooms_page(selected_date, selected_hour, find_free_rooms_in_plan(plan, selected_hour), plan_version=str(getattr(plan, "zeitstempel", "") or ""))
+            html = render_rooms_page(
+                selected_date,
+                selected_hour,
+                find_free_rooms_in_plan(plan, selected_hour),
+                plan_version=str(getattr(plan, "zeitstempel", "") or ""),
+                username=session.user.username,
+                csrf_token=session.csrf_token,
+            )
         except Exception as error:
-            html = render_rooms_page(selected_date, selected_hour, None, error_message=f"Beim Laden der Daten ist ein Fehler aufgetreten: {error}")
+            html = render_rooms_page(
+                selected_date,
+                selected_hour,
+                None,
+                error_message=f"Beim Laden der Daten ist ein Fehler aufgetreten: {error}",
+                username=session.user.username,
+                csrf_token=session.csrf_token,
+            )
         send_html(self, html)
 
     def log_message(self, _format: str, *_args: object) -> None:

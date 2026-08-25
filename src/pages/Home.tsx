@@ -1,6 +1,6 @@
-import { useState, FormEvent } from 'react';
+import { useState, FormEvent, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { checkUser, registerUser, loginUser } from '../lib/api';
+import { checkUser, registerUser, loginUser, fetchCurrentSession } from '../lib/api';
 import { saveStoredSession } from '../lib/auth';
 import { Lock, User, ArrowRight, ChevronLeft, AlertCircle } from 'lucide-react';
 import AuthFooter from '../components/AuthFooter';
@@ -12,7 +12,28 @@ export default function Home() {
   const [error, setError] = useState('');
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [loading, setLoading] = useState(false);
+  const [restoringSession, setRestoringSession] = useState(true);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    let active = true;
+    const restore = async () => {
+      try {
+        const data = await fetchCurrentSession();
+        if (!active || !data?.user?.username) return;
+        saveStoredSession(data.user.username, data.sessionToken);
+        navigate(`/${data.user.username}`, { replace: true });
+      } catch (_e) {
+        // no active session
+      } finally {
+        if (active) setRestoringSession(false);
+      }
+    };
+    restore();
+    return () => {
+      active = false;
+    };
+  }, [navigate]);
 
   const handleNext = async (e: FormEvent) => {
     e.preventDefault();
@@ -127,7 +148,7 @@ export default function Home() {
                 />
                 <button
                   type="submit"
-                  disabled={loading || !name.trim()}
+                  disabled={loading || restoringSession || !name.trim()}
                   className="bg-[#e91e63] hover:bg-[#d81b60] text-white border-none rounded-lg py-2.5 px-4 text-sm font-bold cursor-pointer flex items-center gap-1.5 shrink-0 shadow-none transition-colors disabled:opacity-60"
                 >
                   <span>{loading ? '...' : 'Weiter'}</span>
@@ -155,7 +176,7 @@ export default function Home() {
                 />
                 <button
                   type="submit"
-                  disabled={loading || pin.length < 4}
+                  disabled={loading || restoringSession || pin.length < 4}
                   className="bg-[#e91e63] hover:bg-[#d81b60] text-white border-none rounded-lg py-2.5 px-4 text-sm font-bold cursor-pointer flex items-center gap-1.5 shrink-0 shadow-none transition-colors disabled:opacity-60"
                 >
                   <span>{loading ? '...' : 'Entsperren'}</span>
@@ -196,7 +217,7 @@ export default function Home() {
                 />
                 <button
                   type="submit"
-                  disabled={loading || (pin.length > 0 && pin.length < 4)}
+                  disabled={loading || restoringSession || (pin.length > 0 && pin.length < 4)}
                   className="bg-[#e91e63] hover:bg-[#d81b60] text-white border-none rounded-lg py-2.5 px-4 text-sm font-bold cursor-pointer flex items-center gap-1.5 shrink-0 shadow-none transition-colors disabled:opacity-60"
                 >
                   <span>{loading ? '...' : 'Erstellen'}</span>

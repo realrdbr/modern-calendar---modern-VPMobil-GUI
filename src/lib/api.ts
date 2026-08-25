@@ -70,6 +70,26 @@ export async function loginWithSessionToken(username: string, sessionToken: stri
   return data;
 }
 
+export async function fetchCurrentSession() {
+  const res = await fetch(`${API_URL}/api/session`, { headers: getHeaders() });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.error || 'Keine aktive Sitzung');
+  }
+  const data = await res.json();
+  if (data.sessionToken && data.user?.username) {
+    setCookie('cal11_active_token', data.sessionToken, 7);
+  }
+  return data;
+}
+
+export async function logoutCurrentSession() {
+  await fetch(`${API_URL}/api/logout`, {
+    method: 'POST',
+    headers: getHeaders(),
+  });
+}
+
 export async function fetchUser(username: string) {
   const res = await fetch(`${API_URL}/api/users/${username}`, { headers: getHeaders() });
   if (!res.ok) throw new Error('User not found');

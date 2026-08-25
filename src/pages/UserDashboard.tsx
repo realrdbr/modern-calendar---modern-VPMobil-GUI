@@ -1,6 +1,6 @@
 import { useState, useEffect, FormEvent } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { checkUser, loginUser, loginWithSessionToken, fetchUser, saveUserSettings } from '../lib/api';
+import { checkUser, loginUser, loginWithSessionToken, fetchUser, saveUserSettings, logoutCurrentSession } from '../lib/api';
 import { getStoredSession, saveStoredSession, clearStoredSession } from '../lib/auth';
 import CalendarView from '../components/CalendarView';
 import AuthFooter from '../components/AuthFooter';
@@ -277,7 +277,10 @@ export default function UserDashboard() {
     );
   }
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await logoutCurrentSession();
+    } catch (_e) {}
     if (username) {
       clearStoredSession(username);
     }
