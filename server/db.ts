@@ -173,7 +173,7 @@ export async function dbRecordCalendarLoginAttempt(username: string, ipAddress: 
 export const DEFAULT_PREFERENCES = {
   darkMode: false,
   themeMode: 'system',
-  accentColor: '#0f766e',
+  accentColor: '#e91e63',
   colorKlausur: '#e65176',
   colorHausaufgabe: '#59b3cb',
   colorSonstiges: '#3d60c7',

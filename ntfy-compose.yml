@@ -16,4 +16,4 @@ services:
       - ./data/ntfy:/var/lib/ntfy
       - ./ntfy/server.yml:/etc/ntfy/server.yml:ro
     ports:
-      - "127.0.0.1:${NTFY_PORT:-8090}:80"
+      - "${NTFY_BIND_HOST:-127.0.0.1}:${NTFY_PORT:-8090}:80"
