@@ -67,7 +67,7 @@ services:
       - ./data/ntfy:/var/lib/ntfy
       - ./ntfy/server.yml:/etc/ntfy/server.yml:ro
     ports:
-      - "127.0.0.1:${NTFY_PORT:-8090}:80"
+      - "${NTFY_PORT:-8090}:80"
     networks:
       - cal11_net
 
@@ -129,7 +129,7 @@ services:
       BAD_ROOMS: ${BAD_ROOMS}
       ALL_ROOMS: ${ALL_ROOMS}
     ports:
-      - "127.0.0.1:${VP_PORT:-8000}:${VP_PORT:-8000}"
+      - "${VP_PORT:-8000}:${VP_PORT:-8000}"
     volumes:
       - ./data/ntfy:/var/lib/ntfy
     networks:
