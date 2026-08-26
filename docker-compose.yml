@@ -42,8 +42,11 @@ services:
       VITE_KALENDER_URL: ${CALENDAR_PUBLIC_URL:-http://127.0.0.1:3000}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+      APP_TIMEZONE: ${APP_TIMEZONE:-Europe/Berlin}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?APP_ENCRYPTION_KEY muss gesetzt sein}
+      CALENDAR_PRIVATE_DATA_KEY: ${CALENDAR_PRIVATE_DATA_KEY:-}
     ports:
-      - "${CAL11_PORT:-3000}:${CAL11_PORT:-3000}"
+      - "127.0.0.1:${CAL11_PORT:-3000}:${CAL11_PORT:-3000}"
     networks:
       - cal11_net
 
@@ -64,7 +67,7 @@ services:
       - ./data/ntfy:/var/lib/ntfy
       - ./ntfy/server.yml:/etc/ntfy/server.yml:ro
     ports:
-      - "${NTFY_PORT:-8090}:80"
+      - "127.0.0.1:${NTFY_PORT:-8090}:80"
     networks:
       - cal11_net
 
@@ -78,7 +81,7 @@ services:
       - ntfy
     environment:
       NTFY_AUTH_FILE: /var/lib/ntfy/auth.db
-      NTFY_PROVISIONER_SECRET: ${APP_ENCRYPTION_KEY}
+      NTFY_PROVISIONER_SECRET: ${APP_ENCRYPTION_KEY:?APP_ENCRYPTION_KEY muss gesetzt sein}
     volumes:
       - ./data/ntfy:/var/lib/ntfy
     networks:
@@ -104,14 +107,18 @@ services:
       DB_USER: ${DB_USER:-cal11user}
       DB_PASSWORD: ${DB_PASSWORD:-geheimes_passwort_hier_eintragen}
       DB_NAME: ${DB_NAME:-cal11}
-      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?APP_ENCRYPTION_KEY muss gesetzt sein}
+      CALENDAR_PRIVATE_DATA_KEY: ${CALENDAR_PRIVATE_DATA_KEY:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+      APP_TIMEZONE: ${APP_TIMEZONE:-Europe/Berlin}
       NTFY_PUBLIC_URL: ${NTFY_PUBLIC_URL:-http://127.0.0.1:8090}
       NTFY_INTERNAL_URL: ${NTFY_INTERNAL_URL:-http://ntfy}
       NTFY_AUTOSTART: "false"
       NTFY_PROVISIONER_URL: http://ntfy-provisioner:8080
-      NTFY_PROVISIONER_SECRET: ${APP_ENCRYPTION_KEY}
+      NTFY_PROVISIONER_SECRET: ${APP_ENCRYPTION_KEY:?APP_ENCRYPTION_KEY muss gesetzt sein}
+      NTFY_CACHE_FILE: /var/lib/ntfy/cache.db
+      NTFY_HISTORY_CLEANUP_MARKER: /var/lib/ntfy/.history-cleanup-date
       CALENDAR_PUBLIC_URL: ${CALENDAR_PUBLIC_URL:-http://127.0.0.1:3000}
       VERTRETUNGSPLAN_PUBLIC_URL: ${VERTRETUNGSPLAN_PUBLIC_URL:-http://127.0.0.1:8000}
       SCHULNUMMER: ${SCHULNUMMER}
@@ -122,7 +129,9 @@ services:
       BAD_ROOMS: ${BAD_ROOMS}
       ALL_ROOMS: ${ALL_ROOMS}
     ports:
-      - "${VP_PORT:-8000}:${VP_PORT:-8000}"
+      - "127.0.0.1:${VP_PORT:-8000}:${VP_PORT:-8000}"
+    volumes:
+      - ./data/ntfy:/var/lib/ntfy
     networks:
       - cal11_net
 

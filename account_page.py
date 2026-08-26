@@ -7,22 +7,20 @@ from urllib.parse import quote
 
 from accounts import CalendarEventTypeOption, NotifySettings, User
 from subscriptions import SubjectOption
-from web_utils import CALENDAR_PUBLIC_URL, COMMON_CSS, render_theme_script, render_theme_toggle_button
+from web_utils import CALENDAR_PUBLIC_URL, COMMON_CSS, render_theme_script, render_vp_navigation
 
 
 def _layout(title: str, body: str) -> str:
     main_class = ' class="login-root"' if title.startswith("Anmelden") else ""
     return f"""<!doctype html><html lang=\"de\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{escape(title)}</title><style>{COMMON_CSS}
 :root {{ color-scheme: light; }}
-body {{ background: var(--background); color: var(--text); font-family: Inter, "Segoe UI", sans-serif; }}
-main {{ min-height:100vh; }}
+body {{ background: var(--background); color: var(--text); font-family:system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+main {{ width:min(1320px, calc(100% - 24px)); min-height:100vh; }}
 .topbar {{ max-width: 1040px; margin: 0 auto; padding: 18px 14px 0; display:flex; justify-content:space-between; align-items:center; gap:12px; }}
 .brand {{ display:flex; flex-direction:column; gap:3px; }}
 .brand h1, .brand p {{ margin:0; }}
 .brand h1 {{ font-size: clamp(1.3rem, 2vw, 2rem); }}
 .brand p {{ color: var(--muted); font-size: 0.85rem; }}
-.nav {{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }}
-.nav a {{ display:inline-flex; align-items:center; justify-content:center; min-height:42px; color:var(--text); text-decoration:none; padding:8px 12px; border-radius:10px; border:1px solid var(--border); background:var(--surface); font-weight:800; }}
 .panel {{ max-width: 1040px; margin: 18px auto 0; padding: 0 14px 32px; }}
 .auth-card {{ max-width: 620px; margin: 8vh auto 0; }}
 .stack {{ display:grid; gap:16px; }}
@@ -59,7 +57,8 @@ button:not(.theme-toggle) {{ min-height:44px; border:0; border-radius:10px; padd
 .time-tab {{ display:grid; gap:5px; min-width:0; padding:10px; border:1px solid var(--border); border-radius:13px; background:rgba(148,163,184,.04); }}
 .time-tab span {{ min-width:0; color:var(--muted); font-size:.72rem; font-weight:800; text-transform:uppercase; letter-spacing:.03em; overflow-wrap:anywhere; }}
 .time-tab input {{ width:100%; min-width:0; background:var(--surface); }}
-.calendar-row {{ display:grid; grid-template-columns:minmax(150px, 1fr) minmax(120px, .75fr); gap:10px; align-items:end; }}
+.calendar-row {{ display:grid; grid-template-columns:minmax(125px, .8fr) minmax(240px, 1.4fr); gap:10px; align-items:end; }}
+.category-schedule {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; min-width:0; }}
 .category-block {{ display:grid; gap:9px; }}
 .category-block h3 {{ font-size:.9rem; }}
 .class-select-label {{ display:grid; }}
@@ -69,11 +68,6 @@ button:not(.theme-toggle) {{ min-height:44px; border:0; border-radius:10px; padd
 code {{ word-break:break-all; }}
 @media (max-width: 760px) {{
   .topbar {{ padding-top:12px; align-items:flex-start; }}
-  .nav {{ width:100%; display:flex; flex-wrap:wrap; }}
-  .nav a {{ flex:1 1 auto; }}
-  .nav form {{ flex:1 1 auto; }}
-  .nav form button {{ width:100%; }}
-  .nav .theme-toggle {{ flex:0 0 auto; }}
   .settings-grid {{ grid-template-columns:1fr; }}
   .panel {{ padding: 0 10px 22px; }}
   .settings-card {{ padding:14px; }}
@@ -92,14 +86,13 @@ code {{ word-break:break-all; }}
   .time-tab input {{ flex:0 0 120px; width:120px; min-width:120px; min-height:40px; padding-left:8px; padding-right:6px; text-align:center; }}
   .time-tab input::-webkit-datetime-edit {{ display:flex; justify-content:center; width:100%; padding:0; }}
   .time-tab input::-webkit-calendar-picker-indicator {{ margin:0; padding:2px; }}
-  .calendar-row {{ grid-template-columns:1fr; }}
+  .calendar-row {{ grid-template-columns:minmax(88px, .7fr) minmax(0, 1.5fr); }}
+  .category-schedule {{ grid-template-columns:minmax(0,1fr) minmax(82px,.72fr); }}
   .save-row button {{ width:100%; }}
 }}
 /* Compact dashboard treatment */
-.topbar {{ max-width:1180px; padding:16px 16px 0; }}
-.nav {{ gap:6px; }}
-.nav a {{ min-height:36px; padding:6px 10px; border-radius:6px; font-size:.875rem; font-weight:650; }}
-.panel {{ max-width:1180px; margin-top:16px; padding-left:16px; padding-right:16px; }}
+.topbar {{ max-width:none; margin:0 0 16px; padding:0; }}
+.panel {{ max-width:none; margin:0; padding:0 0 32px; }}
 .auth-card {{ max-width:440px; margin-top:8vh; display:grid; gap:20px; padding:24px; border:1px solid var(--border); border-radius:8px; background:var(--surface); }}
 .login-heading {{ display:grid; gap:6px; padding-bottom:16px; border-bottom:1px solid var(--border); }}
 .login-heading h1, .login-heading p {{ margin:0; }}
@@ -118,6 +111,8 @@ button:not(.theme-toggle) {{ min-height:38px; border:1px solid var(--primary); b
 .login-root {{ width:100%; max-width:none; min-height:100vh; margin:0; padding:0; overflow:hidden; }}
 .calendar-login-shell {{ width:calc(100% - 48px); max-width:432px; margin:auto; padding:32px 0; display:flex; flex-direction:column; align-items:center; }}
 .calendar-login-header {{ margin-bottom:24px; text-align:center; }}
+.login-product-icon {{ width:48px; height:48px; margin:0 auto 14px; display:grid; place-items:center; border:1px solid var(--border); border-radius:10px; background:var(--surface-muted); color:#e91e63; }}
+.login-product-icon svg {{ width:26px; height:26px; }}
 .calendar-login-header h1 {{ margin:0 0 8px; font-size:clamp(1.75rem, 5vw, 2rem); line-height:1.15; letter-spacing:-.025em; }}
 .calendar-login-header p {{ max-width:330px; margin:0 auto; color:var(--muted); font-size:.94rem; line-height:1.4; font-weight:500; }}
 .calendar-login-header a {{ display:inline-flex; margin-top:12px; min-height:36px; align-items:center; padding:6px 12px; border:1px solid var(--border); border-radius:8px; color:var(--text); background:var(--surface); text-decoration:none; font-size:.78rem; font-weight:650; }}
@@ -158,7 +153,7 @@ def render_login(error: str | None = None, *, username: str = "", pin_step: bool
         """
         step_label = "Schritt 1 von 2 · Konto"
     return _layout("Anmelden · VpMobil", f"""
-    <div class="calendar-login"><section class="calendar-login-shell"><header class="calendar-login-header"><h1>Vertretungsplan</h1><p>Stundenplan, Änderungen und persönliche Ankündigungen auf einen Blick.</p><a href="{escape(CALENDAR_PUBLIC_URL)}">Zum Kalender</a></header>
+    <div class="calendar-login"><section class="calendar-login-shell"><header class="calendar-login-header"><div class="login-product-icon" data-login-product="clock" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg></div><h1>Vertretungsplan</h1><p>Stundenplan, Änderungen und persönliche Ankündigungen auf einen Blick.</p><a href="{escape(CALENDAR_PUBLIC_URL)}">Zum Kalender</a></header>
     {notice}{form}</section><footer class="calendar-login-footer"><span>{step_label}</span><a href="{escape(CALENDAR_PUBLIC_URL)}">cal11.de</a></footer></div>""")
 
 
@@ -215,8 +210,10 @@ def render_subscriptions(
     event_type_checkboxes = "".join(
         '<div class="calendar-row">'
         + _choice_checkbox("calendar_event_type", option.id, option.label, checked=option.id in notify_settings.calendar_notification_types)
-        + f'<label>Uhrzeit für {escape(option.label)}<input type="time" name="calendar_notification_time__{quote(option.id, safe="")}" '
-          f'value="{escape((notify_settings.calendar_notification_times or {}).get(option.id, notify_settings.calendar_notification_time))}" required step="60"></label></div>'
+        + f'<div class="category-schedule"><label>Uhrzeit<input type="time" name="calendar_notification_time__{quote(option.id, safe="")}" '
+          f'value="{escape((notify_settings.calendar_notification_times or {}).get(option.id, notify_settings.calendar_notification_time))}" required step="60"></label>'
+        + f'<label>Tage vorher<input type="number" min="0" max="365" inputmode="numeric" '
+          f'name="calendar_notification_days_before__{quote(option.id, safe="")}" value="{(notify_settings.calendar_notification_days_before_by_type or {}).get(option.id, notify_settings.calendar_notification_days_before)}" required></label></div></div>'
         for option in calendar_event_types
     ) or "<p class=\"muted\">Im Kalender sind aktuell keine Kategorien verfügbar.</p>"
 
@@ -232,7 +229,7 @@ def render_subscriptions(
     )
     return _layout("Ankündigungen · VpMobil", f"""
     <header class=\"topbar\"><div class=\"brand\"><h1>Meine Ankündigungen</h1><p>{escape(user.username)} · Klasse {escape(user.class_name)}</p></div>
-      <nav class=\"nav\"><a href=\"/\">Stundenplan</a><a href=\"{escape(CALENDAR_PUBLIC_URL)}\">Kalender</a>{render_theme_toggle_button()}<form method=\"post\" action=\"/logout\" style=\"margin:0;\"><input type=\"hidden\" name=\"csrf_token\" value=\"{escape(csrf_token)}\"><button type=\"submit\">Abmelden</button></form></nav></header>
+      {render_vp_navigation("notifications", csrf_token)}</header>
     {message}<section class=\"panel\"><form class=\"stack\" method=\"post\" action=\"/abos\">
       <input type=\"hidden\" name=\"csrf_token\" value=\"{escape(csrf_token)}\">
       {class_inputs}
@@ -254,7 +251,6 @@ def render_subscriptions(
             <div class=\"settings-card-header\"><div><div class=\"settings-kicker\">Kalender</div><h2>Erinnerungen</h2></div></div>
             <div class=\"field-grid\">
               <label class=\"toggle-row\"><input type=\"checkbox\" id=\"calendar_notifications_enabled\" name=\"calendar_notifications_enabled\"{" checked" if notify_settings.calendar_notifications_enabled else ""}><span>Kalender-Benachrichtigungen aktiv</span></label>
-              <label>Tage vorher<input name=\"calendar_notification_days_before\" type=\"number\" inputmode=\"numeric\" min=\"0\" value=\"{notify_settings.calendar_notification_days_before}\"></label>
               <div class=\"category-block\"><h3>Kategorien und Uhrzeiten</h3><div class=\"field-grid\">{event_type_checkboxes}</div></div>
             </div>
           </article>

@@ -112,7 +112,8 @@ export default function EventModal({ isOpen, onClose, onSave, onDelete, initialD
       reader.onload = async (event) => {
         const base64 = event.target?.result as string;
         try {
-          const uploaded = await uploadFile(file.name, file.type, base64);
+          const privateAttachment = !!categories.find(category => category.id === type)?.isPrivate;
+          const uploaded = await uploadFile(file.name, file.type, base64, privateAttachment);
           setAttachments(prev => [...prev, uploaded]);
         } catch (err) {
           console.error('File upload failed:', err);
@@ -153,6 +154,7 @@ export default function EventModal({ isOpen, onClose, onSave, onDelete, initialD
   };
 
   const selectedCourseDisplay = getCourseDisplayName(courseId);
+  const isPrivateCategory = !!categories.find(category => category.id === type)?.isPrivate;
 
   if (isViewMode) {
     return (
@@ -344,7 +346,11 @@ export default function EventModal({ isOpen, onClose, onSave, onDelete, initialD
               <label className={`block text-sm font-semibold ${theme.textMuted} mb-1`}>Typ</label>
               <select
                 value={type}
-                onChange={e => setType(e.target.value)}
+                onChange={e => {
+                  const nextType = e.target.value;
+                  setType(nextType);
+                  if (categories.find(category => category.id === nextType)?.isPrivate) setCourseId('ALLGEMEIN');
+                }}
                 className={`w-full px-3 py-1.5 border ${theme.border} ${theme.inputBg} ${theme.textMain} focus:outline-none`}
               >
                 {categories.map(c => {
@@ -360,7 +366,9 @@ export default function EventModal({ isOpen, onClose, onSave, onDelete, initialD
               <select
                 value={courseId}
                 onChange={e => setCourseId(e.target.value)}
-                className={`w-full px-3 py-1.5 border ${theme.border} ${theme.inputBg} ${theme.textMain} focus:outline-none text-sm`}
+                disabled={isPrivateCategory}
+                aria-describedby={isPrivateCategory ? 'private-course-hint' : undefined}
+                className={`w-full px-3 py-1.5 border ${theme.border} ${theme.inputBg} ${theme.textMain} focus:outline-none text-sm disabled:opacity-45 disabled:cursor-not-allowed`}
               >
                 <option value="ALLGEMEIN">Allgemein (für alle)</option>
                 {availableCourses.map(c => (
@@ -369,6 +377,7 @@ export default function EventModal({ isOpen, onClose, onSave, onDelete, initialD
                   </option>
                 ))}
               </select>
+              {isPrivateCategory && <p id="private-course-hint" className={`mt-1 text-[11px] ${theme.textMuted}`}>Private Termine sind keinem Kurs zugeordnet.</p>}
             </div>
           </div>
 

@@ -5,7 +5,7 @@ import { getStoredSession, saveStoredSession, clearStoredSession } from '../lib/
 import CalendarView from '../components/CalendarView';
 import AuthFooter from '../components/AuthFooter';
 import { User } from '../types';
-import { Lock, ArrowLeft, ArrowRight, AlertCircle } from 'lucide-react';
+import { Lock, ArrowLeft, ArrowRight, AlertCircle, CalendarDays } from 'lucide-react';
 
 export default function UserDashboard() {
   const { username } = useParams<{ username: string }>();
@@ -293,6 +293,9 @@ export default function UserDashboard() {
         <div className="my-auto max-w-[480px] w-full px-6 py-8 flex flex-col items-center">
           {/* HEADER */}
           <header className="mb-6 text-center">
+            <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-[10px] border border-[#cbd5e1] bg-[#f8f9fa] text-[#e91e63]" aria-hidden="true">
+              <CalendarDays className="h-6 w-6" strokeWidth={1.8} />
+            </div>
             <h1 className="text-3xl sm:text-[32px] font-extrabold tracking-tight text-[#0f172a] mb-2">
               Jahrgangskalender 11
             </h1>

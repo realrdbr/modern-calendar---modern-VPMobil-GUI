@@ -1,4 +1,5 @@
 import os
+from html import escape
 from datetime import date, datetime, timedelta
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,6 +14,20 @@ _requested_host = os.getenv("BIND_HOST", os.getenv("HOST", "127.0.0.1"))
 DEFAULT_HOST = "0.0.0.0" if os.path.exists("/.dockerenv") and _requested_host in {"127.0.0.1", "localhost"} else _requested_host
 CALENDAR_PUBLIC_URL = os.getenv("CALENDAR_PUBLIC_URL", "http://127.0.0.1:3000").rstrip("/")
 VERTRETUNGSPLAN_PUBLIC_URL = os.getenv("VERTRETUNGSPLAN_PUBLIC_URL", "http://127.0.0.1:8000").rstrip("/")
+
+
+def render_vp_navigation(active: str, csrf_token: str | None = None) -> str:
+    links = (("classes", "/", "Klassen"), ("teachers", "/lehrer", "Lehrer"),
+             ("rooms", "/raeume", "Freie Räume"), ("notifications", "/abos", "Ankündigungen"))
+    items = ""
+    for key, href, label in links:
+        active_class = ' class="active"' if key == active else ""
+        items += f'<a{active_class} href="{href}">{label}</a>'
+    logout = (
+        f'<form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf_token" value="{escape(csrf_token)}">'
+        f'<button class="logout-button" type="submit">Abmelden</button></form>' if csrf_token else ""
+    )
+    return f'<nav class="nav">{items}<a href="{escape(CALENDAR_PUBLIC_URL)}">Kalender</a>{logout}{render_theme_toggle_button()}</nav>'
 
 SESSION_WATCH_SCRIPT = """<script>
 (() => {
@@ -528,6 +543,12 @@ main {
     border-color: var(--primary);
     color: white;
 }
+.logout-form { margin:0; }
+.logout-button { min-height:36px !important; height:36px !important; padding:0 12px !important; border:1px solid var(--border) !important; border-radius:6px !important; background:var(--surface) !important; color:var(--text) !important; font-size:.875rem !important; font-weight:650 !important; box-shadow:none !important; }
+.logout-button:hover { border-color:var(--bad-border) !important; color:var(--bad-text) !important; }
+.class-select-label { display:grid; gap:4px; min-width:180px; color:var(--muted); font-size:.75rem; font-weight:700; }
+.class-select { min-height:36px; padding:6px 32px 6px 10px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font:inherit; font-size:.875rem; font-weight:650; }
+.class-select:focus { outline:3px solid color-mix(in srgb, var(--primary) 20%, transparent); border-color:var(--primary); }
 
 .panel {
     display: flex;
@@ -678,8 +699,32 @@ button:not(.theme-toggle):hover,
         width: 100%;
     }
 
-    .nav a {
-        flex: 1;
+    .nav {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        align-items: stretch;
+    }
+
+    .nav > a,
+    .nav > .logout-form,
+    .nav > .theme-toggle {
+        min-width: 0;
+        width: 100%;
+    }
+
+    .nav > .logout-form {
+        display: flex;
+    }
+
+    .nav > .logout-form .logout-button {
+        width: 100%;
+    }
+
+    .nav > .theme-toggle {
+        justify-content: center;
+        width: fit-content;
+        max-width: fit-content;
+        justify-self: start;
     }
 
     .theme-toggle {
@@ -723,6 +768,13 @@ button:not(.theme-toggle):hover,
     label.theme-toggle {
         width: fit-content;
         max-width: fit-content;
+    }
+
+    .nav > label.theme-toggle {
+        width: fit-content;
+        max-width: fit-content;
+        justify-content: center;
+        justify-self: start;
     }
 
     .panel {

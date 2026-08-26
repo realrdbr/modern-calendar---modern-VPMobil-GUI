@@ -132,6 +132,7 @@ class SubscriptionNotifier:
         self.blocks = DEFAULT_BLOCKS
         self._known_plan_signatures: dict[date, dict[str, str]] = {}
         self._publisher_auth = resolve_ntfy_publisher_auth()
+        self.delivery_errors: list[str] = []
 
     @staticmethod
     def _plan_signature(class_item: object) -> str:
@@ -280,7 +281,9 @@ class SubscriptionNotifier:
             f"{self.ntfy_url}/{user.ntfy_topic}", data=message.encode("utf-8"),
             headers={"Title": Header(title, "utf-8").encode(), "Priority": priority, "Tags": "calendar"},
             timeout=self.timeout,
-            auth=self._publisher_auth,
+            # Persönliche Zugangsdaten garantieren die Topic-Isolation und
+            # funktionieren unabhängig von einem globalen Publisher-Konto.
+            auth=(user.ntfy_username, user.ntfy_password),
         )
         response.raise_for_status()
 
@@ -289,9 +292,10 @@ class SubscriptionNotifier:
             return False
         try:
             self._publish(user, message, title, priority)
-        except requests.RequestException:
+        except requests.RequestException as error:
             self.store.forget_delivery(user.id, event_key)
-            raise
+            self.delivery_errors.append(f"{user.username} ({event_key}): {error}")
+            return False
         return True
 
     def send_user_test(self, user: User) -> None:
@@ -375,8 +379,11 @@ class SubscriptionNotifier:
         notification_time = (settings.calendar_notification_times or {}).get(
             event.event_type, settings.calendar_notification_time
         )
+        days_before = (settings.calendar_notification_days_before_by_type or {}).get(
+            event.event_type, settings.calendar_notification_days_before
+        )
         return datetime.combine(
-            event_date - timedelta(days=settings.calendar_notification_days_before),
+            event_date - timedelta(days=days_before),
             datetime.strptime(notification_time, "%H:%M").time(),
         )
 
@@ -394,7 +401,14 @@ class SubscriptionNotifier:
             lines.append(event.description)
         return title, "\n".join(lines)
 
-    def poll_once(self, plan: object, now: datetime | None = None) -> int:
+    def poll_once(
+        self,
+        plan: object,
+        now: datetime | None = None,
+        *,
+        recipient_username: str | None = None,
+    ) -> int:
+        self.delivery_errors.clear()
         now = now or datetime.now()
         plan_date = getattr(plan, "datum", None) or now.date()
         known_signatures = self._known_plan_signatures.setdefault(plan_date, {})
@@ -406,10 +420,13 @@ class SubscriptionNotifier:
                 changed_classes.add(class_name)
             known_signatures[class_name] = signature
         sent = 0
-        calendar_events = self.store.get_calendar_events()
         for recipient in self.store.notification_recipients():
             user = recipient.user
+            if recipient_username is not None and user.username != recipient_username:
+                continue
             settings = recipient.notify_settings
+            # Private calendar data is decrypted and loaded only for its owner.
+            calendar_events = self.store.get_calendar_events(user.username)
             has_subject_selection = any(recipient.subject_selections.values())
             if plan_date.weekday() < 5 and settings.lesson_notifications_enabled and has_subject_selection:
                 lesson_times = sorted(
@@ -467,7 +484,7 @@ class SubscriptionNotifier:
                     title, message = self._calendar_message(event)
                     sent += self._deliver(
                         user,
-                        f"calendar:{event.id}:{settings.calendar_notification_days_before}:"
+                        f"calendar:{event.id}:{(settings.calendar_notification_days_before_by_type or {}).get(event.event_type, settings.calendar_notification_days_before)}:"
                         f"{(settings.calendar_notification_times or {}).get(event.event_type, settings.calendar_notification_time)}",
                         message,
                         title,

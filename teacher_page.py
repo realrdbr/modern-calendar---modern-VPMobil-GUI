@@ -24,7 +24,7 @@ from web_utils import (
     send_html,
     start_server, DEFAULT_PORT,
     render_theme_script,
-    render_theme_toggle_button,
+    render_vp_navigation,
 )
 
 
@@ -361,6 +361,7 @@ def render_teacher_page(
     selected_date: date,
     selected_teacher: str | None = None,
     error_message: str | None = None,
+    logout_csrf_token: str | None = None,
 ) -> str:
     """Erzeugt die komplette Lehrerplan-Seite."""
 
@@ -793,14 +794,7 @@ def render_teacher_page(
                 <p>Woche {escape(week_title)}</p>
             </div>
 
-            <nav class="nav">
-                <a href="/">Klassen</a>
-                <a class="active" href="/lehrer">Lehrer</a>
-                <a href="/raeume">Freie Räume</a>
-                <a href="/abos">Ankündigungen</a>
-                <a href="{escape(CALENDAR_PUBLIC_URL)}">Kalender</a>
-                {render_theme_toggle_button()}
-            </nav>
+            {render_vp_navigation("teachers", logout_csrf_token)}
         </header>
 
         <section class="panel">

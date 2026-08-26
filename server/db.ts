@@ -8,8 +8,57 @@ dotenv.config();
 let pool: mysql.Pool | null = null;
 let isConnected = false;
 
+type PrivateCalendarData = { categories: any[]; events: any[] };
+const privateMemoryStore = new Map<string, PrivateCalendarData>();
+const privateMutationQueues = new Map<string, Promise<void>>();
+
+async function withPrivateMutation<T>(username: string, operation: () => Promise<T>): Promise<T> {
+  const key = username.toLowerCase();
+  const previous = privateMutationQueues.get(key) || Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>(resolve => { release = resolve; });
+  const chain = previous.then(() => current);
+  privateMutationQueues.set(key, chain);
+  await previous;
+  try { return await operation(); }
+  finally {
+    release();
+    if (privateMutationQueues.get(key) === chain) privateMutationQueues.delete(key);
+  }
+}
+
+function privateDataKey(): Buffer {
+  const secret = process.env.CALENDAR_PRIVATE_DATA_KEY || process.env.APP_ENCRYPTION_KEY || '';
+  if (!secret && process.env.NODE_ENV === 'production') {
+    throw new Error('CALENDAR_PRIVATE_DATA_KEY oder APP_ENCRYPTION_KEY muss in Produktion gesetzt sein.');
+  }
+  return crypto.createHash('sha256').update(secret || 'development-only-private-calendar-key').digest();
+}
+
+export function encryptPrivateData(username: string, data: PrivateCalendarData) {
+  const nonce = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', privateDataKey(), nonce);
+  cipher.setAAD(Buffer.from(username.toLowerCase(), 'utf8'));
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(data), 'utf8'), cipher.final()]);
+  return { nonce, ciphertext, authTag: cipher.getAuthTag() };
+}
+
+export function decryptPrivateData(username: string, row: any): PrivateCalendarData {
+  const decipher = crypto.createDecipheriv('aes-256-gcm', privateDataKey(), Buffer.from(row.nonce));
+  decipher.setAAD(Buffer.from(username.toLowerCase(), 'utf8'));
+  decipher.setAuthTag(Buffer.from(row.auth_tag));
+  const parsed = JSON.parse(Buffer.concat([decipher.update(Buffer.from(row.ciphertext)), decipher.final()]).toString('utf8'));
+  return { categories: Array.isArray(parsed.categories) ? parsed.categories : [], events: Array.isArray(parsed.events) ? parsed.events : [] };
+}
+
 function hashPinLegacy(pin: string): string {
   return crypto.createHash('sha256').update(`${pin}_cal11_salt_2026`).digest('hex');
+}
+
+function generateInitialCredentials(): { username: string; pin: string } {
+  const username = crypto.randomBytes(6).toString('base64url').replace(/[^A-Za-z0-9]/g, '').slice(0, 8).padEnd(8, 'A');
+  const pin = crypto.randomInt(0, 10000).toString().padStart(4, '0');
+  return { username, pin };
 }
 
 function safeEqualText(a: string, b: string): boolean {
@@ -79,6 +128,7 @@ export async function getSessionUsername(sessionToken: string): Promise<string |
     );
     if (rows.length) return String(rows[0].username).toLowerCase();
   }
+  if (isConnected && pool) return null;
   const session = activeSessions.get(sessionToken);
   if (!session) return null;
   if (Date.now() > session.expiresAt) {
@@ -139,24 +189,11 @@ const memoryStore: {
   admins: string[];
   categories: any[];
 } = {
-  users: {
-    'gustavd': {
-      courses: [],
-      pin: undefined,
-      preferences: { ...DEFAULT_PREFERENCES },
-      status: 'ADMIN'
-    },
-    'sophiam': {
-      courses: [],
-      pin: undefined,
-      preferences: { ...DEFAULT_PREFERENCES },
-      status: 'ACTIVE'
-    }
-  },
+  users: {},
   events: [],
   feedbacks: [],
   courses: [...DEFAULT_COURSES],
-  admins: ['gustavd'],
+  admins: [],
   categories: [
     { id: 'KLAUSUR', name: 'Klausur', color: '#e65176', sort_order: 0 },
     { id: 'HAUSAUFGABE', name: 'Hausaufgabe', color: '#59b3cb', sort_order: 1 },
@@ -170,6 +207,8 @@ async function sleep(ms: number) {
 }
 
 export async function initDatabase() {
+  // Fail closed before accepting requests if encrypted private data cannot be protected.
+  privateDataKey();
   const dbHost = process.env.DB_HOST;
   const dbUser = process.env.DB_USER;
   const dbPassword = process.env.DB_PASSWORD;
@@ -178,6 +217,15 @@ export async function initDatabase() {
 
   if (!dbHost || !dbUser) {
     console.log('[Database] Keine DB-Umgebungsvariablen gefunden. Nutze In-Memory Speicher.');
+    if (Object.keys(memoryStore.users).length === 0) {
+      const credentials = generateInitialCredentials();
+      const hashedPin = hashPin(credentials.pin);
+      memoryStore.users[credentials.username.toLowerCase()] = {
+        courses: [], pin: hashedPin, preferences: { ...DEFAULT_PREFERENCES }, status: 'ADMIN'
+      };
+      memoryStore.admins.push(credentials.username.toLowerCase());
+      console.warn(`[Database] Erster Admin angelegt: Benutzername=${credentials.username}, PIN=${credentials.pin}. PIN sofort sicher speichern.`);
+    }
     return;
   }
 
@@ -225,6 +273,19 @@ export async function initDatabase() {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
       await conn.query('DELETE FROM app_sessions WHERE expires_at <= NOW()');
+
+      await conn.query(`
+        CREATE TABLE IF NOT EXISTS user_private_calendar_data (
+          username VARCHAR(64) PRIMARY KEY,
+          nonce BINARY(12) NOT NULL,
+          ciphertext LONGBLOB NOT NULL,
+          auth_tag BINARY(16) NOT NULL,
+          crypto_version TINYINT UNSIGNED NOT NULL DEFAULT 1,
+          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          CONSTRAINT fk_private_calendar_user FOREIGN KEY (username)
+            REFERENCES users(username) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+      `);
 
       await conn.query(`
         CREATE TABLE IF NOT EXISTS calendar_login_attempts (
@@ -304,6 +365,11 @@ export async function initDatabase() {
         await conn.query('ALTER TABLE events ADD COLUMN deleted_by VARCHAR(64) DEFAULT NULL;');
       } catch (e) {}
 
+      await conn.query(`
+        DELETE FROM events
+        WHERE COALESCE(NULLIF(end_date, ''), date) < DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 18 MONTH), '%Y-%m-%d')
+      `);
+
       // Create courses table for dynamic courses & custom ordering (utf8mb4_bin for case-sensitive DE1 vs de1)
       await conn.query(`
         CREATE TABLE IF NOT EXISTS courses (
@@ -330,21 +396,15 @@ export async function initDatabase() {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
 
-      // Seed default accounts if users table is empty
+      // Seed one random administrator on a genuinely empty installation.
       const [rows]: any = await conn.query('SELECT COUNT(*) as count FROM users');
       if (rows[0].count === 0) {
-        console.log('[Database] Initialisiere Standard-Benutzerkonten (gustavd, sophiam)...');
-        for (const [uname, udata] of Object.entries(memoryStore.users)) {
-          await conn.query(
-            'INSERT INTO users (username, courses, pin, preferences, status) VALUES (?, ?, ?, ?, ?)',
-            [uname, JSON.stringify(udata.courses), udata.pin ? hashPin(udata.pin) : null, JSON.stringify(udata.preferences), udata.status || 'ACTIVE']
-          );
-        }
-      } else {
-        // Ensure gustavd has status ADMIN in database
-        try {
-          await conn.query("UPDATE users SET status = 'ADMIN' WHERE username = 'gustavd' AND (status IS NULL OR status = 'ACTIVE');");
-        } catch (e) {}
+        const credentials = generateInitialCredentials();
+        await conn.query(
+          'INSERT INTO users (username, courses, pin, preferences, status) VALUES (?, ?, ?, ?, ?)',
+          [credentials.username, '[]', hashPin(credentials.pin), JSON.stringify(DEFAULT_PREFERENCES), 'ADMIN']
+        );
+        console.warn(`[Database] Erster Admin angelegt: Benutzername=${credentials.username}, PIN=${credentials.pin}. PIN sofort sicher speichern.`);
       }
 
       // Seed default courses if missing in the MariaDB
@@ -422,7 +482,15 @@ export async function dbGetUser(username: string) {
       preferences: { ...DEFAULT_PREFERENCES, ...parsedPreferences, themeMode }
     };
   }
-  return null;
+  const memoryUser = memoryStore.users[uname];
+  if (!memoryUser) return null;
+  return {
+    username: uname,
+    courses: memoryUser.courses || [],
+    pin: memoryUser.pin || undefined,
+    status: memoryUser.status || 'ACTIVE',
+    preferences: { ...DEFAULT_PREFERENCES, ...(memoryUser.preferences || {}) }
+  };
 }
 
 export async function dbGetUsers() {
@@ -599,14 +667,127 @@ export async function dbResetCoursesToDefaults(): Promise<Course[]> {
   return memoryStore.courses;
 }
 
+async function dbLoadPrivateCalendar(username: string): Promise<PrivateCalendarData> {
+  const normalized = username.toLowerCase();
+  if (isConnected && pool) {
+    const [rows]: any = await pool.query('SELECT nonce, ciphertext, auth_tag FROM user_private_calendar_data WHERE username = ?', [normalized]);
+    return rows.length ? decryptPrivateData(normalized, rows[0]) : { categories: [], events: [] };
+  }
+  return structuredClone(privateMemoryStore.get(normalized) || { categories: [], events: [] });
+}
+
+async function dbStorePrivateCalendar(username: string, data: PrivateCalendarData): Promise<void> {
+  const normalized = username.toLowerCase();
+  if (isConnected && pool) {
+    const encrypted = encryptPrivateData(normalized, data);
+    await pool.query(
+      `INSERT INTO user_private_calendar_data(username, nonce, ciphertext, auth_tag, crypto_version)
+       VALUES (?, ?, ?, ?, 1) ON DUPLICATE KEY UPDATE nonce=VALUES(nonce), ciphertext=VALUES(ciphertext), auth_tag=VALUES(auth_tag), crypto_version=1`,
+      [normalized, encrypted.nonce, encrypted.ciphertext, encrypted.authTag]
+    );
+    return;
+  }
+  privateMemoryStore.set(normalized, structuredClone(data));
+}
+
+export async function dbGetPrivateCalendar(username: string): Promise<PrivateCalendarData> {
+  return dbLoadPrivateCalendar(username);
+}
+
+export async function dbCreatePrivateCategory(username: string, category: any) {
+  return withPrivateMutation(username, async () => {
+    const data = await dbLoadPrivateCalendar(username);
+    if (data.categories.length >= 5) throw new Error('CATEGORY_LIMIT');
+    if (data.categories.some(c => c.name.toLocaleLowerCase('de-DE') === category.name.toLocaleLowerCase('de-DE'))) throw new Error('CATEGORY_DUPLICATE');
+    data.categories.push({ ...category, isPrivate: true, sort_order: data.categories.length });
+    await dbStorePrivateCalendar(username, data);
+    return data.categories.at(-1);
+  });
+}
+
+export async function dbDeletePrivateCategory(username: string, categoryId: string): Promise<boolean> {
+  return withPrivateMutation(username, async () => {
+    const data = await dbLoadPrivateCalendar(username);
+    if (!data.categories.some(c => c.id === categoryId)) return false;
+    data.categories = data.categories.filter(c => c.id !== categoryId);
+    data.events = data.events.filter(e => e.type !== categoryId);
+    await dbStorePrivateCalendar(username, data);
+    return true;
+  });
+}
+
+export async function dbCreatePrivateEvent(username: string, event: any) {
+  return withPrivateMutation(username, async () => {
+    const data = await dbLoadPrivateCalendar(username);
+    if (!data.categories.some(c => c.id === event.type)) return null;
+    data.events.push({ ...event, courseId: 'ALLGEMEIN', author: username.toLowerCase() });
+    await dbStorePrivateCalendar(username, data);
+    return data.events.at(-1);
+  });
+}
+
+export async function dbUpdatePrivateEvent(username: string, id: string, update: any) {
+  return withPrivateMutation(username, async () => {
+    const data = await dbLoadPrivateCalendar(username);
+    const index = data.events.findIndex(e => e.id === id);
+    if (index < 0) return null;
+    const nextType = update.type ?? data.events[index].type;
+    if (!data.categories.some(c => c.id === nextType)) throw new Error('PRIVATE_CATEGORY_FORBIDDEN');
+    data.events[index] = { ...data.events[index], ...update, id, courseId: 'ALLGEMEIN', author: username.toLowerCase() };
+    await dbStorePrivateCalendar(username, data);
+    return data.events[index];
+  });
+}
+
+export async function dbDeletePrivateEvent(username: string, id: string): Promise<boolean> {
+  return withPrivateMutation(username, async () => {
+    const data = await dbLoadPrivateCalendar(username);
+    const before = data.events.length;
+    data.events = data.events.filter(e => e.id !== id);
+    if (before === data.events.length) return false;
+    await dbStorePrivateCalendar(username, data);
+    return true;
+  });
+}
+
+export async function dbCleanupExpiredEvents(): Promise<number> {
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - 18);
+  const cutoffDate = cutoff.toISOString().slice(0, 10);
+  let removed = 0;
+  if (isConnected && pool) {
+    const [result]: any = await pool.query(`DELETE FROM events WHERE COALESCE(NULLIF(end_date, ''), date) < ?`, [cutoffDate]);
+    removed += result.affectedRows || 0;
+    const [users]: any = await pool.query('SELECT username FROM user_private_calendar_data');
+    for (const row of users) {
+      const data = await dbLoadPrivateCalendar(row.username);
+      const before = data.events.length;
+      data.events = data.events.filter(e => (e.endDate || e.date) >= cutoffDate);
+      if (data.events.length !== before) await dbStorePrivateCalendar(row.username, data);
+      removed += before - data.events.length;
+    }
+    return removed;
+  }
+  const before = memoryStore.events.length;
+  memoryStore.events = memoryStore.events.filter(e => (e.endDate || e.date) >= cutoffDate);
+  removed += before - memoryStore.events.length;
+  for (const [username, data] of privateMemoryStore) {
+    const privateBefore = data.events.length;
+    data.events = data.events.filter(e => (e.endDate || e.date) >= cutoffDate);
+    privateMemoryStore.set(username, data);
+    removed += privateBefore - data.events.length;
+  }
+  return removed;
+}
+
 // Event Operations (with Soft Delete)
-export async function dbGetEvents(includeDeleted = false) {
+export async function dbGetEvents(includeDeleted = false, visibleCourses?: string[]) {
   if (isConnected && pool) {
     const query = includeDeleted 
       ? 'SELECT * FROM events ORDER BY date ASC, start_time ASC' 
       : 'SELECT * FROM events WHERE deleted_at IS NULL ORDER BY date ASC, start_time ASC';
     const [rows]: any = await pool.query(query);
-    return rows.map((r: any) => ({
+    const events = rows.map((r: any) => ({
       id: r.id,
       title: r.title,
       date: r.date,
@@ -621,10 +802,16 @@ export async function dbGetEvents(includeDeleted = false) {
       deletedAt: r.deleted_at || undefined,
       deletedBy: r.deleted_by || undefined
     }));
+    if (!visibleCourses) return events;
+    const allowed = new Set(visibleCourses.map(String));
+    return events.filter((event: any) => event.courseId === 'ALLGEMEIN' || allowed.has(String(event.courseId)));
   }
-  return memoryStore.events
+  const events = memoryStore.events
     .filter(e => includeDeleted || !e.deletedAt)
     .map(e => ({ ...e }));
+  if (!visibleCourses) return events;
+  const allowed = new Set(visibleCourses.map(String));
+  return events.filter((event: any) => event.courseId === 'ALLGEMEIN' || allowed.has(String(event.courseId)));
 }
 
 export async function dbGetEventById(id: string) {

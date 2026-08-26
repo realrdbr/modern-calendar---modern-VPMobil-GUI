@@ -11,7 +11,8 @@
     "start:all": "sh -c 'python main.py & VP_PID=$!; trap \"kill $VP_PID\" EXIT; npm run start'",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test:calendar-private": "tsx --test tests/calendar-private.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

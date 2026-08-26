@@ -3,4 +3,8 @@
 auth-default-access: "deny-all"
 # Selbst gehostetes ntfy benötigt diesen Upstream für sofortige iOS-Pushs.
 upstream-base-url: "https://ntfy.sh"
+# Der ntfy-Manager entfernt den Verlauf rollierend spätestens nach einem Tag.
+# Direkte SQLite-Manipulationen um Mitternacht wären bei laufendem ntfy unsicher.
+cache-duration: "24h"
+manager-interval: "1m"
 # Nur authentifizierte Nutzer dürfen veröffentlichen/abonnieren.

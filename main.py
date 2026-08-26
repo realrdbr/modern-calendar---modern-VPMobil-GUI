@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 import json
 import os
 from pathlib import Path
+import sqlite3
+from types import SimpleNamespace
 from threading import Event, Thread
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import time
@@ -103,6 +106,26 @@ def build_store() -> AccountStore:
     return AccountStore(path, os.getenv("APP_ENCRYPTION_KEY", ""))
 
 
+def cleanup_ntfy_history_once_per_day(now: datetime) -> bool:
+    cache_path = Path(os.getenv("NTFY_CACHE_FILE", "/var/lib/ntfy/cache.db"))
+    marker_path = Path(os.getenv("NTFY_HISTORY_CLEANUP_MARKER", "/var/lib/ntfy/.history-cleanup-date"))
+    today = now.date().isoformat()
+    try:
+        if marker_path.read_text(encoding="utf-8").strip() == today:
+            return False
+    except FileNotFoundError:
+        pass
+    if not cache_path.exists():
+        return False
+    with sqlite3.connect(cache_path, timeout=10) as connection:
+        table = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'").fetchone()
+        if not table:
+            raise RuntimeError("ntfy-Cache enthält keine messages-Tabelle")
+        connection.execute("DELETE FROM messages")
+    marker_path.write_text(today, encoding="utf-8")
+    return True
+
+
 class NotificationWorker(Thread):
     def __init__(self, store: AccountStore, stop_event: Event):
         super().__init__(name="vpmobil-notifications", daemon=True)
@@ -114,9 +137,19 @@ class NotificationWorker(Thread):
     def run(self) -> None:
         while not self.stop_event.is_set():
             try:
-                sent = self.notifier.poll_once(fetch_plan(date.today()), datetime.now())
+                local_now = datetime.now(ZoneInfo(os.getenv("APP_TIMEZONE", "Europe/Berlin"))).replace(tzinfo=None)
+                if cleanup_ntfy_history_once_per_day(local_now):
+                    log("ntfy-Verlauf für den neuen Kalendertag geleert.")
+                try:
+                    plan = fetch_plan(local_now.date())
+                except Exception as error:
+                    log(f"Planabruf für Benachrichtigungen fehlgeschlagen; Kalender läuft weiter: {error}")
+                    plan = SimpleNamespace(datum=local_now.date(), zeitstempel=None, zeitplan={}, klassen={})
+                sent = self.notifier.poll_once(plan, local_now)
                 if sent:
                     log(f"{sent} persönliche ntfy-Benachrichtigung(en) gesendet.")
+                for delivery_error in self.notifier.delivery_errors:
+                    log(f"ntfy-Versand fehlgeschlagen, nächster Versuch folgt: {delivery_error}")
             except Exception as error:
                 log(f"Benachrichtigungs-Worker fehlgeschlagen: {error}")
             self.stop_event.wait(self.interval)
@@ -296,13 +329,17 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                     lesson_times = self._split_time_list(self._field(data, "lesson_notification_times"))
                 if not lesson_times:
                     raise ValueError("Bitte hinterlege mindestens eine Uhrzeit für Stundenbenachrichtigungen.")
-                event_type_options = self.store.get_calendar_event_types()
+                event_type_options = self.store.get_calendar_event_types(session.user.username)
                 allowed_event_types = {option.id for option in event_type_options}
                 selected_event_types = tuple(dict.fromkeys(data.get("calendar_event_type", [])))
                 if not set(selected_event_types) <= allowed_event_types:
                     raise ValueError("Die ausgewählten Kalender-Kategorien sind ungültig.")
                 category_times = {
                     option.id: self._field(data, f"calendar_notification_time__{quote(option.id, safe='')}").strip() or "16:00"
+                    for option in event_type_options
+                }
+                category_days = {
+                    option.id: int(self._field(data, f"calendar_notification_days_before__{quote(option.id, safe='')}") or "1")
                     for option in event_type_options
                 }
                 settings = NotifySettings(
@@ -312,6 +349,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                     calendar_notification_time=self._field(data, "calendar_notification_time").strip() or "16:00",
                     calendar_notification_times=category_times,
                     calendar_notification_days_before=int(self._field(data, "calendar_notification_days_before") or "1"),
+                    calendar_notification_days_before_by_type=category_days,
                     calendar_notification_types=selected_event_types,
                 )
                 if settings.calendar_notifications_enabled and not settings.calendar_notification_types:
@@ -370,7 +408,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                     }
                     selected_subjects_by_class[class_name] = defaults
             settings, has_settings = self.store.load_notify_settings(session.user.id)
-            event_type_options = self.store.get_calendar_event_types()
+            event_type_options = self.store.get_calendar_event_types(session.user.username)
             if not has_settings and not settings.calendar_notification_types:
                 settings = NotifySettings(
                     lesson_notifications_enabled=settings.lesson_notifications_enabled,
@@ -379,7 +417,11 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                     calendar_notification_time=settings.calendar_notification_time,
                     calendar_notification_times=settings.calendar_notification_times,
                     calendar_notification_days_before=settings.calendar_notification_days_before,
-                    calendar_notification_types=tuple(option.id for option in event_type_options),
+                    calendar_notification_days_before_by_type=settings.calendar_notification_days_before_by_type,
+                    calendar_notification_types=tuple(
+                        option.id for option in event_type_options
+                        if option.id.strip().casefold() != "ferien" and option.label.strip().casefold() != "ferien"
+                    ),
                 )
         except Exception as exception:
             class_options, subject_options_by_class, selected_classes, selected_subjects_by_class = [], {}, (session.user.class_name,), {}
@@ -425,14 +467,26 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             return
         subject_cookie_name = get_selected_subject_cookie_name(selected_class) if selected_class else None
         if selected_class and subject_cookie_name:
+            if session:
+                current_options = subject_options_from_plans(get_subject_catalog_plans(), selected_class)
+                allowed_keys = {option.key for option in current_options}
+                stored_by_class, has_stored = self.store.get_subject_selections(session.user.id, session.user.class_name)
+                if has_stored and selected_class in stored_by_class:
+                    pruned = stored_by_class[selected_class] & allowed_keys
+                    if pruned != stored_by_class[selected_class]:
+                        stored_by_class[selected_class] = pruned
+                        self.store.replace_subjects(session.user.id, stored_by_class)
             selected_subjects = query_values(query, "fach") or split_cookie_list(cookies.get(subject_cookie_name))
             if not selected_subjects and session:
                 catalog_options = subject_options_from_plans(get_subject_catalog_plans(), selected_class)
                 labels_by_key = {option.key: option.label for option in catalog_options}
                 stored_by_class, has_stored = self.store.get_subject_selections(session.user.id, session.user.class_name)
-                selected_keys = stored_by_class.get(selected_class, set()) if has_stored else {
+                selected_keys = (stored_by_class.get(selected_class, set()) & set(labels_by_key)) if has_stored else {
                     subject_key(course_id) for course_id in self.store.get_calendar_course_ids(session.user.username)
                 }
+                if has_stored and selected_keys != stored_by_class.get(selected_class, set()):
+                    stored_by_class[selected_class] = selected_keys
+                    self.store.replace_subjects(session.user.id, stored_by_class)
                 selected_subjects = [labels_by_key[key] for key in selected_keys if key in labels_by_key]
         if query_value(query, "fach_clear") == "1":
             selected_subjects = []
@@ -446,8 +500,9 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 options = subject_options_from_plans(get_subject_catalog_plans(), selected_class)
                 keys_by_label = {option.label: option.key for option in options}
                 selected_keys = {keys_by_label[label] for label in selected_subjects if label in keys_by_label}
-                self.store.replace_selected_classes(session.user.id, {selected_class})
-                self.store.replace_subjects(session.user.id, {selected_class: selected_keys})
+                stored_by_class, _ = self.store.get_subject_selections(session.user.id, session.user.class_name)
+                stored_by_class[selected_class] = selected_keys
+                self.store.replace_subjects(session.user.id, stored_by_class)
                 self.store.replace_calendar_course_ids(
                     session.user.username,
                     {key.removeprefix("subject:") for key in selected_keys},
@@ -477,11 +532,11 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if teacher:
             headers.append(make_cookie("selected_teacher", teacher))
         try:
-            send_html(self, render_teacher_page(selected_date, teacher), headers)
+            send_html(self, render_teacher_page(selected_date, teacher, logout_csrf_token=self._session().csrf_token), headers)
         except Exception as error:
             send_html(
                 self,
-                render_teacher_page(selected_date, teacher, error_message=f"Beim Laden der Daten ist ein Fehler aufgetreten: {error}"),
+                render_teacher_page(selected_date, teacher, error_message=f"Beim Laden der Daten ist ein Fehler aufgetreten: {error}", logout_csrf_token=self._session().csrf_token),
                 headers,
             )
 
@@ -490,9 +545,9 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         selected_date, selected_hour = parse_date(query_value(query, "datum")), parse_hour(query_value(query, "stunde"))
         try:
             plan = get_plan_for_page(selected_date)
-            html = render_rooms_page(selected_date, selected_hour, find_free_rooms_in_plan(plan, selected_hour), plan_version=str(getattr(plan, "zeitstempel", "") or ""))
+            html = render_rooms_page(selected_date, selected_hour, find_free_rooms_in_plan(plan, selected_hour), plan_version=str(getattr(plan, "zeitstempel", "") or ""), logout_csrf_token=self._session().csrf_token)
         except Exception as error:
-            html = render_rooms_page(selected_date, selected_hour, None, error_message=f"Beim Laden der Daten ist ein Fehler aufgetreten: {error}")
+            html = render_rooms_page(selected_date, selected_hour, None, error_message=f"Beim Laden der Daten ist ein Fehler aufgetreten: {error}", logout_csrf_token=self._session().csrf_token)
         send_html(self, html)
 
     def log_message(self, _format: str, *_args: object) -> None:

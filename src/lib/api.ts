@@ -93,11 +93,11 @@ export async function saveUserSettings(username: string, data: any) {
   return res.json();
 }
 
-export async function uploadFile(filename: string, mimeType: string, data: string) {
+export async function uploadFile(filename: string, mimeType: string, data: string, privateAttachment = false) {
   const res = await fetch(`${API_URL}/api/upload`, {
     method: 'POST',
     headers: getHeaders(),
-    body: JSON.stringify({ filename, mimeType, data }),
+    body: JSON.stringify({ filename, mimeType, data, privateAttachment }),
   });
   if (!res.ok) {
     const error = await res.json();
@@ -108,6 +108,7 @@ export async function uploadFile(filename: string, mimeType: string, data: strin
 
 export async function fetchEvents() {
   const res = await fetch(`${API_URL}/api/events`, { headers: getHeaders() });
+  if (!res.ok) throw new Error((await res.json()).error || 'Termine konnten nicht geladen werden.');
   return res.json();
 }
 
@@ -117,6 +118,7 @@ export async function createEvent(eventData: any) {
     headers: getHeaders(),
     body: JSON.stringify(eventData),
   });
+  if (!res.ok) throw new Error((await res.json()).error || 'Termin konnte nicht erstellt werden.');
   return res.json();
 }
 
@@ -126,6 +128,7 @@ export async function updateEvent(id: string, eventData: any) {
     headers: getHeaders(),
     body: JSON.stringify(eventData),
   });
+  if (!res.ok) throw new Error((await res.json()).error || 'Termin konnte nicht geändert werden.');
   return res.json();
 }
 
@@ -134,6 +137,7 @@ export async function deleteEvent(id: string) {
     method: 'DELETE',
     headers: getHeaders(),
   });
+  if (!res.ok) throw new Error((await res.json()).error || 'Termin konnte nicht gelöscht werden.');
   return res.json();
 }
 
@@ -274,6 +278,24 @@ export async function adminResetUserPin(username: string) {
 export async function fetchCategories() {
   const res = await fetch(`${API_URL}/api/categories`, { headers: getHeaders() });
   return res.json();
+}
+
+export async function createPrivateCategory(name: string, color: string) {
+  const res = await fetch(`${API_URL}/api/private-categories`, {
+    method: 'POST', headers: getHeaders(), body: JSON.stringify({ name, color })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Kategorie konnte nicht erstellt werden.');
+  return data;
+}
+
+export async function deletePrivateCategory(id: string) {
+  const res = await fetch(`${API_URL}/api/private-categories/${encodeURIComponent(id)}`, {
+    method: 'DELETE', headers: getHeaders()
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Kategorie konnte nicht gelöscht werden.');
+  return data;
 }
 
 export async function saveCategory(category: { id?: string; name: string; color: string; sort_order?: number }) {

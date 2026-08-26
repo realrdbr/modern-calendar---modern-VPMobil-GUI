@@ -29,7 +29,7 @@ from web_utils import (
     split_cookie_list,
     start_server, DEFAULT_PORT,
     render_theme_script,
-    render_theme_toggle_button,
+    render_vp_navigation,
 )
 
 DAY_NAMES = {
@@ -483,9 +483,9 @@ def render_plan_page(
                         <p>Wochenplan von Montag bis Freitag. Tippe eine Stunde an, um Details zu sehen.</p>
                     </div>
 
-                    <a class="button button-secondary" href="/?woche={selected_date.isoformat()}&klasse_clear=1">
-                        Andere Klasse wählen
-                    </a>
+                    <label class="class-select-label">Klasse anzeigen
+                      <select class="class-select" data-plan-class-select>{''.join(f'<option value="/?woche={format_week_value(selected_date)}&amp;klasse={escape(class_name)}"{" selected" if class_name == selected_class else ""}>{escape(class_name)}</option>' for class_name in available_classes)}</select>
+                    </label>
                 </section>
 
                 {render_subject_filter(week_plans, selected_date, selected_class, selected_subjects, get_subject_catalog_plans(), filters_active)}
@@ -959,15 +959,7 @@ def render_plan_page(
                 <p>Woche {escape(week_title)}</p>
             </div>
 
-            <nav class="nav">
-                <a class="active" href="/">Klassen</a>
-                <a href="/lehrer">Lehrer</a>
-                <a href="/raeume">Freie Räume</a>
-                <a href="/abos">Ankündigungen</a>
-                <a href="{escape(CALENDAR_PUBLIC_URL)}">Kalender</a>
-                {f'<form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf_token" value="{escape(logout_csrf_token)}"><button class="logout-button" type="submit">Abmelden</button></form>' if logout_csrf_token else ''}
-                {render_theme_toggle_button()}
-            </nav>
+            {render_vp_navigation("classes", logout_csrf_token)}
         </header>
 
         <section class="panel">
@@ -980,6 +972,7 @@ def render_plan_page(
 
         {content}
     </main>{render_theme_script()}
+    <script>document.querySelector('[data-plan-class-select]')?.addEventListener('change', (event) => window.location.assign(event.currentTarget.value));</script>
     {f'''<script>
         (() => {{
             const initialVersion = {json.dumps(week_version)};

@@ -8,12 +8,14 @@ import unittest
 from unittest.mock import ANY, Mock, patch
 
 from cryptography.fernet import Fernet
+import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from accounts import AccountStore, NotifySettings
-from account_page import render_login
+from accounts import AccountStore, CalendarEventTypeOption, NotifySettings
+from account_page import render_login, render_subscriptions
 from main import resolve_cookie_domain
+from main import cleanup_ntfy_history_once_per_day
 from ntfy.service import NtfyService, resolve_ntfy_internal_url
 from subscriptions import SubscriptionNotifier, subject_key, subject_options
 from vp_data import get_future_week_dates, get_future_week_plans, get_subject_catalog_plans
@@ -39,8 +41,11 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_pin_is_hashed_and_session_is_server_side(self):
-        raw_database = (Path(self.temp.name) / "accounts.sqlite").read_bytes()
-        self.assertNotIn(b"1234", raw_database)
+        import sqlite3
+        with sqlite3.connect(Path(self.temp.name) / "accounts.sqlite") as connection:
+            stored_pin = connection.execute("SELECT pin_hash FROM users WHERE username = ?", ("alice",)).fetchone()[0]
+        self.assertNotEqual(stored_pin, "1234")
+        self.assertTrue(stored_pin.startswith("scrypt$") or stored_pin.startswith("$argon2"))
         self.assertEqual(self.store.authenticate("alice", "1234", "127.0.0.1").id, self.alice.id)
         self.assertIsNone(self.store.authenticate("alice", "0000", "127.0.0.1"))
         token, csrf = self.store.create_session(self.alice.id)
@@ -48,8 +53,24 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         self.assertEqual(session.user.username, "alice")
         self.assertEqual(session.csrf_token, csrf)
 
+    def test_ntfy_history_is_cleared_only_once_per_calendar_day(self):
+        cache = Path(self.temp.name) / "cache.db"
+        marker = Path(self.temp.name) / "cleanup-date"
+        import sqlite3
+        with sqlite3.connect(cache) as connection:
+            connection.execute("CREATE TABLE messages(id INTEGER PRIMARY KEY, message TEXT)")
+            connection.execute("INSERT INTO messages(message) VALUES ('secret')")
+        with patch.dict("os.environ", {"NTFY_CACHE_FILE": str(cache), "NTFY_HISTORY_CLEANUP_MARKER": str(marker)}):
+            self.assertTrue(cleanup_ntfy_history_once_per_day(datetime(2026, 8, 27, 0, 0)))
+            with sqlite3.connect(cache) as connection:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 0)
+                connection.execute("INSERT INTO messages(message) VALUES ('new')")
+            self.assertFalse(cleanup_ntfy_history_once_per_day(datetime(2026, 8, 27, 12, 0)))
+            self.assertTrue(cleanup_ntfy_history_once_per_day(datetime(2026, 8, 28, 0, 0)))
+
     def test_login_is_two_step_and_pin_is_restricted_to_four_digits(self):
         username_page = render_login()
+        self.assertIn('data-login-product="clock"', username_page)
         self.assertIn('name="stage" value="username"', username_page)
         self.assertNotIn('name="pin"', username_page)
 
@@ -58,6 +79,22 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         self.assertIn('inputmode="numeric"', pin_page)
         self.assertIn('pattern="[0-9]{4}"', pin_page)
         self.assertIn('maxlength="4"', pin_page)
+
+    def test_notification_form_only_has_category_specific_days_and_shared_navigation(self):
+        page = render_subscriptions(
+            self.alice, ["11"], ("11",), {"11": []}, {"11": set()},
+            NotifySettings(
+                calendar_notification_types=("KLAUSUR",),
+                calendar_notification_days_before_by_type={"KLAUSUR": 5},
+            ),
+            [CalendarEventTypeOption("KLAUSUR", "Klausur"), CalendarEventTypeOption("FERIEN", "Ferien")],
+            "csrf", "https://ntfy.invalid",
+        )
+        self.assertNotIn('name="calendar_notification_days_before"', page)
+        self.assertIn('name="calendar_notification_days_before__KLAUSUR" value="5"', page)
+        self.assertIn('<a class="active" href="/abos">Ankündigungen</a>', page)
+        ferien_input = page.split('value="FERIEN"', 1)[1].split('</label>', 1)[0]
+        self.assertNotIn(" checked", ferien_input)
 
     def test_shared_calendar_identity_without_pin_does_not_require_pin(self):
         store = object.__new__(AccountStore)
@@ -163,6 +200,57 @@ class AccountAndSubscriptionTests(unittest.TestCase):
             SubscriptionNotifier._calendar_notification_at(event, loaded),
             datetime(2026, 8, 26, 18, 15),
         )
+
+    def test_calendar_categories_keep_individual_days_before(self):
+        settings = NotifySettings(
+            calendar_notifications_enabled=True,
+            calendar_notification_types=("KLAUSUR", "HAUSAUFGABE"),
+            calendar_notification_times={"KLAUSUR": "07:30", "HAUSAUFGABE": "18:15"},
+            calendar_notification_days_before_by_type={"KLAUSUR": 7, "HAUSAUFGABE": 2},
+        )
+        self.store.save_notify_settings(self.alice.id, settings)
+        loaded, _ = self.store.load_notify_settings(self.alice.id)
+        event = SimpleNamespace(date="2026-08-27", event_type="KLAUSUR")
+        self.assertEqual(
+            SubscriptionNotifier._calendar_notification_at(event, loaded),
+            datetime(2026, 8, 20, 7, 30),
+        )
+
+    def test_automatic_publish_uses_personal_topic_credentials(self):
+        notifier = SubscriptionNotifier(self.store, "https://ntfy.invalid")
+        with patch("subscriptions.requests.post") as post:
+            post.return_value.raise_for_status.return_value = None
+            notifier._publish(self.alice, "Nachricht", "Titel")
+        self.assertEqual(post.call_args.kwargs["auth"], (self.alice.ntfy_username, self.alice.ntfy_password))
+
+    def test_failed_ntfy_recipient_does_not_abort_later_deliveries(self):
+        notifier = SubscriptionNotifier(self.store, "https://ntfy.invalid")
+        notifier._publish = Mock(side_effect=[requests.ConnectionError("offline"), None])
+        self.assertFalse(notifier._deliver(self.alice, "first", "Nachricht", "Titel"))
+        self.assertTrue(notifier._deliver(self.bob, "second", "Nachricht", "Titel"))
+        self.assertEqual(len(notifier.delivery_errors), 1)
+        self.assertTrue(self.store.mark_delivery_once(self.alice.id, "first"))
+
+    def test_emulated_scheduler_can_be_restricted_to_one_user(self):
+        selected = {subject_key("Mathe")}
+        self.store.replace_subjects(self.alice.id, {"11": selected})
+        self.store.replace_subjects(self.bob.id, {"11": selected})
+        plan = SimpleNamespace(
+            datum=date(2026, 8, 20), zeitstempel=None,
+            zeitplan={1: (time(7, 45), time(9, 15))},
+            klassen={"11": SimpleNamespace(kurse={}, stunden={
+                1: [lesson("Mathe", "101", 1)], 2: [lesson("Mathe", "101", 2)],
+            })},
+        )
+        notifier = SubscriptionNotifier(self.store, "https://ntfy.invalid")
+        delivered_to = []
+        notifier._publish = lambda user, *_args, **_kwargs: delivered_to.append(user.username)
+
+        self.assertEqual(
+            notifier.poll_once(plan, datetime(2026, 8, 20, 7, 0), recipient_username="alice"),
+            1,
+        )
+        self.assertEqual(delivered_to, ["alice"])
 
     def test_local_ntfy_compose_hostname_resolves_to_loopback_port(self):
         with patch.dict("os.environ", {"NTFY_INTERNAL_URL": "http://ntfy", "NTFY_PORT": "8099"}, clear=False), patch(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date
+from datetime import date, datetime, time
 from getpass import getpass
 import os
 from pathlib import Path
@@ -59,6 +59,10 @@ def main() -> None:
                       help="morning=Tagesübersicht, change=Planänderung, next=Nächster Unterricht")
     test.add_argument("--block", type=int, choices=(1, 2, 3),
                       help="Ausgangsblock für next, z.B. 1 für die Meldung zu Block 2")
+    emulate = commands.add_parser("emulate-schedule", help="Emuliert einen Scheduler-Lauf für genau einen Nutzer")
+    emulate.add_argument("username", help="Nutzer, dessen persönliche Zeit und Benachrichtigungen getestet werden")
+    emulate.add_argument("--time", required=True, help="Lokale Uhrzeit im Format HH:MM")
+    emulate.add_argument("--date", dest="run_date", help="Optionales Datum YYYY-MM-DD (Standard: heute)")
     args = parser.parse_args()
     account_store = store()
     if args.command in {"create-user", "reset-pin"} and not args.pin:
@@ -95,6 +99,15 @@ def main() -> None:
             user, account_store.get_subjects(user.id), plan, args.type, args.block,
         )
         print(f"Testbenachrichtigung ({args.type}) an {user.username} gesendet.")
+    elif args.command == "emulate-schedule":
+        user = account_store.get_user(args.username)
+        if not user.active:
+            raise ValueError("Der Nutzer ist deaktiviert.")
+        run_date = date.fromisoformat(args.run_date) if args.run_date else date.today()
+        emulated_now = datetime.combine(run_date, datetime.strptime(args.time, "%H:%M").time())
+        notifier = SubscriptionNotifier(account_store, NtfyService(ROOT).internal_url)
+        sent = notifier.poll_once(fetch_plan(run_date), emulated_now, recipient_username=user.username)
+        print(f"Scheduler für {user.username} am {emulated_now:%d.%m.%Y um %H:%M} emuliert: {sent} Benachrichtigung(en) gesendet.")
     else:
         account_store.set_active(args.username, args.active == "true")
         print("Nutzerstatus geändert.")
@@ -104,5 +117,5 @@ if __name__ == "__main__":
     main()
 
 
-# python admin.py send-test lisa --type next --block 1
-# python admin.py send-test lisa --type morning
+#admin.py emulate-schedule gustavd --time 07:00
+#python admin.py emulate-schedule gustavd --time 07:00 --date 2026-08-27

@@ -11,6 +11,13 @@ import {
   dbSaveUser,
   dbDeleteUser,
   dbGetEvents,
+  dbGetPrivateCalendar,
+  dbCreatePrivateCategory,
+  dbDeletePrivateCategory,
+  dbCreatePrivateEvent,
+  dbUpdatePrivateEvent,
+  dbDeletePrivateEvent,
+  dbCleanupExpiredEvents,
   dbCreateEvent,
   dbUpdateEvent,
   dbDeleteEvent,
@@ -47,8 +54,35 @@ function sanitizeUser(user: any) {
   };
 }
 
+function validCalendarDate(value: unknown): value is string {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
+}
+
+function eventRetentionCutoff(): string {
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - 18);
+  return cutoff.toISOString().slice(0, 10);
+}
+
+function safeEventUpdate(body: any) {
+  const allowed = ['title', 'date', 'endDate', 'startTime', 'endTime', 'courseId', 'type', 'description', 'attachments'];
+  return Object.fromEntries(allowed.filter(key => body[key] !== undefined).map(key => [key, body[key]]));
+}
+
 async function startServer() {
   const app = express();
+  app.disable('x-powered-by');
+  app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'same-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    if (process.env.NODE_ENV === 'production') {
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+      res.setHeader('Content-Security-Policy', "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'");
+    }
+    next();
+  });
   const PORT = Number.parseInt(process.env.CAL11_PORT || '3000', 10);
   const requestedHost = process.env.BIND_HOST || process.env.HOST || '127.0.0.1';
   const runningInDocker = fs.existsSync('/.dockerenv');
@@ -58,6 +92,17 @@ async function startServer() {
 
   // Initialize DB or in-memory fallback
   await initDatabase();
+  await dbCleanupExpiredEvents();
+  const scheduleCalendarCleanup = () => {
+    const now = new Date();
+    const next = new Date(now);
+    next.setHours(24, 0, 5, 0);
+    setTimeout(async () => {
+      try { await dbCleanupExpiredEvents(); } catch (error) { console.error('[Cleanup] Kalender:', error); }
+      scheduleCalendarCleanup();
+    }, next.getTime() - now.getTime());
+  };
+  scheduleCalendarCleanup();
 
   const uploadsDir = path.join(process.cwd(), 'uploads');
   if (!fs.existsSync(uploadsDir)) {
@@ -74,6 +119,17 @@ async function startServer() {
     if (!isDbConnected()) {
       return res.status(503).json({ error: 'Keine Verbindung zur Datenbank. Zugriff verweigert.' });
     }
+    next();
+  });
+  app.use('/api', (req, res, next) => {
+    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return next();
+    const origin = req.get('Origin');
+    if (!origin) return next();
+    try {
+      const allowed = new Set([process.env.CALENDAR_PUBLIC_URL, process.env.VERTRETUNGSPLAN_PUBLIC_URL]
+        .filter(Boolean).map(value => new URL(String(value)).origin));
+      if (!allowed.has(origin)) return res.status(403).json({ error: 'Ungültige Herkunft der Anfrage.' });
+    } catch { return res.status(403).json({ error: 'Ungültige Herkunft der Anfrage.' }); }
     next();
   });
 
@@ -253,8 +309,40 @@ async function startServer() {
     });
   };
 
+  const calendarStreams = new Map<express.Response, string>();
+  const broadcastCalendarChange = (privateOwner?: string) => {
+    const payload = `event: calendar-change\ndata: ${JSON.stringify({ changedAt: Date.now() })}\n\n`;
+    for (const [stream, username] of calendarStreams) {
+      if (!privateOwner || username === privateOwner.toLowerCase()) stream.write(payload);
+    }
+  };
+
+  app.get('/api/events/stream', requireAuth, (req, res) => {
+    const username = String((req as any).authenticatedUser).toLowerCase();
+    const openStreams = Array.from(calendarStreams.values()).filter(value => value === username).length;
+    if (openStreams >= 4) return res.status(429).json({ error: 'Zu viele Live-Verbindungen für dieses Konto.' });
+    res.status(200).set({
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    res.flushHeaders();
+    calendarStreams.set(res, username);
+    res.write(`event: connected\ndata: {}\n\n`);
+    const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 25000);
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      calendarStreams.delete(res);
+    });
+  });
+
   app.get('/api/users/:username', requireAuth, async (req, res) => {
     const username = (req.params.username as string || '').toLowerCase();
+    const requester = String((req as any).authenticatedUser).toLowerCase();
+    if (requester !== username && !(await dbIsAdmin(requester))) {
+      return res.status(403).json({ error: 'Sie dürfen nur Ihr eigenes Profil abrufen.' });
+    }
     const user = await dbGetUser(username);
     if (user) {
       res.json(sanitizeUser(user));
@@ -315,18 +403,38 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  app.get('/api/events', async (req, res) => {
-    const events = await dbGetEvents();
-    res.json(events);
+  app.get('/api/events', requireAuth, async (req, res) => {
+    const username = (req as any).authenticatedUser;
+    const user = await dbGetUser(username);
+    const visibleCourses = user?.status === 'ADMIN' ? undefined : (user?.courses || []);
+    const [events, privateData] = await Promise.all([dbGetEvents(false, visibleCourses), dbGetPrivateCalendar(username)]);
+    res.json([...events, ...privateData.events]);
   });
 
   app.post('/api/events', requireWriteAuth, async (req, res) => {
     const { title, date, endDate, startTime, endTime, courseId, type, description, author, attachments } = req.body;
     const currentUser = (req as any).authenticatedUser;
+    if (typeof title !== 'string' || !title.trim() || title.length > 255 || !validCalendarDate(date)
+      || (endDate && (!validCalendarDate(endDate) || endDate < date)) || (endDate || date) < eventRetentionCutoff()
+      || typeof description !== 'string' && description !== undefined || String(description || '').length > 10000) {
+      return res.status(400).json({ error: 'Ungültiger Titel oder ungültiges Datum.' });
+    }
+    const privateData = await dbGetPrivateCalendar(currentUser);
+    const isPrivateType = privateData.categories.some(category => category.id === type);
+    const globalCategories = await dbGetCategories();
+    if (!isPrivateType && !globalCategories.some(category => category.id === type)) {
+      return res.status(400).json({ error: 'Die gewählte Kategorie ist nicht verfügbar.' });
+    }
 
     // FERIEN restriction: Only admins can create FERIEN events
     if (type === 'FERIEN' && !(await dbIsAdmin(currentUser))) {
       return res.status(403).json({ error: 'Nur Admins dürfen Ferientermine erstellen.' });
+    }
+    const isAdmin = await dbIsAdmin(currentUser);
+    const courses = await dbGetCourses();
+    if (!isPrivateType && courseId !== 'ALLGEMEIN' && (!courses.some(course => course.id === courseId)
+      || (!isAdmin && !(await dbGetUser(currentUser))?.courses.includes(courseId)))) {
+      return res.status(403).json({ error: 'Für diesen Kurs besteht keine Berechtigung.' });
     }
 
     const newEvent = {
@@ -342,41 +450,79 @@ async function startServer() {
       author: currentUser || author || '',
       attachments: attachments || []
     };
-    const saved = await dbCreateEvent(newEvent);
+    const saved = isPrivateType ? await dbCreatePrivateEvent(currentUser, newEvent) : await dbCreateEvent(newEvent);
+    broadcastCalendarChange(isPrivateType ? currentUser : undefined);
     res.status(201).json(saved);
   });
 
   app.put('/api/events/:id', requireWriteAuth, async (req, res) => {
     const id = req.params.id as string;
-    const existing = await dbGetEventById(id);
-    if (!existing) {
-      return res.status(404).json({ error: 'Event not found' });
-    }
-
     const currentUser = (req as any).authenticatedUser;
-    if ((existing.type === 'FERIEN' || req.body.type === 'FERIEN') && !(await dbIsAdmin(currentUser))) {
+    const update = safeEventUpdate(req.body);
+    if ((update.date !== undefined && !validCalendarDate(update.date)) || (update.endDate !== undefined && !validCalendarDate(update.endDate))
+      || String(update.description || '').length > 10000 || String(update.title || '').length > 255) {
+      return res.status(400).json({ error: 'Ungültige Termindaten.' });
+    }
+    const privateUpdated = await dbUpdatePrivateEvent(currentUser, id, update).catch(error => {
+      if (error.message === 'PRIVATE_CATEGORY_FORBIDDEN') return undefined;
+      throw error;
+    });
+    if (privateUpdated) {
+      broadcastCalendarChange(currentUser);
+      return res.json(privateUpdated);
+    }
+    const existing = await dbGetEventById(id);
+    if (!existing) return res.status(404).json({ error: 'Event not found' });
+    if (String(existing.author || '').toLowerCase() !== currentUser.toLowerCase() && !(await dbIsAdmin(currentUser))) {
+      return res.status(403).json({ error: 'Sie dürfen nur eigene Termine bearbeiten.' });
+    }
+    if (update.type !== undefined) {
+      const globalCategories = await dbGetCategories();
+      if (!globalCategories.some(category => category.id === update.type)) {
+        return res.status(400).json({ error: 'Globale Termine können nur globale Kategorien verwenden.' });
+      }
+    }
+    if (update.courseId !== undefined && update.courseId !== 'ALLGEMEIN') {
+      const courses = await dbGetCourses();
+      const isAdmin = await dbIsAdmin(currentUser);
+      const user = await dbGetUser(currentUser);
+      if (!courses.some(course => course.id === update.courseId)
+        || (!isAdmin && !(user?.courses || []).includes(update.courseId))) {
+        return res.status(403).json({ error: 'Für diesen Kurs besteht keine Berechtigung.' });
+      }
+    }
+    if ((existing.type === 'FERIEN' || update.type === 'FERIEN') && !(await dbIsAdmin(currentUser))) {
       return res.status(403).json({ error: 'Nur Admins dürfen Ferientermine bearbeiten.' });
     }
 
-    const updated = await dbUpdateEvent(id, req.body);
+    const updated = await dbUpdateEvent(id, update);
+    broadcastCalendarChange();
     res.json(updated);
   });
 
   app.delete('/api/events/:id', requireWriteAuth, async (req, res) => {
     const id = req.params.id as string;
+    const currentUser = (req as any).authenticatedUser;
+    if (await dbDeletePrivateEvent(currentUser, id)) {
+      broadcastCalendarChange(currentUser);
+      return res.json({ success: true });
+    }
     const existing = await dbGetEventById(id);
     if (existing) {
-      const currentUser = (req as any).authenticatedUser;
+      if (String(existing.author || '').toLowerCase() !== currentUser.toLowerCase() && !(await dbIsAdmin(currentUser))) {
+        return res.status(403).json({ error: 'Sie dürfen nur eigene Termine löschen.' });
+      }
       if (existing.type === 'FERIEN' && !(await dbIsAdmin(currentUser))) {
         return res.status(403).json({ error: 'Nur Admins dürfen Ferientermine löschen.' });
       }
     }
     await dbDeleteEvent(id, (req as any).authenticatedUser);
+    broadcastCalendarChange();
     res.json({ success: true });
   });
 
   // Admin Management API Routes
-  app.get('/api/admins', async (req, res) => {
+  app.get('/api/admins', requireAdmin, async (req, res) => {
     const admins = await dbGetAdmins();
     res.json(admins);
   });
@@ -409,6 +555,9 @@ async function startServer() {
 
   app.post('/api/feedback', requireAuth, async (req, res) => {
     const { username, text } = req.body;
+    if (typeof text !== 'string' || text.trim().length === 0 || text.length > 5000) {
+      return res.status(400).json({ error: 'Das Feedback ist ungültig oder zu lang.' });
+    }
     const currentUser = (req as any).authenticatedUser;
     const newFeedback = { id: uuidv4(), username: currentUser || username, text, date: new Date().toISOString() };
     const saved = await dbCreateFeedback(newFeedback);
@@ -418,7 +567,7 @@ async function startServer() {
   // File Upload API Route (Saves files to disk instead of DB, max 10MB)
   app.post('/api/upload', requireWriteAuth, async (req, res) => {
     try {
-      const { filename, mimeType, data } = req.body;
+      const { filename, mimeType, data, privateAttachment } = req.body;
       if (!data) return res.status(400).json({ error: 'Data is required' });
 
       const matches = data.match(/^data:(.+);base64,(.+)$/);
@@ -434,10 +583,16 @@ async function startServer() {
         return res.status(400).json({ error: 'Datei ist zu groß (maximal 10MB erlaubt).' });
       }
 
-      const safeExt = path.extname(filename || '') || '.bin';
-      const dangerousExts = ['.exe', '.bat', '.cmd', '.sh', '.php', '.js', '.py', '.html', '.htm', '.vbs', '.ps1', '.cgi', '.pl'];
-      if (dangerousExts.includes(safeExt.toLowerCase())) {
-        return res.status(400).json({ error: 'Aus Sicherheitsgründen sind ausführbare Dateien nicht erlaubt.' });
+      const safeExt = path.extname(typeof filename === 'string' ? filename : '').toLowerCase() || '.bin';
+      const allowedExts = new Set(['.bin', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.txt', '.csv', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip']);
+      if (!allowedExts.has(safeExt)) return res.status(400).json({ error: 'Dieser Dateityp ist nicht erlaubt.' });
+      if (privateAttachment) {
+        const PRIVATE_MAX_BYTES = 2 * 1024 * 1024;
+        if (buffer.length > PRIVATE_MAX_BYTES) return res.status(400).json({ error: 'Private Anhänge sind auf 2 MB begrenzt.' });
+        return res.json({
+          id: uuidv4(), filename: filename || 'file', mimeType: mimeType || 'application/octet-stream',
+          data: `data:${mimeType || 'application/octet-stream'};base64,${buffer.toString('base64')}`
+        });
       }
       const uniqueName = `${uuidv4()}${safeExt}`;
       const filePath = path.join(process.cwd(), 'uploads', uniqueName);
@@ -570,25 +725,54 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  app.get('/api/categories', async (req, res) => {
-    const categories = await dbGetCategories();
-    res.json(categories);
+  app.get('/api/categories', requireAuth, async (req, res) => {
+    const username = (req as any).authenticatedUser;
+    const [categories, privateData] = await Promise.all([dbGetCategories(), dbGetPrivateCalendar(username)]);
+    res.json([...categories, ...privateData.categories]);
+  });
+
+  app.post('/api/private-categories', requireWriteAuth, async (req, res) => {
+    const username = (req as any).authenticatedUser;
+    const name = String(req.body.name || '').trim();
+    const color = String(req.body.color || '').trim();
+    if (!name || name.length > 64 || !/^#[0-9a-fA-F]{6}$/.test(color)) {
+      return res.status(400).json({ error: 'Name oder Farbe ist ungültig.' });
+    }
+    try {
+      const category = await dbCreatePrivateCategory(username, { id: `PRIVATE_${uuidv4()}`, name, color });
+      broadcastCalendarChange(username);
+      res.status(201).json(category);
+    } catch (error: any) {
+      if (error.message === 'CATEGORY_LIMIT') return res.status(409).json({ error: 'Maximal fünf private Kategorien sind erlaubt.' });
+      if (error.message === 'CATEGORY_DUPLICATE') return res.status(409).json({ error: 'Diese Kategorie existiert bereits.' });
+      throw error;
+    }
+  });
+
+  app.delete('/api/private-categories/:id', requireWriteAuth, async (req, res) => {
+    const deleted = await dbDeletePrivateCategory((req as any).authenticatedUser, req.params.id as string);
+    if (!deleted) return res.status(404).json({ error: 'Private Kategorie nicht gefunden.' });
+    broadcastCalendarChange((req as any).authenticatedUser);
+    res.json({ success: true });
   });
 
   app.post('/api/categories', requireAdmin, async (req, res) => {
     const saved = await dbSaveCategory(req.body);
+    broadcastCalendarChange();
     res.json(saved);
   });
 
   app.put('/api/categories/:id', requireAdmin, async (req, res) => {
     const id = req.params.id as string;
     const saved = await dbSaveCategory({ ...req.body, id });
+    broadcastCalendarChange();
     res.json(saved);
   });
 
   app.delete('/api/categories/:id', requireAdmin, async (req, res) => {
     const id = req.params.id as string;
     await dbDeleteCategory(id);
+    broadcastCalendarChange();
     res.json({ success: true });
   });
 
@@ -596,6 +780,7 @@ async function startServer() {
     const { categoryIds } = req.body;
     if (Array.isArray(categoryIds)) {
       await dbReorderCategories(categoryIds);
+      broadcastCalendarChange();
       return res.json({ success: true });
     }
     res.status(400).json({ error: 'Invalid payload' });

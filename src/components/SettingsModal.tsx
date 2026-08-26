@@ -1,7 +1,7 @@
 import { useState, FormEvent } from 'react';
 import { UserPreferences, Course, EventCategory, COURSES as DEFAULT_COURSES } from '../types';
-import { submitFeedback } from '../lib/api';
-import { X, Check, AlertCircle } from 'lucide-react';
+import { createPrivateCategory, deletePrivateCategory, submitFeedback } from '../lib/api';
+import { X, Check, AlertCircle, Trash2, Plus } from 'lucide-react';
 
 interface Props {
   isOpen: boolean;
@@ -14,6 +14,7 @@ interface Props {
   defaultTab?: 'allgemein' | 'design' | 'kurse' | 'feedback';
   onSave: (prefs: UserPreferences, newPin?: string, newCourses?: string[], oldPin?: string) => void;
   username: string;
+  onCategoriesChanged?: () => Promise<void> | void;
 }
 
 export default function SettingsModal({
@@ -31,9 +32,14 @@ export default function SettingsModal({
   ],
   defaultTab = 'allgemein',
   onSave,
-  username
+  username,
+  onCategoriesChanged
 }: Props) {
-  const [activeTab, setActiveTab] = useState<'allgemein' | 'design' | 'kurse' | 'feedback'>(defaultTab);
+  const [activeTab, setActiveTab] = useState<'allgemein' | 'design' | 'kurse' | 'kategorien' | 'feedback'>(defaultTab);
+  const [privateCategories, setPrivateCategories] = useState(() => categories.filter(category => category.isPrivate));
+  const [categoryName, setCategoryName] = useState('');
+  const [categoryColor, setCategoryColor] = useState('#64748b');
+  const [categoryError, setCategoryError] = useState('');
 
   // Feedback state
   const [feedbackText, setFeedbackText] = useState('');
@@ -124,6 +130,31 @@ export default function SettingsModal({
     }
   };
 
+  const handleCreatePrivateCategory = async () => {
+    if (!categoryName.trim()) return;
+    setCategoryError('');
+    try {
+      const created = await createPrivateCategory(categoryName.trim(), categoryColor);
+      setPrivateCategories(current => [...current, created]);
+      setCategoryName('');
+      await onCategoriesChanged?.();
+    } catch (error: any) {
+      setCategoryError(error.message || 'Kategorie konnte nicht erstellt werden.');
+    }
+  };
+
+  const handleDeletePrivateCategory = async (category: EventCategory) => {
+    if (!window.confirm(`Kategorie „${category.name}“ und alle zugehörigen privaten Termine löschen?`)) return;
+    setCategoryError('');
+    try {
+      await deletePrivateCategory(category.id);
+      setPrivateCategories(current => current.filter(item => item.id !== category.id));
+      await onCategoriesChanged?.();
+    } catch (error: any) {
+      setCategoryError(error.message || 'Kategorie konnte nicht gelöscht werden.');
+    }
+  };
+
   const lks = allCourses.filter((c) => c.type === 'LK');
   const gks = allCourses.filter((c) => c.type === 'GK');
   const ags = allCourses.filter((c) => c.type === 'AG');
@@ -144,10 +175,11 @@ export default function SettingsModal({
     overlay: isDark ? 'bg-black/70' : 'bg-black/50'
   };
 
-  const tabList: Array<{ id: 'kurse' | 'allgemein' | 'design' | 'feedback'; label: string }> = [
+  const tabList: Array<{ id: 'kurse' | 'allgemein' | 'design' | 'kategorien' | 'feedback'; label: string }> = [
     { id: 'kurse', label: 'Meine Kurse' },
     { id: 'allgemein', label: hasPin ? 'PIN ändern' : 'PIN vergeben' },
     { id: 'design', label: 'Aussehen' },
+    { id: 'kategorien', label: 'Meine Kategorien' },
     { id: 'feedback', label: 'Kritik' }
   ];
 
@@ -432,7 +464,36 @@ export default function SettingsModal({
                 </div>
               )}
 
-              {/* TAB 4: KRITIK */}
+              {activeTab === 'kategorien' && (
+                <div className="space-y-5 animate-in fade-in duration-200 max-w-lg">
+                  <div>
+                    <h3 className={`font-bold text-xl sm:text-2xl ${theme.textMain}`}>Private Kategorien</h3>
+                    <p className={`text-xs sm:text-sm ${theme.textFaint} mt-1`}>Nur du kannst diese Kategorien und ihre Termine sehen. Maximal 5 Kategorien.</p>
+                  </div>
+                  {categoryError && <div className="p-3 rounded-md border border-red-300 bg-red-50 text-red-700 text-sm">{categoryError}</div>}
+                  <div className="flex items-end gap-2">
+                    <label className={`flex-1 text-xs font-semibold ${theme.textMuted}`}>Name
+                      <input maxLength={64} value={categoryName} onChange={event => setCategoryName(event.target.value)} className={`mt-1 w-full px-3 py-2 ${theme.bgInput} border ${theme.borderInput} ${theme.textMain} rounded-md`} />
+                    </label>
+                    <label className={`text-xs font-semibold ${theme.textMuted}`}>Farbe
+                      <input type="color" value={categoryColor} onChange={event => setCategoryColor(event.target.value)} className="mt-1 block w-10 h-10 border-0 bg-transparent" />
+                    </label>
+                    <button type="button" disabled={!categoryName.trim() || privateCategories.length >= 5} onClick={handleCreatePrivateCategory} className="h-10 px-3 rounded-md text-white disabled:opacity-40" style={{ backgroundColor: accentColor }}><Plus className="w-4 h-4" /></button>
+                  </div>
+                  <div className="space-y-2">
+                    {privateCategories.map(category => (
+                      <div key={category.id} className={`flex items-center gap-3 p-3 border ${theme.borderInput} rounded-md ${theme.bgInput}`}>
+                        <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: category.color }} />
+                        <span className={`flex-1 text-sm font-semibold ${theme.textMain}`}>{category.name}</span>
+                        <button type="button" onClick={() => handleDeletePrivateCategory(category)} className="p-1.5 text-red-600" aria-label={`${category.name} löschen`}><Trash2 className="w-4 h-4" /></button>
+                      </div>
+                    ))}
+                    {!privateCategories.length && <p className={`text-sm ${theme.textFaint}`}>Noch keine privaten Kategorien angelegt.</p>}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 5: KRITIK */}
               {activeTab === 'feedback' && (
                 <div className="space-y-5 animate-in fade-in duration-200 max-w-lg">
                   <div>

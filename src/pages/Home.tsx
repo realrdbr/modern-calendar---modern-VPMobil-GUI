@@ -2,7 +2,7 @@ import { useState, FormEvent, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { checkUser, registerUser, loginUser, fetchCurrentSession } from '../lib/api';
 import { saveStoredSession } from '../lib/auth';
-import { Lock, User, ArrowRight, ChevronLeft, AlertCircle } from 'lucide-react';
+import { Lock, User, ArrowRight, ChevronLeft, AlertCircle, CalendarDays } from 'lucide-react';
 import AuthFooter from '../components/AuthFooter';
 import { VERTRETUNGSPLAN_URL } from '../lib/externalLinks';
 
@@ -113,6 +113,9 @@ export default function Home() {
       <div className="my-auto max-w-[480px] w-full px-6 py-8 flex flex-col items-center">
         {/* HEADER */}
         <header className="mb-6 text-center">
+          <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-[10px] border border-[#cbd5e1] bg-[#f8f9fa] text-[#e91e63] dark:border-[#333] dark:bg-[#181818]" aria-hidden="true">
+            <CalendarDays className="h-6 w-6" strokeWidth={1.8} />
+          </div>
           <h1 className="text-3xl sm:text-[32px] font-extrabold tracking-tight mb-2">
             Jahrgangskalender 11
           </h1>

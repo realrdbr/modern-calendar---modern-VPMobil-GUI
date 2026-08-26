@@ -10,6 +10,7 @@ export interface EventCategory {
   name: string;
   color: string;
   sort_order?: number;
+  isPrivate?: boolean;
 }
 
 export interface UserPreferences {

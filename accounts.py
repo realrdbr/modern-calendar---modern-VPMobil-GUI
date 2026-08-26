@@ -18,6 +18,7 @@ from urllib.parse import unquote, urlparse
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 try:
     import pymysql
@@ -116,6 +117,7 @@ class NotifySettings:
     calendar_notification_time: str = DEFAULT_CALENDAR_NOTIFICATION_TIME
     calendar_notification_times: dict[str, str] | None = None
     calendar_notification_days_before: int = DEFAULT_CALENDAR_NOTIFICATION_DAYS_BEFORE
+    calendar_notification_days_before_by_type: dict[str, int] | None = None
     calendar_notification_types: tuple[str, ...] = ()
 
 
@@ -600,6 +602,12 @@ class AccountStore:
             for event_type, value in raw_category_times.items()
             if str(event_type).strip()
         } if isinstance(raw_category_times, dict) else {}
+        raw_category_days = data.get("calendar_notification_days_before_by_type", {})
+        category_days = {
+            str(event_type).strip(): max(0, min(365, int(value)))
+            for event_type, value in raw_category_days.items()
+            if str(event_type).strip()
+        } if isinstance(raw_category_days, dict) else {}
         return NotifySettings(
             lesson_notifications_enabled=bool(data.get("lesson_notifications_enabled", True)),
             lesson_notification_times=lesson_times,
@@ -609,6 +617,7 @@ class AccountStore:
             ),
             calendar_notification_times=category_times,
             calendar_notification_days_before=days_before,
+            calendar_notification_days_before_by_type=category_days,
             calendar_notification_types=calendar_types,
         )
 
@@ -1051,6 +1060,11 @@ class AccountStore:
                 if event_type.strip()
             },
             calendar_notification_days_before=max(0, int(settings.calendar_notification_days_before)),
+            calendar_notification_days_before_by_type={
+                event_type.strip(): max(0, min(365, int(value)))
+                for event_type, value in (settings.calendar_notification_days_before_by_type or {}).items()
+                if event_type.strip()
+            },
             calendar_notification_types=tuple(
                 dict.fromkeys(event_type.strip() for event_type in settings.calendar_notification_types if event_type.strip())
             ),
@@ -1063,6 +1077,7 @@ class AccountStore:
                 "calendar_notification_time": normalized.calendar_notification_time,
                 "calendar_notification_times": normalized.calendar_notification_times,
                 "calendar_notification_days_before": normalized.calendar_notification_days_before,
+                "calendar_notification_days_before_by_type": normalized.calendar_notification_days_before_by_type,
                 "calendar_notification_types": list(normalized.calendar_notification_types),
             },
             sort_keys=True,
@@ -1243,21 +1258,47 @@ class AccountStore:
                 (json.dumps(normalized), username),
             )
 
-    def get_calendar_event_types(self) -> list[CalendarEventTypeOption]:
+    def _private_calendar(self, username: str) -> dict[str, list[dict[str, Any]]]:
+        if self._backend != "mysql":
+            return {"categories": [], "events": []}
+        secret = os.getenv("CALENDAR_PRIVATE_DATA_KEY") or os.getenv("APP_ENCRYPTION_KEY", "")
+        if not secret:
+            return {"categories": [], "events": []}
+        with self._connection() as connection:
+            row = self._fetchone(connection, "SELECT nonce, ciphertext, auth_tag FROM user_private_calendar_data WHERE LOWER(username)=LOWER(?)", (username,))
+        if row is None:
+            return {"categories": [], "events": []}
+        try:
+            key = hashlib.sha256(secret.encode("utf-8")).digest()
+            plaintext = AESGCM(key).decrypt(bytes(row["nonce"]), bytes(row["ciphertext"]) + bytes(row["auth_tag"]), username.lower().encode("utf-8"))
+            value = json.loads(plaintext.decode("utf-8"))
+            return {"categories": value.get("categories", []) if isinstance(value, dict) else [], "events": value.get("events", []) if isinstance(value, dict) else []}
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return {"categories": [], "events": []}
+
+    def get_calendar_event_types(self, username: str | None = None) -> list[CalendarEventTypeOption]:
         with self._connection() as connection:
             category_rows = self._fetchall(
                 connection,
                 f"SELECT id, name FROM {self._calendar_event_categories_table()} ORDER BY sort_order ASC, name ASC",
             )
-            if category_rows:
-                return [CalendarEventTypeOption(id=row["id"], label=row["name"]) for row in category_rows]
+            options = [CalendarEventTypeOption(id=row["id"], label=row["name"]) for row in category_rows]
+            if username:
+                private = self._private_calendar(username).get("categories", [])
+                options.extend(CalendarEventTypeOption(id=str(row["id"]), label=str(row["name"])) for row in private if row.get("id") and row.get("name"))
+            if options:
+                return options
             event_rows = self._fetchall(
                 connection,
                 f"SELECT DISTINCT type FROM {self._calendar_events_table()} ORDER BY type ASC",
             )
-        return [CalendarEventTypeOption(id=row["type"], label=row["type"]) for row in event_rows if row["type"]]
+        options = [CalendarEventTypeOption(id=row["type"], label=row["type"]) for row in event_rows if row["type"]]
+        if username:
+            private = self._private_calendar(username).get("categories", [])
+            options.extend(CalendarEventTypeOption(id=str(row["id"]), label=str(row["name"])) for row in private if row.get("id") and row.get("name"))
+        return options
 
-    def get_calendar_events(self) -> list[CalendarEvent]:
+    def get_calendar_events(self, username: str | None = None) -> list[CalendarEvent]:
         with self._connection() as connection:
             rows = self._fetchall(
                 connection,
@@ -1267,7 +1308,7 @@ class AccountStore:
                 ORDER BY date ASC, COALESCE(start_time, ''), title ASC
                 """,
             )
-        return [
+        events = [
             CalendarEvent(
                 id=row["id"],
                 title=row["title"],
@@ -1282,6 +1323,10 @@ class AccountStore:
             )
             for row in rows
         ]
+        if username:
+            private = self._private_calendar(username).get("events", [])
+            events.extend(CalendarEvent(id=str(event.get("id")), title=str(event.get("title", "")), date=str(event.get("date")), end_date=event.get("endDate"), start_time=event.get("startTime"), end_time=event.get("endTime"), course_id="ALLGEMEIN", event_type=str(event.get("type", "")), description=str(event.get("description", "")), author=username) for event in private if event.get("id") and event.get("date") and event.get("type"))
+        return events
 
     def subscribed_users(self) -> list[tuple[User, set[str]]]:
         recipients = self.notification_recipients()

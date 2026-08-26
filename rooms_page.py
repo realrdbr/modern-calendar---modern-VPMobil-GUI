@@ -21,7 +21,7 @@ from web_utils import (
     parse_hour,
     query_value,
     render_theme_script,
-    render_theme_toggle_button,
+    render_vp_navigation,
     send_html,
     start_server,
 )
@@ -70,6 +70,7 @@ def render_rooms_page(
     free_rooms: list[int] | None = None,
     error_message: str | None = None,
     plan_version: str = "",
+    logout_csrf_token: str | None = None,
 ) -> str:
     """Erzeugt die HTML-Seite für freie Räume."""
 
@@ -248,14 +249,7 @@ def render_rooms_page(
                 <p>Freie Räume nach Datum und Stunde anzeigen.</p>
             </div>
 
-            <nav class="nav">
-                <a href="/">Klassen</a>
-                <a href="/lehrer">Lehrer</a>
-                <a class="active" href="/raeume">Freie Räume</a>
-                <a href="/abos">Ankündigungen</a>
-                <a href="{escape(CALENDAR_PUBLIC_URL)}">Kalender</a>
-                {render_theme_toggle_button()}
-            </nav>
+            {render_vp_navigation("rooms", logout_csrf_token)}
         </header>
 
         <section class="panel">

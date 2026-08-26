@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, MouseEvent } from 'react';
+import { useState, useEffect, useMemo, useRef, MouseEvent, TouchEvent } from 'react';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, addMonths, subMonths, addWeeks, subWeeks, startOfWeek, endOfWeek, isSameMonth, getISOWeek } from 'date-fns';
 import { de } from 'date-fns/locale';
 import { fetchEvents, createEvent, updateEvent, deleteEvent, fetchCourses, fetchAdmins, fetchCategories } from '../lib/api';
@@ -30,6 +30,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
   const [editingEvent, setEditingEvent] = useState<AppEvent | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
 
   const { preferences } = user;
   const [systemPrefersDark, setSystemPrefersDark] = useState(() =>
@@ -132,6 +133,29 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
     }
   };
 
+  useEffect(() => {
+    let disposed = false;
+    let refreshing = false;
+    const refreshCalendarData = async () => {
+      if (disposed || refreshing) return;
+      refreshing = true;
+      try {
+        await Promise.all([loadEvents(), loadCategories()]);
+      } finally {
+        refreshing = false;
+      }
+    };
+    const stream = new EventSource('/api/events/stream');
+    stream.addEventListener('calendar-change', () => void refreshCalendarData());
+    const handleOnline = () => void refreshCalendarData();
+    window.addEventListener('online', handleOnline);
+    return () => {
+      disposed = true;
+      stream.close();
+      window.removeEventListener('online', handleOnline);
+    };
+  }, []);
+
   const handleSaveEvent = async (eventData: Partial<AppEvent>) => {
     try {
       if (editingEvent) {
@@ -186,6 +210,19 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
   };
   const navigateToday = () => {
     setCurrentDate(new Date());
+  };
+  const handleTouchStart = (event: TouchEvent<HTMLDivElement>) => {
+    if ((navigator.maxTouchPoints || 0) < 1 || event.touches.length !== 1) return;
+    touchStart.current = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+  };
+  const handleTouchEnd = (event: TouchEvent<HTMLDivElement>) => {
+    const start = touchStart.current;
+    touchStart.current = null;
+    if (!start || (navigator.maxTouchPoints || 0) < 1 || event.changedTouches.length !== 1) return;
+    const dx = event.changedTouches[0].clientX - start.x;
+    const dy = event.changedTouches[0].clientY - start.y;
+    if (Math.abs(dx) < 60 || Math.abs(dx) <= Math.abs(dy) * 1.25) return;
+    if (dx < 0) navigateNext(); else navigatePrev();
   };
 
   const getCalendarDays = () => {
@@ -435,7 +472,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
         </header>
 
         {/* Calendar Grid */}
-        <div className={`flex-1 overflow-auto ${theme.bgApp} flex flex-col`}>
+        <div className={`flex-1 overflow-auto ${theme.bgApp} flex flex-col`} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd}>
           {view === 'week' ? (
             /* --- HOURLY WEEK VIEW --- */
             <div className="flex-1 overflow-auto flex flex-col min-w-[700px]">
@@ -752,6 +789,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
           defaultTab={isInitialSetup ? 'kurse' : 'allgemein'}
           onSave={onUpdatePreferences}
           username={user.username}
+          onCategoriesChanged={async () => { await Promise.all([loadCategories(), loadEvents()]); }}
         />
       )}
 
