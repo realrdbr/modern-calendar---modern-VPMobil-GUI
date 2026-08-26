@@ -101,6 +101,16 @@ export async function deleteSessionToken(sessionToken: string): Promise<void> {
   }
 }
 
+export async function deleteUserSessions(username: string): Promise<void> {
+  const normalized = username.toLowerCase();
+  for (const [token, session] of activeSessions.entries()) {
+    if (session.username === normalized) activeSessions.delete(token);
+  }
+  if (isConnected && pool) {
+    await pool.query('DELETE FROM app_sessions WHERE LOWER(username) = LOWER(?)', [normalized]);
+  }
+}
+
 export async function dbRecordCalendarLoginAttempt(username: string, ipAddress: string, successful: boolean): Promise<void> {
   if (isConnected && pool) {
     await pool.query(

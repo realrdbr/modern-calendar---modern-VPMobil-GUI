@@ -31,6 +31,7 @@ import {
   verifySessionToken,
   getSessionUsername,
   deleteSessionToken,
+  deleteUserSessions,
   dbGetAdmins,
   dbIsAdmin,
   dbAddAdmin,
@@ -193,7 +194,7 @@ async function startServer() {
     resetFailedAttempt(rateLimitKey);
     await recordLoginAttempt(true);
     const token = await generateSessionToken(uname);
-    res.setHeader('Set-Cookie', sessionCookie(token));
+    res.setHeader('Set-Cookie', sessionCookies(token));
     res.json({ user: sanitizeUser(user) });
   });
 
@@ -206,7 +207,12 @@ async function startServer() {
     } else if (req.headers['x-session-token']) {
       token = req.headers['x-session-token'] as string;
     } else {
-      token = cookieToken(req);
+      for (const candidate of cookieTokens(req)) {
+        if (await getSessionUsername(candidate)) {
+          token = candidate;
+          break;
+        }
+      }
     }
 
     if (!token) {
@@ -289,7 +295,7 @@ async function startServer() {
     });
 
     const token = await generateSessionToken(username);
-    res.setHeader('Set-Cookie', sessionCookie(token));
+    res.setHeader('Set-Cookie', sessionCookies(token));
     res.json({ user: sanitizeUser(updated) });
   });
 
@@ -299,9 +305,13 @@ async function startServer() {
   });
 
   app.post('/api/logout', requireAuth, async (req, res) => {
-    const token = cookieToken(req) || (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.substring(7) : '');
-    await deleteSessionToken(token);
-    res.setHeader('Set-Cookie', sessionCookie('', 0));
+    const tokens = cookieTokens(req);
+    if (req.headers.authorization?.startsWith('Bearer ')) {
+      tokens.push(req.headers.authorization.substring(7));
+    }
+    await Promise.all(Array.from(new Set(tokens.filter(Boolean))).map(deleteSessionToken));
+    await deleteUserSessions((req as any).authenticatedUser);
+    res.setHeader('Set-Cookie', sessionCookies('', 0));
     res.json({ success: true });
   });
 
@@ -635,15 +645,45 @@ async function startServer() {
 startServer();
   const SESSION_COOKIE = 'cal11_session';
   const cookieSecure = (process.env.COOKIE_SECURE || 'true').toLowerCase() === 'true';
-  const cookieDomain = (process.env.COOKIE_DOMAIN || '').trim();
-  function cookieToken(req: express.Request): string {
-    const raw = req.headers.cookie || '';
-    for (const part of raw.split(';')) {
-      const [name, ...value] = part.trim().split('=');
-      if (name === SESSION_COOKIE) return decodeURIComponent(value.join('='));
+  function resolveCookieDomain(): string {
+    const configured = (process.env.COOKIE_DOMAIN || '').trim().replace(/^\./, '').toLowerCase();
+    const hosts = ['CALENDAR_PUBLIC_URL', 'VERTRETUNGSPLAN_PUBLIC_URL'].map(name => {
+      try {
+        return new URL(process.env[name] || '').hostname.toLowerCase();
+      } catch {
+        return '';
+      }
+    });
+    if (configured) {
+      if (hosts.some(host => host && host !== configured && !host.endsWith(`.${configured}`))) {
+        throw new Error('COOKIE_DOMAIN passt nicht zu den öffentlichen Kalender-/VP-URLs.');
+      }
+      return configured;
+    }
+    const [calendarHost, vpHost] = hosts;
+    if (calendarHost && vpHost && calendarHost !== vpHost) {
+      if (vpHost.endsWith(`.${calendarHost}`)) return calendarHost;
+      if (calendarHost.endsWith(`.${vpHost}`)) return vpHost;
     }
     return '';
   }
-  function sessionCookie(token: string, maxAgeSeconds = 30 * 86400): string {
-    return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Max-Age=${maxAgeSeconds}; Path=/; HttpOnly; SameSite=Lax${cookieSecure ? '; Secure' : ''}${cookieDomain ? `; Domain=${cookieDomain}` : ''}`;
+  const cookieDomain = resolveCookieDomain();
+  function cookieTokens(req: express.Request): string[] {
+    const raw = req.headers.cookie || '';
+    const tokens: string[] = [];
+    for (const part of raw.split(';')) {
+      const [name, ...value] = part.trim().split('=');
+      if (name === SESSION_COOKIE) {
+        const token = decodeURIComponent(value.join('='));
+        if (token && !tokens.includes(token)) tokens.push(token);
+      }
+    }
+    return tokens;
+  }
+  function sessionCookie(token: string, maxAgeSeconds = 14 * 86400, domain = cookieDomain): string {
+    return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Max-Age=${maxAgeSeconds}; Path=/; HttpOnly; SameSite=Lax${cookieSecure ? '; Secure' : ''}${domain ? `; Domain=${domain}` : ''}`;
+  }
+  function sessionCookies(token: string, maxAgeSeconds = 14 * 86400): string[] {
+    const shared = sessionCookie(token, maxAgeSeconds);
+    return cookieDomain ? [sessionCookie('', 0, ''), shared] : [shared];
   }

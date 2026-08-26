@@ -636,7 +636,9 @@ class AccountStore:
             (username.lower(), "[]", _hash_shared_pin(pin), json.dumps({}), "ACTIVE"),
         )
 
-    def _bootstrap_vp_user_from_calendar(self, connection: Any, username: str, pin: str | None) -> Any | None:
+    def _bootstrap_vp_user_from_calendar(
+        self, connection: Any, username: str, pin: str | None, *, trusted_session: bool = False,
+    ) -> Any | None:
         if self._backend != "mysql":
             return None
         calendar_row = self._fetchone(
@@ -649,7 +651,7 @@ class AccountStore:
         if (calendar_row.get("status") or "ACTIVE") == "BLOCKED":
             return None
         calendar_pin = calendar_row.get("pin")
-        if calendar_pin and (pin is None or not _verify_shared_pin(pin, calendar_pin)):
+        if not trusted_session and calendar_pin and (pin is None or not _verify_shared_pin(pin, calendar_pin)):
             return None
 
         resolved_username = calendar_row["username"]
@@ -985,13 +987,27 @@ class AccountStore:
                 )
                 self._run(connection, "DELETE FROM sessions WHERE expires_at <= ?", (to_db_time(utcnow()),))
             else:
-                row = self._fetchone(
+                shared_session = self._fetchone(
                     connection,
-                    """SELECT vp_users.*, app_sessions.csrf_token
-                    FROM app_sessions JOIN vp_users ON LOWER(vp_users.username) = LOWER(app_sessions.username)
-                    WHERE app_sessions.token_hash = ? AND app_sessions.expires_at > ? AND vp_users.active = 1""",
+                    """SELECT app_sessions.username, app_sessions.csrf_token, users.status
+                    FROM app_sessions
+                    JOIN users ON LOWER(users.username) = LOWER(app_sessions.username)
+                    WHERE app_sessions.token_hash = ? AND app_sessions.expires_at > ?""",
                     (self._token_hash(token), utcnow().replace(tzinfo=None)),
                 )
+                row = None
+                if shared_session is not None and (shared_session.get("status") or "ACTIVE") != "BLOCKED":
+                    row = self._fetchone(
+                        connection,
+                        "SELECT * FROM vp_users WHERE LOWER(username) = LOWER(?) AND active = 1",
+                        (shared_session["username"],),
+                    )
+                    if row is None:
+                        row = self._bootstrap_vp_user_from_calendar(
+                            connection, shared_session["username"], None, trusted_session=True,
+                        )
+                    if row is not None and bool(row["active"]):
+                        row["csrf_token"] = shared_session["csrf_token"]
                 self._run(connection, "DELETE FROM app_sessions WHERE expires_at <= ?", (utcnow().replace(tzinfo=None),))
         return Session(self._user_from_row(row), row["csrf_token"]) if row else None
 
@@ -1003,6 +1019,18 @@ class AccountStore:
                 self._run(connection, "DELETE FROM sessions WHERE token_hash = ?", (self._token_hash(token),))
             else:
                 self._run(connection, "DELETE FROM app_sessions WHERE token_hash = ?", (self._token_hash(token),))
+
+    def delete_user_sessions(self, username: str) -> None:
+        username = validate_username(username)
+        with self._connection() as connection:
+            if self._backend == "sqlite":
+                self._run(
+                    connection,
+                    "DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE username = ? COLLATE NOCASE)",
+                    (username,),
+                )
+            else:
+                self._run(connection, "DELETE FROM app_sessions WHERE LOWER(username) = LOWER(?)", (username,))
 
     def load_notify_settings(self, user_id: int) -> tuple[NotifySettings, bool]:
         with self._connection() as connection:

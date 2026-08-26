@@ -14,7 +14,14 @@ VERTRETUNGSPLAN_PUBLIC_URL=https://vp.cal11.de
 NTFY_PUBLIC_URL=https://notify.cal11.de
 NTFY_INTERNAL_URL=http://ntfy
 COOKIE_SECURE=true
+COOKIE_DOMAIN=cal11.de
 ```
+
+`COOKIE_DOMAIN` wird für die dokumentierte Kombination `cal11.de` und
+`vp.cal11.de` automatisch aus den öffentlichen URLs erkannt. Die explizite
+Angabe bleibt für abweichende Domainstrukturen empfohlen. Der Wert darf nur
+die gemeinsame Eltern-Domain enthalten; der Provisionierungsdienst und ntfy
+benötigen diese Session-Cookies nicht.
 
 For ntfy, keep `behind-proxy: true` in `ntfy/server.yml` when the proxy is the public entry point. The proxy must pass WebSocket upgrades and must not buffer ntfy streaming responses. Do not expose port 8090 publicly; the Compose template binds it to localhost.
 

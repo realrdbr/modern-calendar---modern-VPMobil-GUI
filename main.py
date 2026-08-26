@@ -22,14 +22,49 @@ from rooms_page import render_rooms_page
 from subscriptions import SubscriptionNotifier, available_class_names_from_plans, subject_key, subject_options_from_plans
 from teacher_page import render_teacher_page
 from vp_data import ResourceNotFound, Unauthorized, fetch_plan, find_free_rooms_in_plan, get_plan_for_page, get_subject_catalog_plans, log
-from web_utils import format_week_value, join_cookie_list, make_cookie, parse_cookie_header, parse_hour, parse_week, query_value, query_values, redirect, send_html, split_cookie_list
+from web_utils import cookie_values, format_week_value, join_cookie_list, make_cookie, parse_cookie_header, parse_hour, parse_week, query_value, query_values, redirect, send_html, split_cookie_list
 
 
 load_dotenv()
 ROOT = Path(__file__).resolve().parent
 SESSION_COOKIE = "cal11_session"
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "true").lower() in {"1", "true", "yes"}
-COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN", "").strip() or None
+
+
+def resolve_cookie_domain() -> str | None:
+    configured = os.getenv("COOKIE_DOMAIN", "").strip().lstrip(".")
+    hosts = [
+        (urlparse(os.getenv(name, "")).hostname or "").lower()
+        for name in ("CALENDAR_PUBLIC_URL", "VERTRETUNGSPLAN_PUBLIC_URL")
+    ]
+    if configured:
+        if any(host and host != configured and not host.endswith(f".{configured}") for host in hosts):
+            raise RuntimeError("COOKIE_DOMAIN passt nicht zu den öffentlichen Kalender-/VP-URLs.")
+        return configured
+    first, second = hosts
+    if first and second and first != second:
+        if second.endswith(f".{first}"):
+            return first
+        if first.endswith(f".{second}"):
+            return second
+    return None
+
+
+COOKIE_DOMAIN = resolve_cookie_domain()
+
+
+def session_cookie_headers(token: str, max_age: int) -> list[str]:
+    shared = make_cookie(
+        SESSION_COOKIE, token, max_age=max_age, http_only=True,
+        secure=COOKIE_SECURE, domain=COOKIE_DOMAIN,
+    )
+    if not COOKIE_DOMAIN:
+        return [shared]
+    # Entfernt ein Cookie aus Builds vor der domainweiten Sessionfreigabe.
+    host_only_cleanup = make_cookie(
+        SESSION_COOKIE, "", max_age=0, http_only=True, secure=COOKIE_SECURE,
+    )
+    return [host_only_cleanup, shared]
 
 
 def resolve_bind_host() -> str:
@@ -96,7 +131,10 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         return parse_cookie_header(self.headers.get("Cookie"))
 
     def _session(self) -> Session | None:
-        return self.store.get_session(self._cookies().get(SESSION_COOKIE))
+        for token in cookie_values(self.headers.get("Cookie"), SESSION_COOKIE):
+            if session := self.store.get_session(token):
+                return session
+        return None
 
     def _client_ip(self) -> str:
         # X-Forwarded-For wird bewusst nicht blind vertraut; davor gehört ein Reverse Proxy.
@@ -143,6 +181,12 @@ class AppRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
+        if parsed.path == "/api/session-status":
+            self.send_response(204 if self._session() else 401)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            return
         if parsed.path == "/login":
             if self._session():
                 redirect(self, "/abos")
@@ -197,7 +241,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                         send_html(self, render_login("Anmeldung momentan nicht möglich.", username=resolved_username))
                         return
                     token, _csrf = self.store.create_session(user.id)
-                    redirect(self, "/", [make_cookie(SESSION_COOKIE, token, max_age=14 * 86400, http_only=True, secure=COOKIE_SECURE, domain=COOKIE_DOMAIN)])
+                    redirect(self, "/", session_cookie_headers(token, 14 * 86400))
                     return
                 send_html(self, render_login(username=resolved_username, pin_step=True))
                 return
@@ -210,7 +254,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 send_html(self, render_login("PIN falsch oder Anmeldung vorübergehend gesperrt.", username=username, pin_step=True))
                 return
             token, _csrf = self.store.create_session(user.id)
-            redirect(self, "/", [make_cookie(SESSION_COOKIE, token, max_age=14 * 86400, http_only=True, secure=COOKIE_SECURE, domain=COOKIE_DOMAIN)])
+            redirect(self, "/", session_cookie_headers(token, 14 * 86400))
             return
         session = self._require_session()
         if session is None:
@@ -278,8 +322,10 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 self.render_subscriptions(session, error=str(error))
             return
         if path == "/logout":
-            self.store.delete_session(self._cookies().get(SESSION_COOKIE))
-            redirect(self, "/login", [make_cookie(SESSION_COOKIE, "", max_age=0, http_only=True, secure=COOKIE_SECURE, domain=COOKIE_DOMAIN)])
+            for token in cookie_values(self.headers.get("Cookie"), SESSION_COOKIE):
+                self.store.delete_session(token)
+            self.store.delete_user_sessions(session.user.username)
+            redirect(self, "/login", session_cookie_headers("", 0))
             return
         self.send_error(404)
 

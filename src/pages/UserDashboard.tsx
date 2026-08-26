@@ -1,6 +1,6 @@
 import { useState, useEffect, FormEvent } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { checkUser, loginUser, loginWithSessionToken, fetchCurrentSession, logoutSession, saveUserSettings } from '../lib/api';
+import { checkUser, loginUser, loginWithSessionToken, fetchCurrentSession, hasActiveSession, logoutSession, saveUserSettings } from '../lib/api';
 import { getStoredSession, saveStoredSession, clearStoredSession } from '../lib/auth';
 import CalendarView from '../components/CalendarView';
 import AuthFooter from '../components/AuthFooter';
@@ -28,6 +28,78 @@ export default function UserDashboard() {
     }
     verifyAndLoadUser();
   }, [username]);
+
+  useEffect(() => {
+    if (!user || !username) return;
+    let disposed = false;
+    let checking = false;
+    const checkSession = async () => {
+      if (checking || disposed) return;
+      checking = true;
+      try {
+        const active = await hasActiveSession();
+        if (!active && !disposed) {
+          clearStoredSession(username);
+          setUser(null);
+          navigate('/', { replace: true });
+        }
+      } catch {
+        // Temporäre Netzwerk-/Serverfehler sind kein Abmeldegrund.
+      } finally {
+        checking = false;
+      }
+    };
+    const timer = window.setInterval(checkSession, 3000);
+    const onFocus = () => void checkSession();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') void checkSession();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [user, username, navigate]);
+
+  useEffect(() => {
+    if (user || !username || isBlocked) return;
+    let disposed = false;
+    let checking = false;
+    const detectLogin = async () => {
+      if (checking || disposed) return;
+      checking = true;
+      try {
+        const session = await fetchCurrentSession();
+        if (
+          !disposed && session?.user?.username?.toLowerCase() === username.toLowerCase()
+        ) {
+          setUser(session.user);
+          setNeedsPin(false);
+          setPinError('');
+        }
+      } catch {
+        // Der offene PIN-Dialog bleibt bei Netzwerkfehlern unverändert.
+      } finally {
+        checking = false;
+      }
+    };
+    const timer = window.setInterval(detectLogin, 3000);
+    const onFocus = () => void detectLogin();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') void detectLogin();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [user, username, isBlocked]);
 
   const verifyAndLoadUser = async () => {
     if (!username) return;

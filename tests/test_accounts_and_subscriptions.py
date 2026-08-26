@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import sys
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from cryptography.fernet import Fernet
 
@@ -13,9 +13,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from accounts import AccountStore, NotifySettings
 from account_page import render_login
+from main import resolve_cookie_domain
 from ntfy.service import NtfyService, resolve_ntfy_internal_url
 from subscriptions import SubscriptionNotifier, subject_key, subject_options
 from vp_data import get_future_week_dates, get_future_week_plans, get_subject_catalog_plans
+from web_utils import SESSION_WATCH_SCRIPT, cookie_values
 
 
 def lesson(subject, room, period, *, changed=False, course_number=None):
@@ -95,6 +97,54 @@ class AccountAndSubscriptionTests(unittest.TestCase):
 
         self.assertIsNone(store.authenticate("gustavd", "9999", "127.0.0.1"))
         store._hasher.verify.assert_not_called()
+
+    def test_cookie_domain_is_derived_for_calendar_and_vp_subdomain(self):
+        with patch.dict("os.environ", {
+            "COOKIE_DOMAIN": "",
+            "CALENDAR_PUBLIC_URL": "https://cal11.de",
+            "VERTRETUNGSPLAN_PUBLIC_URL": "https://vp.cal11.de",
+        }, clear=False):
+            self.assertEqual(resolve_cookie_domain(), "cal11.de")
+
+    def test_duplicate_session_cookies_remain_readable_during_migration(self):
+        self.assertEqual(
+            cookie_values("cal11_session=old; theme=dark; cal11_session=shared", "cal11_session"),
+            ["old", "shared"],
+        )
+
+    def test_vp_session_watch_does_not_expose_session_token(self):
+        self.assertIn("/api/session-status", SESSION_WATCH_SCRIPT)
+        self.assertIn("response.status === 401", SESSION_WATCH_SCRIPT)
+        self.assertIn("onLoginPage && response.status === 204", SESSION_WATCH_SCRIPT)
+        self.assertNotIn("cal11_session", SESSION_WATCH_SCRIPT)
+
+    def test_trusted_calendar_session_bootstraps_missing_vp_profile(self):
+        store = object.__new__(AccountStore)
+        store._backend = "mysql"
+        store._connection = lambda: nullcontext(object())
+        store._fetchone = Mock(side_effect=[
+            {"username": "alice", "csrf_token": "csrf", "status": "ACTIVE"},
+            None,
+        ])
+        vp_row = {"id": 9, "username": "alice", "active": 1}
+        store._bootstrap_vp_user_from_calendar = Mock(return_value=vp_row)
+        store._run = Mock()
+        store._user_from_row = Mock(return_value="alice")
+
+        session = store.get_session("shared-token")
+
+        self.assertEqual(session.user, "alice")
+        self.assertEqual(session.csrf_token, "csrf")
+        store._bootstrap_vp_user_from_calendar.assert_called_once_with(
+            ANY, "alice", None, trusted_session=True,
+        )
+
+    def test_logout_can_invalidate_all_sessions_for_account(self):
+        first, _ = self.store.create_session(self.alice.id)
+        second, _ = self.store.create_session(self.alice.id)
+        self.store.delete_user_sessions("alice")
+        self.assertIsNone(self.store.get_session(first))
+        self.assertIsNone(self.store.get_session(second))
 
     def test_calendar_categories_keep_individual_notification_times(self):
         settings = NotifySettings(

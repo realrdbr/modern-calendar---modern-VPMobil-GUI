@@ -2,6 +2,7 @@ import os
 from datetime import date, datetime, timedelta
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import unquote
 
 from dotenv import load_dotenv
 
@@ -12,6 +13,37 @@ _requested_host = os.getenv("BIND_HOST", os.getenv("HOST", "127.0.0.1"))
 DEFAULT_HOST = "0.0.0.0" if os.path.exists("/.dockerenv") and _requested_host in {"127.0.0.1", "localhost"} else _requested_host
 CALENDAR_PUBLIC_URL = os.getenv("CALENDAR_PUBLIC_URL", "http://127.0.0.1:3000").rstrip("/")
 VERTRETUNGSPLAN_PUBLIC_URL = os.getenv("VERTRETUNGSPLAN_PUBLIC_URL", "http://127.0.0.1:8000").rstrip("/")
+
+SESSION_WATCH_SCRIPT = """<script>
+(() => {
+  let checking = false;
+  const checkSession = async () => {
+    if (checking) return;
+    checking = true;
+    try {
+      const response = await fetch('/api/session-status', {
+        credentials: 'same-origin', cache: 'no-store', headers: {'Accept': 'application/json'}
+      });
+      const onLoginPage = window.location.pathname === '/login';
+      if (onLoginPage && response.status === 204) {
+        window.location.replace('/');
+      } else if (!onLoginPage && (response.status === 401 || response.status === 403)) {
+        window.location.replace('/login');
+      }
+    } catch (_) {
+      // Temporäre Netzwerkfehler dürfen keine gültige Sitzung beenden.
+    } finally {
+      checking = false;
+    }
+  };
+  const timer = window.setInterval(checkSession, 3000);
+  window.addEventListener('focus', checkSession);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') checkSession();
+  });
+  window.addEventListener('pagehide', () => window.clearInterval(timer), {once: true});
+})();
+</script>"""
 
 
 def parse_date(value: str | None) -> date:
@@ -82,6 +114,18 @@ def parse_cookie_header(cookie_header: str | None) -> dict[str, str]:
     }
 
 
+def cookie_values(cookie_header: str | None, name: str) -> list[str]:
+    """Liest auch während einer Cookie-Migration mehrfach vorhandene Werte."""
+    values: list[str] = []
+    for part in (cookie_header or "").split(";"):
+        key, separator, value = part.strip().partition("=")
+        if separator and key == name:
+            decoded = unquote(value)
+            if decoded and decoded not in values:
+                values.append(decoded)
+    return values
+
+
 def make_cookie(
     name: str, value: str, max_age: int = 60 * 60 * 24 * 180, *,
     http_only: bool = False, secure: bool = False, domain: str | None = None,
@@ -105,6 +149,9 @@ def make_cookie(
 
 def send_html(handler: BaseHTTPRequestHandler, html: str, cookie_headers: list[str] | None = None) -> None:
     """Sendet eine HTML-Antwort an den Browser."""
+
+    if "</body>" in html and SESSION_WATCH_SCRIPT not in html:
+        html = html.replace("</body>", f"{SESSION_WATCH_SCRIPT}</body>", 1)
 
     handler.send_response(200)
     handler.send_header("Content-Type", "text/html; charset=utf-8")

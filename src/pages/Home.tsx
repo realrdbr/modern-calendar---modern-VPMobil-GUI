@@ -15,9 +15,36 @@ export default function Home() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    fetchCurrentSession().then((session) => {
-      if (session?.user?.username) navigate(`/${session.user.username}`, { replace: true });
-    }).catch(() => undefined);
+    let disposed = false;
+    let checking = false;
+    const detectLogin = async () => {
+      if (checking || disposed) return;
+      checking = true;
+      try {
+        const session = await fetchCurrentSession();
+        if (!disposed && session?.user?.username) {
+          navigate(`/${session.user.username}`, { replace: true });
+        }
+      } catch {
+        // Ohne gültige Session bleibt die Anmeldeseite unverändert.
+      } finally {
+        checking = false;
+      }
+    };
+    void detectLogin();
+    const timer = window.setInterval(detectLogin, 3000);
+    const onFocus = () => void detectLogin();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') void detectLogin();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, [navigate]);
 
   const handleNext = async (e: FormEvent) => {

@@ -19,6 +19,15 @@ export async function fetchCurrentSession() {
   return res.json();
 }
 
+export async function hasActiveSession(): Promise<boolean> {
+  const res = await fetch(`${API_URL}/api/session`, {
+    headers: getHeaders(), credentials: 'same-origin', cache: 'no-store'
+  });
+  if (res.ok) return true;
+  if (res.status === 401 || res.status === 403) return false;
+  throw new Error(`Sessionstatus vorübergehend nicht verfügbar (${res.status})`);
+}
+
 export async function logoutSession() {
   await fetch(`${API_URL}/api/logout`, { method: 'POST', headers: getHeaders(), credentials: 'same-origin' });
 }
