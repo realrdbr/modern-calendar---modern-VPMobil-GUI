@@ -46,7 +46,7 @@ services:
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?APP_ENCRYPTION_KEY muss gesetzt sein}
       CALENDAR_PRIVATE_DATA_KEY: ${CALENDAR_PRIVATE_DATA_KEY:-}
     ports:
-      - "127.0.0.1:${CAL11_PORT:-3000}:${CAL11_PORT:-3000}"
+      - "${APP_BIND_HOST:-127.0.0.1}:${CAL11_PORT:-3000}:${CAL11_PORT:-3000}"
     networks:
       - cal11_net
 
