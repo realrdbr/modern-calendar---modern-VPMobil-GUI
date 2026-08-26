@@ -18,8 +18,8 @@ Die Python-App nutzt dieselbe Datenbank wie der Kalender. VP-spezifische Tabelle
 ## 2) Projekt holen
 
 ```bash
-git clone <DEIN-REPO-URL> jahrgangskalender
-cd jahrgangskalender
+git clone https://github.com/realrdbr/modern-calendar---modern-VPMobil-GUI.git vpcal
+cd vpcal
 ```
 
 ## 3) `.env` anlegen
