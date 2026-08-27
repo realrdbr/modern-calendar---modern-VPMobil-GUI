@@ -143,6 +143,14 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         self.assertIn("'ontouchstart' in window", function_body)
         self.assertNotIn("innerWidth", function_body)
 
+    def test_calendar_edge_swipe_direction_is_resolved_after_drag(self):
+        calendar_view = (Path(__file__).resolve().parent.parent / "src/components/CalendarView.tsx").read_text(encoding="utf-8")
+        self.assertIn("canPullFromLeft", calendar_view)
+        self.assertIn("canPullFromRight", calendar_view)
+        self.assertIn("dx > 0 && gesture.canPullFromLeft", calendar_view)
+        self.assertIn("dx < 0 && gesture.canPullFromRight", calendar_view)
+        self.assertIn("edge: null", calendar_view)
+
     def test_ntfy_history_is_cleared_only_once_per_calendar_day(self):
         cache = Path(self.temp.name) / "cache.db"
         marker = Path(self.temp.name) / "cleanup-date"

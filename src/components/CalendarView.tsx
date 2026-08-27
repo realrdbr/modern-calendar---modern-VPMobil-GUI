@@ -19,7 +19,9 @@ interface Props {
 type EdgeSwipeDirection = 'left' | 'right';
 
 type EdgeSwipeGesture = {
-  edge: EdgeSwipeDirection;
+  edge: EdgeSwipeDirection | null;
+  canPullFromLeft: boolean;
+  canPullFromRight: boolean;
   startX: number;
   startY: number;
   maxScrollLeft: number;
@@ -242,15 +244,14 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
 
     const target = event.currentTarget;
     const maxScrollLeft = Math.max(0, target.scrollWidth - target.clientWidth);
-    const edge = target.scrollLeft <= SCROLL_EDGE_EPSILON
-      ? 'left'
-      : target.scrollLeft >= maxScrollLeft - SCROLL_EDGE_EPSILON
-        ? 'right'
-        : null;
-    if (!edge) return;
+    const canPullFromLeft = target.scrollLeft <= SCROLL_EDGE_EPSILON;
+    const canPullFromRight = target.scrollLeft >= maxScrollLeft - SCROLL_EDGE_EPSILON;
+    if (!canPullFromLeft && !canPullFromRight) return;
 
     edgeSwipeGesture.current = {
-      edge,
+      edge: null,
+      canPullFromLeft,
+      canPullFromRight,
       startX: event.touches[0].clientX,
       startY: event.touches[0].clientY,
       maxScrollLeft,
@@ -267,12 +268,25 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
     const touch = event.touches[0];
     const dx = touch.clientX - gesture.startX;
     const dy = touch.clientY - gesture.startY;
-    const inwardDistance = gesture.edge === 'left' ? Math.max(0, dx) : Math.max(0, -dx);
+
+    let edge = gesture.edge;
+    if (!edge) {
+      if (dx > 0 && gesture.canPullFromLeft) edge = 'left';
+      else if (dx < 0 && gesture.canPullFromRight) edge = 'right';
+      else {
+        if (Math.abs(dy) > 16 && Math.abs(dx) <= Math.abs(dy)) edgeSwipeGesture.current = null;
+        return;
+      }
+      gesture.edge = edge;
+    }
+
+    const inwardDistance = edge === 'left' ? Math.max(0, dx) : Math.max(0, -dx);
     const horizontalIntent = inwardDistance > 8 && inwardDistance > Math.abs(dy) * 1.15;
     const currentTarget = event.currentTarget;
-    const stillAtRequiredScrollEdge = gesture.edge === 'left'
+    const currentMaxScrollLeft = Math.max(0, currentTarget.scrollWidth - currentTarget.clientWidth);
+    const stillAtRequiredScrollEdge = edge === 'left'
       ? currentTarget.scrollLeft <= SCROLL_EDGE_EPSILON
-      : currentTarget.scrollLeft >= gesture.maxScrollLeft - SCROLL_EDGE_EPSILON;
+      : currentTarget.scrollLeft >= Math.min(gesture.maxScrollLeft, currentMaxScrollLeft) - SCROLL_EDGE_EPSILON;
 
     if (!stillAtRequiredScrollEdge && !gesture.horizontal) {
       edgeSwipeGesture.current = null;
@@ -296,14 +310,14 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
     }
     gesture.horizontal = true;
     gesture.distance = distance;
-    setEdgeSwipePreview({ edge: gesture.edge, distance, armed });
+    setEdgeSwipePreview({ edge, distance, armed });
   };
 
   const handleTouchEnd = (event: TouchEvent<HTMLDivElement>) => {
     const gesture = edgeSwipeGesture.current;
     edgeSwipeGesture.current = null;
     setEdgeSwipePreview(null);
-    if (!gesture || event.changedTouches.length !== 1 || !gesture.horizontal) return;
+    if (!gesture || !gesture.edge || event.changedTouches.length !== 1 || !gesture.horizontal) return;
 
     const touch = event.changedTouches[0];
     const dx = touch.clientX - gesture.startX;
