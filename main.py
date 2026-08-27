@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 import json
 import os
@@ -145,7 +145,11 @@ class NotificationWorker(Thread):
                 except Exception as error:
                     log(f"Planabruf für Benachrichtigungen fehlgeschlagen; Kalender läuft weiter: {error}")
                     plan = SimpleNamespace(datum=local_now.date(), zeitstempel=None, zeitplan={}, klassen={})
-                sent = self.notifier.poll_once(plan, local_now)
+                try:
+                    next_plan = fetch_plan(local_now.date() + timedelta(days=1))
+                except Exception:
+                    next_plan = SimpleNamespace(datum=local_now.date() + timedelta(days=1), zeitstempel=None, zeitplan={}, klassen={})
+                sent = self.notifier.poll_once(plan, local_now, day_before_plan=next_plan)
                 if sent:
                     log(f"{sent} persönliche ntfy-Benachrichtigung(en) gesendet.")
                 for delivery_error in self.notifier.delivery_errors:
@@ -194,6 +198,17 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             redirect(self, "/login")
         return session
 
+    def _is_admin_session(self, session: Session) -> bool:
+        return (not session.user.vp_only) and self.store.is_admin(session.user.username)
+
+    def _nav_flags(self, session: Session) -> dict[str, bool]:
+        return {
+            "is_admin": self._is_admin_session(session),
+            "can_change_pin": session.user.vp_only,
+            "force_pin_change": session.user.vp_only and session.user.must_change_pin,
+            "session_username": session.user.username,
+        }
+
     def _validate_csrf(self, session: Session, data: dict[str, list[str]]) -> bool:
         import secrets
         return secrets.compare_digest(self._field(data, "csrf_token"), session.csrf_token)
@@ -215,19 +230,32 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         if parsed.path == "/api/session-status":
-            self.send_response(204 if self._session() else 401)
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.end_headers()
+            if session := self._session():
+                self._send_json({"username": session.user.username})
+            else:
+                self.send_response(401)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
             return
         if parsed.path == "/login":
             if self._session():
-                redirect(self, "/abos")
+                redirect(self, "/")
             else:
                 send_html(self, render_login())
             return
-        if self._session() is None:
+        session = self._session()
+        if session is None:
             redirect(self, "/login")
+            return
+        if parsed.path == "/pin-aendern":
+            redirect(self, "/")
+            return
+        if parsed.path == "/vp-nutzer":
+            if not self._is_admin_session(session):
+                self.send_error(403, "Nur Administratoren haben Zugriff auf diese Funktion.")
+                return
+            redirect(self, "/")
             return
         if parsed.path == "/abos":
             self.handle_subscriptions()
@@ -295,6 +323,51 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if not self._validate_csrf(session, data):
             self.send_error(403, "Ungültige Sicherheitsprüfung")
             return
+        if path == "/logout":
+            for token in cookie_values(self.headers.get("Cookie"), SESSION_COOKIE):
+                self.store.delete_session(token)
+            self.store.delete_user_sessions(session.user.username)
+            redirect(self, "/login", session_cookie_headers("", 0))
+            return
+        if path == "/pin-aendern":
+            if not session.user.vp_only:
+                self.send_error(403, "Nur VP-only-Nutzer können ihre PIN hier ändern.")
+                return
+            try:
+                pin = self._field(data, "pin")
+                pin_confirm = self._field(data, "pin_confirm")
+                if pin != pin_confirm:
+                    raise ValueError("Die PIN-Wiederholung stimmt nicht überein.")
+                self.store.change_vp_only_pin(session.user.username, pin)
+                self.handle_plan_page({}, pin_modal_changed=True)
+            except Exception as error:
+                self.handle_plan_page({}, pin_modal_error=str(error))
+            return
+        if session.user.must_change_pin:
+            redirect(self, "/")
+            return
+        if path == "/vp-nutzer":
+            if not self._is_admin_session(session):
+                self.send_error(403, "Nur Administratoren haben Zugriff auf diese Funktion.")
+                return
+            try:
+                if self.store.username_exists(self._field(data, "username")):
+                    raise ValueError("Name bereits vergeben.")
+                topic, ntfy_username, ntfy_password = NtfyService(ROOT).create_reader()
+                user = self.store.create_vp_only_user(
+                    self._field(data, "username"),
+                    self._field(data, "pin"),
+                    self._field(data, "class_name"),
+                    created_by=session.user.username,
+                    ntfy_topic=topic,
+                    ntfy_username=ntfy_username,
+                    ntfy_password=ntfy_password,
+                )
+                NtfyService(ROOT).ensure_reader_credentials(user.ntfy_topic, user.ntfy_username, user.ntfy_password)
+                self.handle_plan_page({}, vp_user_modal_created=True)
+            except Exception as error:
+                self.handle_plan_page({}, vp_user_modal_error=str(error))
+            return
         if path == "/abos/test":
             try:
                 SubscriptionNotifier(self.store, resolve_ntfy_internal_url()).send_user_test(session.user)
@@ -329,23 +402,31 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                     lesson_times = self._split_time_list(self._field(data, "lesson_notification_times"))
                 if not lesson_times:
                     raise ValueError("Bitte hinterlege mindestens eine Uhrzeit für Stundenbenachrichtigungen.")
-                event_type_options = self.store.get_calendar_event_types(session.user.username)
-                allowed_event_types = {option.id for option in event_type_options}
-                selected_event_types = tuple(dict.fromkeys(data.get("calendar_event_type", [])))
-                if not set(selected_event_types) <= allowed_event_types:
-                    raise ValueError("Die ausgewählten Kalender-Kategorien sind ungültig.")
-                category_times = {
-                    option.id: self._field(data, f"calendar_notification_time__{quote(option.id, safe='')}").strip() or "16:00"
-                    for option in event_type_options
-                }
-                category_days = {
-                    option.id: int(self._field(data, f"calendar_notification_days_before__{quote(option.id, safe='')}") or "1")
-                    for option in event_type_options
-                }
+                event_type_options = [] if session.user.vp_only else self.store.get_calendar_event_types(session.user.username)
+                if session.user.vp_only:
+                    selected_event_types = ()
+                    category_times = {}
+                    category_days = {}
+                    calendar_notifications_enabled = False
+                else:
+                    allowed_event_types = {option.id for option in event_type_options}
+                    selected_event_types = tuple(dict.fromkeys(data.get("calendar_event_type", [])))
+                    if not set(selected_event_types) <= allowed_event_types:
+                        raise ValueError("Die ausgewählten Kalender-Kategorien sind ungültig.")
+                    category_times = {
+                        option.id: self._field(data, f"calendar_notification_time__{quote(option.id, safe='')}").strip() or "16:00"
+                        for option in event_type_options
+                    }
+                    category_days = {
+                        option.id: int(self._field(data, f"calendar_notification_days_before__{quote(option.id, safe='')}") or "1")
+                        for option in event_type_options
+                    }
+                    calendar_notifications_enabled = self._field(data, "calendar_notifications_enabled") == "on"
                 settings = NotifySettings(
                     lesson_notifications_enabled=self._field(data, "lesson_notifications_enabled") == "on",
                     lesson_notification_times=lesson_times,
-                    calendar_notifications_enabled=self._field(data, "calendar_notifications_enabled") == "on",
+                    daily_summary_day_before=self._field(data, "daily_summary_day_before") == "on",
+                    calendar_notifications_enabled=calendar_notifications_enabled,
                     calendar_notification_time=self._field(data, "calendar_notification_time").strip() or "16:00",
                     calendar_notification_times=category_times,
                     calendar_notification_days_before=int(self._field(data, "calendar_notification_days_before") or "1"),
@@ -358,12 +439,6 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 self.render_subscriptions(session, saved=True)
             except Exception as error:
                 self.render_subscriptions(session, error=str(error))
-            return
-        if path == "/logout":
-            for token in cookie_values(self.headers.get("Cookie"), SESSION_COOKIE):
-                self.store.delete_session(token)
-            self.store.delete_user_sessions(session.user.username)
-            redirect(self, "/login", session_cookie_headers("", 0))
             return
         self.send_error(404)
 
@@ -408,11 +483,20 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                     }
                     selected_subjects_by_class[class_name] = defaults
             settings, has_settings = self.store.load_notify_settings(session.user.id)
-            event_type_options = self.store.get_calendar_event_types(session.user.username)
-            if not has_settings and not settings.calendar_notification_types:
+            event_type_options = [] if session.user.vp_only else self.store.get_calendar_event_types(session.user.username)
+            if session.user.vp_only:
                 settings = NotifySettings(
                     lesson_notifications_enabled=settings.lesson_notifications_enabled,
                     lesson_notification_times=settings.lesson_notification_times,
+                    daily_summary_day_before=settings.daily_summary_day_before,
+                    calendar_notifications_enabled=False,
+                    calendar_notification_types=(),
+                )
+            elif not has_settings and not settings.calendar_notification_types:
+                settings = NotifySettings(
+                    lesson_notifications_enabled=settings.lesson_notifications_enabled,
+                    lesson_notification_times=settings.lesson_notification_times,
+                    daily_summary_day_before=settings.daily_summary_day_before,
                     calendar_notifications_enabled=settings.calendar_notifications_enabled,
                     calendar_notification_time=settings.calendar_notification_time,
                     calendar_notification_times=settings.calendar_notification_times,
@@ -442,6 +526,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 saved,
                 error,
                 test_sent,
+                **self._nav_flags(session),
             ),
         )
 
@@ -450,7 +535,15 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if session:
             self.render_subscriptions(session)
 
-    def handle_plan_page(self, query: dict[str, list[str]]) -> None:
+    def handle_plan_page(
+        self,
+        query: dict[str, list[str]],
+        *,
+        pin_modal_error: str | None = None,
+        pin_modal_changed: bool = False,
+        vp_user_modal_error: str | None = None,
+        vp_user_modal_created: bool = False,
+    ) -> None:
         selected_date = parse_week(query_value(query, "woche"))
         cookies = self._cookies()
         session = self._session()
@@ -503,18 +596,62 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 stored_by_class, _ = self.store.get_subject_selections(session.user.id, session.user.class_name)
                 stored_by_class[selected_class] = selected_keys
                 self.store.replace_subjects(session.user.id, stored_by_class)
-                self.store.replace_calendar_course_ids(
-                    session.user.username,
-                    {key.removeprefix("subject:") for key in selected_keys},
-                )
+                if not session.user.vp_only:
+                    self.store.replace_calendar_course_ids(
+                        session.user.username,
+                        {key.removeprefix("subject:") for key in selected_keys},
+                    )
         try:
-            html = render_plan_page(selected_date, selected_class, selected_subjects, filters_active=filters_active, logout_csrf_token=session.csrf_token if session else None)
+            flags = self._nav_flags(session) if session else {}
+            html = render_plan_page(
+                selected_date, selected_class, selected_subjects,
+                filters_active=filters_active,
+                logout_csrf_token=session.csrf_token if session else None,
+                pin_modal_error=pin_modal_error,
+                pin_modal_changed=pin_modal_changed,
+                vp_user_modal_error=vp_user_modal_error,
+                vp_user_modal_created=vp_user_modal_created,
+                **flags,
+            )
         except ResourceNotFound:
-            html = render_plan_page(selected_date, selected_class, selected_subjects, error_message="Für diese Woche wurden keine Vertretungsplandaten gefunden.", filters_active=filters_active, logout_csrf_token=session.csrf_token if session else None)
+            flags = self._nav_flags(session) if session else {}
+            html = render_plan_page(
+                selected_date, selected_class, selected_subjects,
+                error_message="Für diese Woche wurden keine Vertretungsplandaten gefunden.",
+                filters_active=filters_active,
+                logout_csrf_token=session.csrf_token if session else None,
+                pin_modal_error=pin_modal_error,
+                pin_modal_changed=pin_modal_changed,
+                vp_user_modal_error=vp_user_modal_error,
+                vp_user_modal_created=vp_user_modal_created,
+                **flags,
+            )
         except Unauthorized:
-            html = render_plan_page(selected_date, selected_class, selected_subjects, error_message="Die Zugangsdaten sind ungültig oder haben keinen Zugriff auf diese Daten.", filters_active=filters_active, logout_csrf_token=session.csrf_token if session else None)
+            flags = self._nav_flags(session) if session else {}
+            html = render_plan_page(
+                selected_date, selected_class, selected_subjects,
+                error_message="Die Zugangsdaten sind ungültig oder haben keinen Zugriff auf diese Daten.",
+                filters_active=filters_active,
+                logout_csrf_token=session.csrf_token if session else None,
+                pin_modal_error=pin_modal_error,
+                pin_modal_changed=pin_modal_changed,
+                vp_user_modal_error=vp_user_modal_error,
+                vp_user_modal_created=vp_user_modal_created,
+                **flags,
+            )
         except Exception as error:
-            html = render_plan_page(selected_date, selected_class, selected_subjects, error_message=f"Beim Laden der Daten ist ein Fehler aufgetreten: {error}", filters_active=filters_active, logout_csrf_token=session.csrf_token if session else None)
+            flags = self._nav_flags(session) if session else {}
+            html = render_plan_page(
+                selected_date, selected_class, selected_subjects,
+                error_message=f"Beim Laden der Daten ist ein Fehler aufgetreten: {error}",
+                filters_active=filters_active,
+                logout_csrf_token=session.csrf_token if session else None,
+                pin_modal_error=pin_modal_error,
+                pin_modal_changed=pin_modal_changed,
+                vp_user_modal_error=vp_user_modal_error,
+                vp_user_modal_created=vp_user_modal_created,
+                **flags,
+            )
         send_html(self, html, headers)
 
     def handle_teacher_page(self, query: dict[str, list[str]]) -> None:
@@ -531,23 +668,47 @@ class AppRequestHandler(BaseHTTPRequestHandler):
 
         if teacher:
             headers.append(make_cookie("selected_teacher", teacher))
+        session = self._session()
+        flags = self._nav_flags(session) if session else {}
         try:
-            send_html(self, render_teacher_page(selected_date, teacher, logout_csrf_token=self._session().csrf_token), headers)
+            send_html(self, render_teacher_page(selected_date, teacher, logout_csrf_token=session.csrf_token if session else None, **flags), headers)
         except Exception as error:
             send_html(
                 self,
-                render_teacher_page(selected_date, teacher, error_message=f"Beim Laden der Daten ist ein Fehler aufgetreten: {error}", logout_csrf_token=self._session().csrf_token),
+                render_teacher_page(
+                    selected_date,
+                    teacher,
+                    error_message=f"Beim Laden der Daten ist ein Fehler aufgetreten: {error}",
+                    logout_csrf_token=session.csrf_token if session else None,
+                    **flags,
+                ),
                 headers,
             )
 
     def handle_rooms_page(self, query: dict[str, list[str]]) -> None:
         from web_utils import parse_date
         selected_date, selected_hour = parse_date(query_value(query, "datum")), parse_hour(query_value(query, "stunde"))
+        session = self._session()
+        flags = self._nav_flags(session) if session else {}
         try:
             plan = get_plan_for_page(selected_date)
-            html = render_rooms_page(selected_date, selected_hour, find_free_rooms_in_plan(plan, selected_hour), plan_version=str(getattr(plan, "zeitstempel", "") or ""), logout_csrf_token=self._session().csrf_token)
+            html = render_rooms_page(
+                selected_date,
+                selected_hour,
+                find_free_rooms_in_plan(plan, selected_hour),
+                plan_version=str(getattr(plan, "zeitstempel", "") or ""),
+                logout_csrf_token=session.csrf_token if session else None,
+                **flags,
+            )
         except Exception as error:
-            html = render_rooms_page(selected_date, selected_hour, None, error_message=f"Beim Laden der Daten ist ein Fehler aufgetreten: {error}", logout_csrf_token=self._session().csrf_token)
+            html = render_rooms_page(
+                selected_date,
+                selected_hour,
+                None,
+                error_message=f"Beim Laden der Daten ist ein Fehler aufgetreten: {error}",
+                logout_csrf_token=session.csrf_token if session else None,
+                **flags,
+            )
         send_html(self, html)
 
     def log_message(self, _format: str, *_args: object) -> None:

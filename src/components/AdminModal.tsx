@@ -108,7 +108,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
   };
   
   const handleSelectAllUsers = () => {
-    const mutableUsers = users.filter(u => !u.isAdmin && u.status !== 'ADMIN' && u.username.toLowerCase() !== 'gustavd').map(u => u.username);
+    const mutableUsers = users.filter(u => !u.isAdmin && u.status !== 'ADMIN').map(u => u.username);
     if (selectedUsers.length === mutableUsers.length) {
       setSelectedUsers([]);
     } else {
@@ -517,7 +517,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
                     <div className="flex items-center gap-3">
                       <input
                         type="checkbox"
-                        checked={users.filter(u => !u.isAdmin && u.status !== 'ADMIN' && u.username.toLowerCase() !== 'gustavd').length > 0 && selectedUsers.length === users.filter(u => !u.isAdmin && u.status !== 'ADMIN' && u.username.toLowerCase() !== 'gustavd').length}
+                        checked={users.filter(u => !u.isAdmin && u.status !== 'ADMIN').length > 0 && selectedUsers.length === users.filter(u => !u.isAdmin && u.status !== 'ADMIN').length}
                         onChange={handleSelectAllUsers}
                         className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                       />
@@ -535,7 +535,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
                   
                   <div className={`divide-y ${theme.border}`}>
                     {users.map(u => {
-                      const isUserAdmin = u.isAdmin || u.status === 'ADMIN' || u.username.toLowerCase() === 'gustavd';
+                      const isUserAdmin = u.isAdmin || u.status === 'ADMIN';
                       return (
                         <div key={u.username} className={`p-4 flex items-center justify-between ${theme.bgInput} hover:bg-black/5 dark:hover:bg-white/5`}>
                           <div className="flex items-center gap-3">

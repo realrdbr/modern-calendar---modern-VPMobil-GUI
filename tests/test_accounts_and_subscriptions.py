@@ -19,7 +19,7 @@ from main import cleanup_ntfy_history_once_per_day
 from ntfy.service import NtfyService, resolve_ntfy_internal_url
 from subscriptions import SubscriptionNotifier, subject_key, subject_options
 from vp_data import get_future_week_dates, get_future_week_plans, get_subject_catalog_plans
-from web_utils import SESSION_WATCH_SCRIPT, cookie_values
+from web_utils import CALENDAR_PUBLIC_URL, COMMON_CSS, SESSION_WATCH_SCRIPT, cookie_values
 
 
 def lesson(subject, room, period, *, changed=False, course_number=None):
@@ -52,6 +52,89 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         session = self.store.get_session(token)
         self.assertEqual(session.user.username, "alice")
         self.assertEqual(session.csrf_token, csrf)
+
+    def test_vp_only_user_has_separate_session_and_must_change_pin(self):
+        vp_user = self.store.create_vp_only_user(
+            "vpguest", "2468", "11", created_by="alice",
+            ntfy_topic="vpmobil-vpguest", ntfy_username="ntfy_vpguest", ntfy_password="secret",
+        )
+        self.assertTrue(vp_user.vp_only)
+        self.assertTrue(vp_user.must_change_pin)
+
+        import sqlite3
+        with sqlite3.connect(Path(self.temp.name) / "accounts.sqlite") as connection:
+            stored_pin = connection.execute("SELECT pin_hash FROM vp_only_users WHERE username = ?", ("vpguest",)).fetchone()[0]
+            calendar_row = connection.execute("SELECT 1 FROM calendar_users WHERE username = ?", ("vpguest",)).fetchone()
+        self.assertNotEqual(stored_pin, "2468")
+        self.assertIsNone(calendar_row)
+
+        authenticated = self.store.authenticate("vpguest", "2468", "127.0.0.1")
+        self.assertIsNotNone(authenticated)
+        self.assertTrue(authenticated.vp_only)
+        token, csrf = self.store.create_session(authenticated.id)
+        session = self.store.get_session(token)
+        self.assertEqual(session.user.username, "vpguest")
+        self.assertTrue(session.user.must_change_pin)
+        self.assertEqual(session.csrf_token, csrf)
+
+        with sqlite3.connect(Path(self.temp.name) / "accounts.sqlite") as connection:
+            shared_sessions = connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+            vp_sessions = connection.execute("SELECT COUNT(*) FROM vp_only_sessions").fetchone()[0]
+        self.assertEqual(shared_sessions, 0)
+        self.assertEqual(vp_sessions, 1)
+
+        self.store.change_vp_only_pin("vpguest", "1357")
+        self.assertIsNone(self.store.authenticate("vpguest", "2468", "127.0.0.1"))
+        changed = self.store.authenticate("vpguest", "1357", "127.0.0.1")
+        self.assertIsNotNone(changed)
+        self.assertFalse(changed.must_change_pin)
+
+    def test_admin_navigation_is_only_rendered_for_admin_flag(self):
+        vp_user = self.store.create_vp_only_user(
+            "vpguest", "2468", "11", created_by="alice",
+            ntfy_topic="vpmobil-vpguest", ntfy_username="ntfy_vpguest", ntfy_password="secret",
+        )
+        normal_page = render_subscriptions(
+            self.alice, ["11"], ("11",), {"11": []}, {"11": set()},
+            NotifySettings(), [], "csrf", "https://ntfy.invalid",
+        )
+        admin_page = render_subscriptions(
+            self.alice, ["11"], ("11",), {"11": []}, {"11": set()},
+            NotifySettings(), [], "csrf", "https://ntfy.invalid", is_admin=True,
+        )
+        vp_only_page = render_subscriptions(
+            vp_user, ["11"], ("11",), {"11": []}, {"11": set()},
+            NotifySettings(
+                calendar_notifications_enabled=True,
+                calendar_notification_types=("KLAUSUR",),
+            ),
+            [CalendarEventTypeOption("KLAUSUR", "Klausur")],
+            "csrf", "https://ntfy.invalid", can_change_pin=True,
+        )
+        self.assertNotIn("VP-Nutzer hinzufügen", normal_page)
+        self.assertIn("VP-Nutzer hinzufügen", admin_page)
+        self.assertNotIn("VP-Nutzer hinzufügen", vp_only_page)
+        self.assertIn("data-pin-modal-open", vp_only_page)
+        self.assertNotIn("Kalender-Benachrichtigungen aktiv", vp_only_page)
+        self.assertNotIn('name="calendar_event_type"', vp_only_page)
+        self.assertNotIn(f'href="{CALENDAR_PUBLIC_URL}"', vp_only_page)
+
+    def test_forced_pin_change_opens_centered_modal_and_allows_explicit_close(self):
+        page = render_subscriptions(
+            self.alice, ["11"], ("11",), {"11": []}, {"11": set()},
+            NotifySettings(), [], "csrf", "https://ntfy.invalid",
+            can_change_pin=True, force_pin_change=True,
+        )
+        self.assertIn('data-force-pin-change="1"', page)
+        self.assertIn('data-pin-modal-close', page)
+        self.assertIn("showModal", page)
+        self.assertIn("window.history.replaceState", page)
+
+    def test_mobile_navigation_allows_wrapped_button_text_without_growing(self):
+        self.assertIn("white-space: normal", COMMON_CSS)
+        self.assertIn("overflow-wrap: anywhere", COMMON_CSS)
+        self.assertIn("height: 36px !important", COMMON_CSS)
+        self.assertIn("font-size: clamp(.68rem, 2.6vw, .875rem) !important", COMMON_CSS)
 
     def test_ntfy_history_is_cleared_only_once_per_calendar_day(self):
         cache = Path(self.temp.name) / "cache.db"
@@ -101,20 +184,20 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         store._backend = "mysql"
         store._connection = lambda: nullcontext(object())
         store._fetchone = Mock(return_value={
-            "username": "gustavd", "pin": None, "status": "ACTIVE",
+            "username": "shareduser", "pin": None, "status": "ACTIVE",
             "active": None, "pin_hash": None,
         })
-        self.assertEqual(store.get_login_identity("gustavd"), ("gustavd", False))
+        self.assertEqual(store.get_login_identity("shareduser"), ("shareduser", False))
 
     def test_shared_calendar_identity_with_pin_requires_pin(self):
         store = object.__new__(AccountStore)
         store._backend = "mysql"
         store._connection = lambda: nullcontext(object())
         store._fetchone = Mock(return_value={
-            "username": "gustavd", "pin": "scrypt$salt$hash", "status": "ACTIVE",
+            "username": "shareduser", "pin": "scrypt$salt$hash", "status": "ACTIVE",
             "active": 1, "pin_hash": "argon-hash",
         })
-        self.assertEqual(store.get_login_identity("gustavd"), ("gustavd", True))
+        self.assertEqual(store.get_login_identity("shareduser"), ("shareduser", True))
 
     def test_shared_calendar_pin_rejects_matching_stale_vp_pin(self):
         store = object.__new__(AccountStore)
@@ -122,17 +205,17 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         store._connection = lambda: nullcontext(object())
         store._fetchall = Mock(return_value=[])
         store._fetchone = Mock(return_value={
-            "id": 7, "username": "gustavd", "class_name": "11", "active": 1,
-            "ntfy_topic": "vp-gustavd", "ntfy_username": "vp_gustavd",
+            "id": 7, "username": "shareduser", "class_name": "11", "active": 1,
+            "ntfy_topic": "vp-shareduser", "ntfy_username": "vp_shareduser",
             "ntfy_password_encrypted": b"unused", "pin_hash": "old-vp-hash",
-            "calendar_username": "gustavd", "calendar_pin": "1234",
+            "calendar_username": "shareduser", "calendar_pin": "1234",
             "calendar_status": "ACTIVE",
         })
         store._run = Mock()
         store._hasher = Mock()
         store._hasher.verify.return_value = True
 
-        self.assertIsNone(store.authenticate("gustavd", "9999", "127.0.0.1"))
+        self.assertIsNone(store.authenticate("shareduser", "9999", "127.0.0.1"))
         store._hasher.verify.assert_not_called()
 
     def test_cookie_domain_is_derived_for_calendar_and_vp_subdomain(self):
@@ -152,7 +235,8 @@ class AccountAndSubscriptionTests(unittest.TestCase):
     def test_vp_session_watch_does_not_expose_session_token(self):
         self.assertIn("/api/session-status", SESSION_WATCH_SCRIPT)
         self.assertIn("response.status === 401", SESSION_WATCH_SCRIPT)
-        self.assertIn("onLoginPage && response.status === 204", SESSION_WATCH_SCRIPT)
+        self.assertIn("onLoginPage && response.ok", SESSION_WATCH_SCRIPT)
+        self.assertIn("payload?.username", SESSION_WATCH_SCRIPT)
         self.assertNotIn("cal11_session", SESSION_WATCH_SCRIPT)
 
     def test_trusted_calendar_session_bootstraps_missing_vp_profile(self):
@@ -272,6 +356,20 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         self.assertEqual(args[0], "http://ntfy-provisioner:8080/ensure")
         self.assertIn("X-Provisioner-Signature", kwargs["headers"])
         self.assertNotIn(b"test-secret", kwargs["data"])
+
+    def test_ntfy_create_reader_uses_provisioner_without_docker(self):
+        response = Mock(ok=True, status_code=200)
+        with patch.dict("os.environ", {
+            "NTFY_PROVISIONER_URL": "http://ntfy-provisioner:8080",
+            "NTFY_PROVISIONER_SECRET": "test-secret",
+        }, clear=False), patch("ntfy.service.requests.post", return_value=response) as post, patch("ntfy.service.subprocess.run") as run:
+            topic, username, password = NtfyService(Path(self.temp.name)).create_reader()
+
+        self.assertTrue(topic.startswith("vpmobil-"))
+        self.assertTrue(username.startswith("u_"))
+        self.assertGreaterEqual(len(password), 16)
+        run.assert_not_called()
+        self.assertEqual(post.call_args.args[0], "http://ntfy-provisioner:8080/ensure")
 
     def test_subject_options_include_courses_without_today_lesson(self):
         plan = SimpleNamespace(klassen={"11": SimpleNamespace(
@@ -463,6 +561,69 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         )
         notifier = SubscriptionNotifier(self.store, "https://ntfy.invalid")
         notifier._publish = lambda *args, **kwargs: self.fail("Ein fremder Kurs darf keine Benachrichtigung auslösen.")
+        empty_plan = SimpleNamespace(datum=date(2026, 8, 20), zeitstempel=None, zeitplan={}, klassen={})
+
+        self.assertEqual(notifier.poll_once(empty_plan, datetime(2026, 8, 20, 16, 0)), 0)
+
+    def test_calendar_notifications_send_general_events_without_calendar_courses(self):
+        with self.store._connection() as connection:
+            connection.execute(
+                "INSERT INTO calendar_event_categories(id, name, color, sort_order) VALUES (?, ?, ?, ?)",
+                ("SONSTIGES", "Sonstiges", "#3d60c7", 0),
+            )
+            connection.execute(
+                """
+                INSERT INTO calendar_events(id, title, date, end_date, start_time, end_time, course_id, type, description, author)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("evt-general", "Info", "2026-08-21", "2026-08-21", None, None, "ALLGEMEIN", "SONSTIGES", "", "lehrer"),
+            )
+        self.store.save_notify_settings(
+            self.alice.id,
+            NotifySettings(
+                calendar_notifications_enabled=True,
+                calendar_notification_time="16:00",
+                calendar_notification_days_before=1,
+                calendar_notification_types=("SONSTIGES",),
+            ),
+        )
+        notifier = SubscriptionNotifier(self.store, "https://ntfy.invalid")
+        published = []
+        notifier._publish = lambda user, message, title, priority="default": published.append((user.username, title, message))
+        empty_plan = SimpleNamespace(datum=date(2026, 8, 20), zeitstempel=None, zeitplan={}, klassen={})
+
+        self.assertEqual(notifier.poll_once(empty_plan, datetime(2026, 8, 20, 16, 0)), 1)
+        self.assertEqual(published[0][0], "alice")
+        self.assertIn("Info", published[0][1])
+
+    def test_vp_only_users_never_receive_calendar_notifications(self):
+        vp_user = self.store.create_vp_only_user(
+            "vpguest", "2468", "11", created_by="alice",
+            ntfy_topic="vpmobil-vpguest", ntfy_username="ntfy_vpguest", ntfy_password="secret",
+        )
+        with self.store._connection() as connection:
+            connection.execute(
+                "INSERT INTO calendar_event_categories(id, name, color, sort_order) VALUES (?, ?, ?, ?)",
+                ("SONSTIGES", "Sonstiges", "#3d60c7", 0),
+            )
+            connection.execute(
+                """
+                INSERT INTO calendar_events(id, title, date, end_date, start_time, end_time, course_id, type, description, author)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("evt-general", "Info", "2026-08-21", "2026-08-21", None, None, "ALLGEMEIN", "SONSTIGES", "", "lehrer"),
+            )
+        self.store.save_notify_settings(
+            vp_user.id,
+            NotifySettings(
+                calendar_notifications_enabled=True,
+                calendar_notification_time="16:00",
+                calendar_notification_days_before=1,
+                calendar_notification_types=("SONSTIGES",),
+            ),
+        )
+        notifier = SubscriptionNotifier(self.store, "https://ntfy.invalid")
+        notifier._publish = lambda *args, **kwargs: self.fail("VP-only darf keine Kalender-Benachrichtigung erhalten.")
         empty_plan = SimpleNamespace(datum=date(2026, 8, 20), zeitstempel=None, zeitplan={}, klassen={})
 
         self.assertEqual(notifier.poll_once(empty_plan, datetime(2026, 8, 20, 16, 0)), 0)
@@ -690,6 +851,75 @@ class AccountAndSubscriptionTests(unittest.TestCase):
             NotifySettings(calendar_notification_time="15:30"),
         )
         self.assertEqual(reopened.load_notify_settings(self.alice.id)[0].calendar_notification_time, "15:30")
+
+    def test_legacy_sqlite_tables_get_missing_columns_migrated(self):
+        import sqlite3
+
+        database = Path(self.temp.name) / "legacy.sqlite"
+        encrypted_password = Fernet(self.encryption_key.encode("ascii")).encrypt(b"secret")
+        with sqlite3.connect(database) as connection:
+            connection.execute(
+                """CREATE TABLE users (
+                    id INTEGER PRIMARY KEY,
+                    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                    class_name TEXT NOT NULL,
+                    ntfy_topic TEXT NOT NULL UNIQUE,
+                    ntfy_username TEXT NOT NULL UNIQUE,
+                    ntfy_password_encrypted BLOB NOT NULL,
+                    created_at TEXT NOT NULL
+                )""",
+            )
+            connection.execute(
+                """INSERT INTO users(id, username, class_name, ntfy_topic, ntfy_username, ntfy_password_encrypted, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (1, "legacy", "11", "vpmobil-legacy", "ntfy_legacy", encrypted_password, "2026-08-27T00:00:00+00:00"),
+            )
+            connection.execute(
+                """CREATE TABLE calendar_users (
+                    username TEXT PRIMARY KEY COLLATE NOCASE,
+                    courses TEXT NOT NULL
+                )""",
+            )
+            connection.execute("INSERT INTO calendar_users(username, courses) VALUES (?, ?)", ("legacy", '["MA1"]'))
+            connection.execute(
+                """CREATE TABLE calendar_events (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    course_id TEXT NOT NULL,
+                    type TEXT NOT NULL
+                )""",
+            )
+            connection.execute(
+                """INSERT INTO calendar_events(id, title, date, course_id, type)
+                VALUES (?, ?, ?, ?, ?)""",
+                ("legacy-event", "Alttermin", "2026-08-28", "ALLGEMEIN", "SONSTIGES"),
+            )
+
+        reopened = AccountStore(database, self.encryption_key)
+
+        user = reopened.get_user("legacy")
+        self.assertEqual(user.username, "legacy")
+        self.assertTrue(user.active)
+        self.assertEqual(reopened.get_login_identity("legacy"), ("legacy", False))
+        self.assertEqual(reopened.get_calendar_events("legacy")[0].title, "Alttermin")
+        with reopened._connection() as connection:
+            user_columns = {row["name"] for row in connection.execute("PRAGMA table_info(users)")}
+            calendar_user_columns = {row["name"] for row in connection.execute("PRAGMA table_info(calendar_users)")}
+            calendar_event_columns = {row["name"] for row in connection.execute("PRAGMA table_info(calendar_events)")}
+        self.assertIn("pin_hash", user_columns)
+        self.assertIn("active", user_columns)
+        self.assertIn("status", calendar_user_columns)
+        self.assertIn("start_time", calendar_event_columns)
+
+    def test_mysql_index_migrations_do_not_depend_on_if_not_exists_syntax(self):
+        self.assertNotIn(
+            "CREATE INDEX IF NOT EXISTS",
+            Path(__file__).resolve().parent.parent.joinpath("server/db.ts").read_text(encoding="utf-8"),
+        )
+        accounts_source = Path(__file__).resolve().parent.parent.joinpath("accounts.py").read_text(encoding="utf-8")
+        self.assertIn("CREATE INDEX idx_vp_login_attempts_lookup", accounts_source)
+        self.assertNotIn("CREATE INDEX IF NOT EXISTS idx_vp_login_attempts_lookup", accounts_source)
 
     def test_legacy_subject_table_is_migrated_and_removed(self):
         database = Path(self.temp.name) / "accounts.sqlite"

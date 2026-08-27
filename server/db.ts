@@ -297,9 +297,11 @@ export async function initDatabase() {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
       await conn.query(`
-        CREATE INDEX IF NOT EXISTS idx_calendar_login_attempts_lookup
+        CREATE INDEX idx_calendar_login_attempts_lookup
         ON calendar_login_attempts(username, ip_address, attempted_at)
-      `);
+      `).catch((error: any) => {
+        if (error?.code !== 'ER_DUP_KEYNAME') throw error;
+      });
 
       // Ensure pin column in existing tables is widened to VARCHAR(255)
       try {
@@ -994,9 +996,6 @@ export async function dbAddAdmin(username: string): Promise<string[]> {
 export async function dbRemoveAdmin(username: string): Promise<string[]> {
   if (!username) return dbGetAdmins();
   const uname = username.toLowerCase().trim();
-  if (uname === 'gustavd') {
-    return dbGetAdmins(); // Super admin cannot be removed
-  }
   if (isConnected && pool) {
     await pool.query("UPDATE users SET status = 'ACTIVE' WHERE username = ?", [uname]);
   } else {

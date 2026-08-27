@@ -367,9 +367,11 @@ class SubscriptionNotifier:
 
     @staticmethod
     def _event_matches_recipient(recipient: NotificationRecipient, event: CalendarEvent, selected_types: set[str]) -> bool:
+        if recipient.user.vp_only:
+            return False
         if event.event_type not in selected_types:
             return False
-        if not event.course_id:
+        if not event.course_id or event.course_id == "ALLGEMEIN":
             return True
         return event.course_id in recipient.calendar_courses
 
@@ -407,6 +409,7 @@ class SubscriptionNotifier:
         now: datetime | None = None,
         *,
         recipient_username: str | None = None,
+        day_before_plan: object | None = None,
     ) -> int:
         self.delivery_errors.clear()
         now = now or datetime.now()
@@ -426,23 +429,29 @@ class SubscriptionNotifier:
                 continue
             settings = recipient.notify_settings
             # Private calendar data is decrypted and loaded only for its owner.
-            calendar_events = self.store.get_calendar_events(user.username)
+            # VP-only accounts intentionally have no calendar access and must
+            # never receive calendar-derived notifications, even if an old DB
+            # still contains stale calendar notification settings for them.
+            calendar_events = [] if user.vp_only else self.store.get_calendar_events(user.username)
             has_subject_selection = any(recipient.subject_selections.values())
-            if plan_date.weekday() < 5 and settings.lesson_notifications_enabled and has_subject_selection:
+            if settings.lesson_notifications_enabled and has_subject_selection:
                 lesson_times = sorted(
                     [(value, self._time_from_text(value)) for value in dict.fromkeys(settings.lesson_notification_times)],
                     key=lambda item: item[1],
                 )
                 if lesson_times:
                     _first_key, first_time = lesson_times[0]
-                    if now.time() >= first_time:
-                        lines = self._daily_summary_lines(recipient, plan)
+                    summary_plan = day_before_plan if settings.daily_summary_day_before else plan
+                    summary_date = getattr(summary_plan, "datum", None) or plan_date
+                    summary_due = now.time() >= first_time and summary_date.weekday() < 5
+                    if summary_due:
+                        lines = self._daily_summary_lines(recipient, summary_plan)
                         if lines:
                             sent += self._deliver(
                                 user,
-                                f"morning:{plan_date.isoformat()}",
-                                "Heute, " + plan_date.strftime("%d.%m.%Y") + ":\n" + "\n".join(lines),
-                                "(VPrintfy) Heute",
+                                f"morning:{summary_date.isoformat()}" if not settings.daily_summary_day_before else f"morning-day-before:{summary_date.isoformat()}",
+                                ("Morgen, " if settings.daily_summary_day_before else "Heute, ") + summary_date.strftime("%d.%m.%Y") + ":\n" + "\n".join(lines),
+                                "(VPrintfy) " + ("Morgen" if settings.daily_summary_day_before else "Heute"),
                             )
                     timestamp = getattr(plan, "zeitstempel", None)
                     if timestamp and any(class_name in changed_classes for class_name in recipient.selected_classes):
@@ -473,7 +482,7 @@ class SubscriptionNotifier:
                             notification[1],
                             "high",
                         )
-            if settings.calendar_notifications_enabled and settings.calendar_notification_types:
+            if not user.vp_only and settings.calendar_notifications_enabled and settings.calendar_notification_types:
                 selected_types = set(settings.calendar_notification_types)
                 for event in calendar_events:
                     if not self._event_matches_recipient(recipient, event, selected_types):

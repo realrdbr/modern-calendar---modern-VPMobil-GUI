@@ -101,6 +101,8 @@ class User:
     ntfy_topic: str
     ntfy_username: str
     ntfy_password: str
+    vp_only: bool = False
+    must_change_pin: bool = False
 
 
 @dataclass(frozen=True)
@@ -113,6 +115,7 @@ class Session:
 class NotifySettings:
     lesson_notifications_enabled: bool = True
     lesson_notification_times: tuple[str, ...] = DEFAULT_LESSON_NOTIFICATION_TIMES
+    daily_summary_day_before: bool = False
     calendar_notifications_enabled: bool = False
     calendar_notification_time: str = DEFAULT_CALENDAR_NOTIFICATION_TIME
     calendar_notification_times: dict[str, str] | None = None
@@ -292,6 +295,14 @@ class AccountStore:
                 cursor.close()
         return rows
 
+    @staticmethod
+    def _sqlite_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
+        return {str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table_name})")}
+
+    def _sqlite_add_column_if_missing(self, connection: sqlite3.Connection, table_name: str, column_name: str, definition: str) -> None:
+        if column_name not in self._sqlite_columns(connection, table_name):
+            self._run(connection, f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
     def _initialize(self) -> None:
         with self._connection() as connection:
             if self._backend == "sqlite":
@@ -326,6 +337,22 @@ class AccountStore:
                     CREATE TABLE IF NOT EXISTS sessions (
                         token_hash TEXT PRIMARY KEY,
                         user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        csrf_token TEXT NOT NULL,
+                        expires_at TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS vp_only_users (
+                        username TEXT PRIMARY KEY COLLATE NOCASE,
+                        user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+                        pin_hash TEXT NOT NULL,
+                        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+                        must_change_pin INTEGER NOT NULL DEFAULT 1 CHECK (must_change_pin IN (0, 1)),
+                        created_by TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS vp_only_sessions (
+                        token_hash TEXT PRIMARY KEY,
+                        username TEXT NOT NULL COLLATE NOCASE REFERENCES vp_only_users(username) ON DELETE CASCADE,
                         csrf_token TEXT NOT NULL,
                         expires_at TEXT NOT NULL,
                         created_at TEXT NOT NULL
@@ -372,6 +399,17 @@ class AccountStore:
                     );
                     """
                 )
+                self._sqlite_add_column_if_missing(connection, "users", "pin_hash", "TEXT NOT NULL DEFAULT ''")
+                self._sqlite_add_column_if_missing(connection, "users", "active", "INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1))")
+                self._sqlite_add_column_if_missing(connection, "calendar_users", "pin", "TEXT DEFAULT NULL")
+                self._sqlite_add_column_if_missing(connection, "calendar_users", "preferences", "TEXT NOT NULL DEFAULT '{}'")
+                self._sqlite_add_column_if_missing(connection, "calendar_users", "status", "TEXT NOT NULL DEFAULT 'ACTIVE'")
+                self._sqlite_add_column_if_missing(connection, "calendar_events", "end_date", "TEXT DEFAULT NULL")
+                self._sqlite_add_column_if_missing(connection, "calendar_events", "start_time", "TEXT DEFAULT NULL")
+                self._sqlite_add_column_if_missing(connection, "calendar_events", "end_time", "TEXT DEFAULT NULL")
+                self._sqlite_add_column_if_missing(connection, "calendar_events", "description", "TEXT DEFAULT ''")
+                self._sqlite_add_column_if_missing(connection, "calendar_events", "author", "TEXT DEFAULT ''")
+                self._sqlite_add_column_if_missing(connection, "vp_only_users", "must_change_pin", "INTEGER NOT NULL DEFAULT 1 CHECK (must_change_pin IN (0, 1))")
                 legacy_subjects_exists = self._fetchone(
                     connection,
                     "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'user_subjects'",
@@ -443,6 +481,35 @@ class AccountStore:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """,
                 """
+                CREATE TABLE IF NOT EXISTS vp_only_users (
+                    username VARCHAR(64) PRIMARY KEY,
+                    user_id BIGINT NOT NULL UNIQUE,
+                    pin_hash VARCHAR(255) NOT NULL,
+                    active TINYINT(1) NOT NULL DEFAULT 1,
+                    must_change_pin TINYINT(1) NOT NULL DEFAULT 1,
+                    created_by VARCHAR(64) NOT NULL,
+                    created_at VARCHAR(40) NOT NULL,
+                    INDEX idx_vp_only_users_user_id (user_id),
+                    CONSTRAINT fk_vp_only_users_profile
+                        FOREIGN KEY (user_id) REFERENCES vp_users(id)
+                        ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS vp_only_sessions (
+                    token_hash CHAR(64) PRIMARY KEY,
+                    username VARCHAR(64) NOT NULL,
+                    csrf_token VARCHAR(255) NOT NULL,
+                    expires_at DATETIME(3) NOT NULL,
+                    created_at DATETIME(3) NOT NULL,
+                    INDEX idx_vp_only_sessions_user (username),
+                    INDEX idx_vp_only_sessions_expiry (expires_at),
+                    CONSTRAINT fk_vp_only_sessions_user
+                        FOREIGN KEY (username) REFERENCES vp_only_users(username)
+                        ON DELETE CASCADE
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """,
+                """
                 CREATE TABLE IF NOT EXISTS vp_login_attempts (
                     id BIGINT AUTO_INCREMENT PRIMARY KEY,
                     username VARCHAR(64) NOT NULL,
@@ -450,10 +517,6 @@ class AccountStore:
                     attempted_at VARCHAR(40) NOT NULL,
                     successful TINYINT(1) NOT NULL
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-                """,
-                """
-                CREATE INDEX IF NOT EXISTS idx_vp_login_attempts_lookup
-                ON vp_login_attempts(username, ip_address, attempted_at)
                 """,
                 """
                 CREATE TABLE IF NOT EXISTS vp_notification_deliveries (
@@ -470,7 +533,26 @@ class AccountStore:
             for statement in statements:
                 self._run(connection, statement)
             try:
+                self._run(connection, "CREATE INDEX idx_vp_login_attempts_lookup ON vp_login_attempts(username, ip_address, attempted_at)")
+            except Exception:
+                pass
+            try:
                 self._run(connection, "ALTER TABLE vp_users ADD COLUMN pin_hash VARCHAR(255) NOT NULL DEFAULT ''")
+            except Exception:
+                pass
+            try:
+                self._run(connection, "ALTER TABLE vp_only_users ADD COLUMN must_change_pin TINYINT(1) NOT NULL DEFAULT 1")
+            except Exception:
+                pass
+            try:
+                self._run(
+                    connection,
+                    """INSERT IGNORE INTO vp_only_users(username, user_id, pin_hash, active, must_change_pin, created_by, created_at)
+                    SELECT LOWER(vp.username), vp.id, vp.pin_hash, vp.active, 0, 'migration', vp.created_at
+                    FROM vp_users vp
+                    LEFT JOIN users u ON LOWER(u.username) = LOWER(vp.username)
+                    WHERE u.username IS NULL AND vp.pin_hash <> ''""",
+                )
             except Exception:
                 pass
             # `users.pin` is the sole credential source for shared accounts.  The
@@ -611,6 +693,7 @@ class AccountStore:
         return NotifySettings(
             lesson_notifications_enabled=bool(data.get("lesson_notifications_enabled", True)),
             lesson_notification_times=lesson_times,
+            daily_summary_day_before=bool(data.get("daily_summary_day_before", False)),
             calendar_notifications_enabled=bool(data.get("calendar_notifications_enabled", False)),
             calendar_notification_time=self._normalize_notification_time(
                 str(data.get("calendar_notification_time", DEFAULT_CALENDAR_NOTIFICATION_TIME))
@@ -622,6 +705,7 @@ class AccountStore:
         )
 
     def _user_from_row(self, row: Any) -> User:
+        keys = set(row.keys())
         return User(
             id=int(row["id"]),
             username=row["username"],
@@ -630,7 +714,47 @@ class AccountStore:
             ntfy_topic=row["ntfy_topic"],
             ntfy_username=row["ntfy_username"],
             ntfy_password=self._decrypt(row["ntfy_password_encrypted"]),
+            vp_only=bool(row["vp_only"]) if "vp_only" in keys else False,
+            must_change_pin=bool(row["must_change_pin"]) if "must_change_pin" in keys else False,
         )
+
+    def _is_vp_only_user_id(self, connection: Any, user_id: int) -> bool:
+        row = self._fetchone(connection, "SELECT 1 FROM vp_only_users WHERE user_id = ?", (user_id,))
+        return row is not None
+
+    def is_admin(self, username: str) -> bool:
+        username = validate_username(username)
+        with self._connection() as connection:
+            if self._backend == "sqlite":
+                row = self._fetchone(
+                    connection,
+                    "SELECT status FROM calendar_users WHERE username = ? COLLATE NOCASE",
+                    (username,),
+                )
+            else:
+                row = self._fetchone(connection, "SELECT status FROM users WHERE LOWER(username) = LOWER(?)", (username,))
+        return row is not None and row["status"] == "ADMIN"
+
+    def username_exists(self, username: str) -> bool:
+        username = validate_username(username)
+        with self._connection() as connection:
+            if self._backend == "sqlite":
+                row = self._fetchone(
+                    connection,
+                    """SELECT 1 FROM users WHERE username = ? COLLATE NOCASE
+                    UNION
+                    SELECT 1 FROM calendar_users WHERE username = ? COLLATE NOCASE""",
+                    (username, username),
+                )
+            else:
+                row = self._fetchone(
+                    connection,
+                    """SELECT 1 FROM users WHERE LOWER(username) = LOWER(?)
+                    UNION
+                    SELECT 1 FROM vp_users WHERE LOWER(username) = LOWER(?)""",
+                    (username, username),
+                )
+        return row is not None
 
     def _ensure_shared_calendar_user(self, connection: Any, username: str, pin: str) -> None:
         if self._backend != "mysql":
@@ -710,12 +834,18 @@ class AccountStore:
             if self._backend == "sqlite":
                 row = self._fetchone(
                     connection,
-                    "SELECT username, pin_hash, active FROM users WHERE username = ? COLLATE NOCASE",
+                    """SELECT users.username,
+                              COALESCE(only_users.pin_hash, users.pin_hash) AS resolved_pin_hash,
+                              users.active AS user_active,
+                              only_users.active AS vp_only_active
+                    FROM users
+                    LEFT JOIN vp_only_users only_users ON only_users.user_id = users.id
+                    WHERE users.username = ? COLLATE NOCASE""",
                     (username,),
                 )
-                if row is None or not bool(row["active"]):
+                if row is None or not bool(row["user_active"]) or row["vp_only_active"] == 0:
                     raise ValueError("Benutzer nicht gefunden.")
-                return row["username"], bool(row["pin_hash"])
+                return row["username"], bool(row["resolved_pin_hash"])
 
             row = self._fetchone(
                 connection,
@@ -732,12 +862,73 @@ class AccountStore:
 
             vp_row = self._fetchone(
                 connection,
-                "SELECT username, pin_hash, active FROM vp_users WHERE LOWER(username) = LOWER(?)",
+                """SELECT vp.username, only_users.pin_hash, only_users.active
+                FROM vp_only_users only_users
+                JOIN vp_users vp ON vp.id = only_users.user_id
+                WHERE LOWER(only_users.username) = LOWER(?)""",
                 (username,),
             )
             if vp_row is None or not bool(vp_row["active"]):
                 raise ValueError("Benutzer nicht gefunden.")
             return vp_row["username"], bool(vp_row.get("pin_hash"))
+
+    def create_vp_only_user(
+        self, username: str, pin: str, class_name: str, *, created_by: str,
+        ntfy_topic: str, ntfy_username: str, ntfy_password: str,
+    ) -> User:
+        username = validate_username(username)
+        created_by = validate_username(created_by)
+        validate_pin(pin)
+        if not class_name.strip() or len(class_name) > 64:
+            raise ValueError("Die Klasse ist ungültig.")
+        encrypted_password = self._fernet.encrypt(ntfy_password.encode("utf-8"))
+        now = to_db_time(utcnow())
+        with self._connection() as connection:
+            if self._backend == "sqlite":
+                if self._fetchone(connection, "SELECT 1 FROM calendar_users WHERE username = ? COLLATE NOCASE", (username,)):
+                    raise ValueError("Name bereits vergeben.")
+                try:
+                    cursor = self._execute(
+                        connection,
+                        """INSERT INTO users
+                        (username, pin_hash, class_name, ntfy_topic, ntfy_username, ntfy_password_encrypted, created_at)
+                        VALUES (?, '', ?, ?, ?, ?, ?)""",
+                        (username, class_name.strip(), ntfy_topic, ntfy_username, encrypted_password, now),
+                    )
+                    user_id = cursor.lastrowid
+                    self._run(
+                        connection,
+                        """INSERT INTO vp_only_users(username, user_id, pin_hash, active, must_change_pin, created_by, created_at)
+                        VALUES (?, ?, ?, 1, 1, ?, ?)""",
+                        (username, user_id, self._hasher.hash(pin), created_by, now),
+                    )
+                except self._integrity_errors as error:
+                    raise ValueError("Name bereits vergeben.") from error
+                row = self._fetchone(connection, "SELECT users.*, 1 AS vp_only, 1 AS must_change_pin FROM users WHERE id = ?", (user_id,))
+                return self._user_from_row(row)
+
+            if self._fetchone(connection, "SELECT 1 FROM users WHERE LOWER(username) = LOWER(?)", (username,)):
+                raise ValueError("Name bereits vergeben.")
+            try:
+                cursor = self._execute(
+                    connection,
+                    """INSERT INTO vp_users
+                    (username, pin_hash, class_name, active, ntfy_topic, ntfy_username, ntfy_password_encrypted, created_at)
+                    VALUES (?, '', ?, 1, ?, ?, ?, ?)""",
+                    (username, class_name.strip(), ntfy_topic, ntfy_username, encrypted_password, now),
+                )
+                user_id = cursor.lastrowid
+                cursor.close()
+                self._run(
+                    connection,
+                    """INSERT INTO vp_only_users(username, user_id, pin_hash, active, must_change_pin, created_by, created_at)
+                    VALUES (?, ?, ?, 1, 1, ?, ?)""",
+                    (username.lower(), user_id, self._hasher.hash(pin), created_by.lower(), now),
+                )
+            except self._integrity_errors as error:
+                raise ValueError("Name bereits vergeben.") from error
+            row = self._fetchone(connection, "SELECT vp_users.*, 1 AS vp_only, 1 AS must_change_pin FROM vp_users WHERE id = ?", (user_id,))
+            return self._user_from_row(row)
 
     def create_user(
         self, username: str, pin: str, class_name: str, *, ntfy_topic: str,
@@ -799,12 +990,65 @@ class AccountStore:
         username = validate_username(username)
         with self._connection() as connection:
             if self._backend == "sqlite":
-                row = self._fetchone(connection, "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username,))
+                row = self._fetchone(
+                    connection,
+                    """SELECT users.*, CASE WHEN only_users.username IS NULL THEN 0 ELSE 1 END AS vp_only,
+                              COALESCE(only_users.must_change_pin, 0) AS must_change_pin
+                    FROM users
+                    LEFT JOIN vp_only_users only_users ON only_users.user_id = users.id
+                    WHERE users.username = ? COLLATE NOCASE""",
+                    (username,),
+                )
             else:
-                row = self._fetchone(connection, "SELECT * FROM vp_users WHERE LOWER(username) = LOWER(?)", (username,))
+                row = self._fetchone(
+                    connection,
+                    """SELECT vp_users.*, IF(only_users.username IS NULL, 0, 1) AS vp_only,
+                              COALESCE(only_users.must_change_pin, 0) AS must_change_pin
+                    FROM vp_users
+                    LEFT JOIN vp_only_users only_users ON only_users.user_id = vp_users.id
+                    WHERE LOWER(vp_users.username) = LOWER(?)""",
+                    (username,),
+                )
         if row is None:
             raise ValueError("Benutzer nicht gefunden.")
         return self._user_from_row(row)
+
+    def list_vp_only_users(self) -> list[dict[str, Any]]:
+        with self._connection() as connection:
+            rows = self._fetchall(
+                connection,
+                f"""SELECT only_users.username, vp.class_name, only_users.active,
+                          only_users.must_change_pin, only_users.created_by, only_users.created_at
+                FROM vp_only_users only_users
+                JOIN {self._users_table()} vp ON vp.id = only_users.user_id
+                ORDER BY only_users.created_at DESC, only_users.username ASC""",
+            )
+        return [
+            {
+                "username": row["username"],
+                "class_name": row["class_name"],
+                "active": bool(row["active"]),
+                "must_change_pin": bool(row["must_change_pin"]),
+                "created_by": row["created_by"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def change_vp_only_pin(self, username: str, new_pin: str) -> None:
+        username = validate_username(username)
+        validate_pin(new_pin)
+        with self._connection() as connection:
+            cursor = self._execute(
+                connection,
+                "UPDATE vp_only_users SET pin_hash = ?, must_change_pin = 0 WHERE LOWER(username) = LOWER(?) AND active = 1",
+                (self._hasher.hash(new_pin), username),
+            )
+            changed = cursor.rowcount
+            if self._backend == "mysql":
+                cursor.close()
+            if changed != 1:
+                raise ValueError("PIN kann nur für aktive VP-only-Nutzer geändert werden.")
 
     def delete_user(self, username: str) -> None:
         username = validate_username(username)
@@ -870,11 +1114,13 @@ class AccountStore:
                 rowcount = cursor.rowcount
                 if rowcount == 1 and not active:
                     self._run(connection, "DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE username = ? COLLATE NOCASE)", (username,))
+                    self._run(connection, "DELETE FROM vp_only_sessions WHERE username = ? COLLATE NOCASE", (username,))
             else:
                 cursor = self._execute(connection, "UPDATE vp_users SET active = ? WHERE LOWER(username) = LOWER(?)", (int(active), username))
                 rowcount = cursor.rowcount
                 if rowcount == 1 and not active:
                     self._run(connection, "DELETE FROM app_sessions WHERE LOWER(username) = LOWER(?)", (username,))
+                    self._run(connection, "DELETE FROM vp_only_sessions WHERE LOWER(username) = LOWER(?)", (username,))
             if self._backend == "mysql":
                 cursor.close()
             if rowcount != 1:
@@ -904,12 +1150,26 @@ class AccountStore:
             valid = False
             user_row = None
             if self._backend == "sqlite":
-                user_row = self._fetchone(connection, "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username,))
+                user_row = self._fetchone(
+                    connection,
+                    """SELECT users.*, only_users.pin_hash AS vp_only_pin_hash,
+                              only_users.active AS vp_only_active,
+                              COALESCE(only_users.must_change_pin, 0) AS must_change_pin,
+                              CASE WHEN only_users.username IS NULL THEN 0 ELSE 1 END AS vp_only
+                    FROM users
+                    LEFT JOIN vp_only_users only_users ON only_users.user_id = users.id
+                    WHERE users.username = ? COLLATE NOCASE""",
+                    (username,),
+                )
                 if user_row is not None and bool(user_row["active"]):
+                    stored_pin = user_row["vp_only_pin_hash"] if bool(user_row["vp_only"]) else user_row["pin_hash"]
                     try:
-                        valid = self._hasher.verify(user_row["pin_hash"], pin)
-                        if valid and self._hasher.check_needs_rehash(user_row["pin_hash"]):
-                            self._run(connection, "UPDATE users SET pin_hash = ? WHERE id = ?", (self._hasher.hash(pin), user_row["id"]))
+                        valid = (not bool(user_row["vp_only"]) or bool(user_row["vp_only_active"])) and self._hasher.verify(stored_pin, pin)
+                        if valid and self._hasher.check_needs_rehash(stored_pin):
+                            if bool(user_row["vp_only"]):
+                                self._run(connection, "UPDATE vp_only_users SET pin_hash = ? WHERE user_id = ?", (self._hasher.hash(pin), user_row["id"]))
+                            else:
+                                self._run(connection, "UPDATE users SET pin_hash = ? WHERE id = ?", (self._hasher.hash(pin), user_row["id"]))
                     except (VerificationError, InvalidHashError):
                         valid = False
                 self._run(
@@ -921,10 +1181,13 @@ class AccountStore:
                 user_row = self._fetchone(
                     connection,
                     """
-                    SELECT vp.*, u.pin AS calendar_pin, u.status AS calendar_status
-                        , u.username AS calendar_username
+                    SELECT vp.*, u.pin AS calendar_pin, u.status AS calendar_status,
+                        u.username AS calendar_username, only_users.pin_hash AS vp_only_pin_hash,
+                        only_users.active AS vp_only_active, only_users.must_change_pin,
+                        IF(only_users.username IS NULL, 0, 1) AS vp_only
                     FROM vp_users vp
                     LEFT JOIN users u ON LOWER(u.username) = LOWER(vp.username)
+                    LEFT JOIN vp_only_users only_users ON only_users.user_id = vp.id
                     WHERE LOWER(vp.username) = LOWER(?)
                     """,
                     (username,),
@@ -935,13 +1198,14 @@ class AccountStore:
                     if user_row.get("calendar_username") is not None:
                         calendar_pin = user_row.get("calendar_pin")
                         valid = not calendar_pin or _verify_shared_pin(pin, calendar_pin)
-                    else:
+                    elif user_row.get("vp_only_pin_hash") and bool(user_row.get("vp_only_active")):
                         try:
-                            valid = self._hasher.verify(user_row.get("pin_hash", ""), pin)
+                            valid = self._hasher.verify(user_row.get("vp_only_pin_hash", ""), pin)
+                            if valid and self._hasher.check_needs_rehash(user_row.get("vp_only_pin_hash", "")):
+                                self._run(connection, "UPDATE vp_only_users SET pin_hash = ? WHERE user_id = ?", (self._hasher.hash(pin), user_row["id"]))
                         except (VerificationError, InvalidHashError):
                             valid = False
                     if valid and user_row.get("calendar_username") is None:
-                        self._ensure_shared_calendar_user(connection, username, pin)
                         self._run(
                             connection,
                             "UPDATE vp_users SET pin_hash = '' WHERE id = ?",
@@ -967,11 +1231,28 @@ class AccountStore:
         token = secrets.token_urlsafe(32)
         csrf_token = secrets.token_urlsafe(32)
         with self._connection() as connection:
-            if self._backend == "sqlite":
+            is_vp_only = self._is_vp_only_user_id(connection, user_id)
+            if self._backend == "sqlite" and not is_vp_only:
                 self._run(
                     connection,
                     "INSERT INTO sessions(token_hash, user_id, csrf_token, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
                     (self._token_hash(token), user_id, csrf_token, to_db_time(utcnow() + SESSION_LIFETIME), to_db_time(utcnow())),
+                )
+            elif self._backend == "sqlite":
+                user_row = self._get_user_row_by_id(connection, user_id)
+                self._run(
+                    connection,
+                    "INSERT INTO vp_only_sessions(token_hash, username, csrf_token, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (self._token_hash(token), user_row["username"].lower(), csrf_token,
+                     to_db_time(utcnow() + SESSION_LIFETIME), to_db_time(utcnow())),
+                )
+            elif is_vp_only:
+                user_row = self._get_user_row_by_id(connection, user_id)
+                self._run(
+                    connection,
+                    "INSERT INTO vp_only_sessions(token_hash, username, csrf_token, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (self._token_hash(token), user_row["username"].lower(), csrf_token,
+                     (utcnow() + SESSION_LIFETIME).replace(tzinfo=None), utcnow().replace(tzinfo=None)),
                 )
             else:
                 user_row = self._get_user_row_by_id(connection, user_id)
@@ -990,11 +1271,25 @@ class AccountStore:
             if self._backend == "sqlite":
                 row = self._fetchone(
                     connection,
-                    """SELECT users.*, sessions.csrf_token FROM sessions JOIN users ON users.id = sessions.user_id
+                    """SELECT users.*, sessions.csrf_token, 0 AS vp_only, 0 AS must_change_pin
+                    FROM sessions JOIN users ON users.id = sessions.user_id
                     WHERE sessions.token_hash = ? AND sessions.expires_at > ? AND users.active = 1""",
                     (self._token_hash(token), to_db_time(utcnow())),
                 )
+                if row is None:
+                    row = self._fetchone(
+                        connection,
+                        """SELECT users.*, vp_only_sessions.csrf_token, 1 AS vp_only,
+                                  only_users.must_change_pin AS must_change_pin
+                        FROM vp_only_sessions
+                        JOIN vp_only_users only_users ON only_users.username = vp_only_sessions.username COLLATE NOCASE
+                        JOIN users ON users.id = only_users.user_id
+                        WHERE vp_only_sessions.token_hash = ? AND vp_only_sessions.expires_at > ?
+                          AND users.active = 1 AND only_users.active = 1""",
+                        (self._token_hash(token), to_db_time(utcnow())),
+                    )
                 self._run(connection, "DELETE FROM sessions WHERE expires_at <= ?", (to_db_time(utcnow()),))
+                self._run(connection, "DELETE FROM vp_only_sessions WHERE expires_at <= ?", (to_db_time(utcnow()),))
             else:
                 shared_session = self._fetchone(
                     connection,
@@ -1017,7 +1312,22 @@ class AccountStore:
                         )
                     if row is not None and bool(row["active"]):
                         row["csrf_token"] = shared_session["csrf_token"]
+                        row["vp_only"] = 0
+                        row["must_change_pin"] = 0
+                if row is None:
+                    row = self._fetchone(
+                        connection,
+                        """SELECT vp.*, vp_only_sessions.csrf_token, 1 AS vp_only,
+                                  only_users.must_change_pin AS must_change_pin
+                        FROM vp_only_sessions
+                        JOIN vp_only_users only_users ON LOWER(only_users.username) = LOWER(vp_only_sessions.username)
+                        JOIN vp_users vp ON vp.id = only_users.user_id
+                        WHERE vp_only_sessions.token_hash = ? AND vp_only_sessions.expires_at > ?
+                          AND vp.active = 1 AND only_users.active = 1""",
+                        (self._token_hash(token), utcnow().replace(tzinfo=None)),
+                    )
                 self._run(connection, "DELETE FROM app_sessions WHERE expires_at <= ?", (utcnow().replace(tzinfo=None),))
+                self._run(connection, "DELETE FROM vp_only_sessions WHERE expires_at <= ?", (utcnow().replace(tzinfo=None),))
         return Session(self._user_from_row(row), row["csrf_token"]) if row else None
 
     def delete_session(self, token: str | None) -> None:
@@ -1026,8 +1336,10 @@ class AccountStore:
         with self._connection() as connection:
             if self._backend == "sqlite":
                 self._run(connection, "DELETE FROM sessions WHERE token_hash = ?", (self._token_hash(token),))
+                self._run(connection, "DELETE FROM vp_only_sessions WHERE token_hash = ?", (self._token_hash(token),))
             else:
                 self._run(connection, "DELETE FROM app_sessions WHERE token_hash = ?", (self._token_hash(token),))
+                self._run(connection, "DELETE FROM vp_only_sessions WHERE token_hash = ?", (self._token_hash(token),))
 
     def delete_user_sessions(self, username: str) -> None:
         username = validate_username(username)
@@ -1038,8 +1350,10 @@ class AccountStore:
                     "DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE username = ? COLLATE NOCASE)",
                     (username,),
                 )
+                self._run(connection, "DELETE FROM vp_only_sessions WHERE username = ? COLLATE NOCASE", (username,))
             else:
                 self._run(connection, "DELETE FROM app_sessions WHERE LOWER(username) = LOWER(?)", (username,))
+                self._run(connection, "DELETE FROM vp_only_sessions WHERE LOWER(username) = LOWER(?)", (username,))
 
     def load_notify_settings(self, user_id: int) -> tuple[NotifySettings, bool]:
         with self._connection() as connection:
@@ -1052,6 +1366,7 @@ class AccountStore:
             lesson_notification_times=tuple(
                 dict.fromkeys(self._normalize_notification_time(value) for value in settings.lesson_notification_times)
             ) or DEFAULT_LESSON_NOTIFICATION_TIMES,
+            daily_summary_day_before=bool(settings.daily_summary_day_before),
             calendar_notifications_enabled=settings.calendar_notifications_enabled,
             calendar_notification_time=self._normalize_notification_time(settings.calendar_notification_time),
             calendar_notification_times={
@@ -1073,6 +1388,7 @@ class AccountStore:
             {
                 "lesson_notifications_enabled": normalized.lesson_notifications_enabled,
                 "lesson_notification_times": list(normalized.lesson_notification_times),
+                "daily_summary_day_before": normalized.daily_summary_day_before,
                 "calendar_notifications_enabled": normalized.calendar_notifications_enabled,
                 "calendar_notification_time": normalized.calendar_notification_time,
                 "calendar_notification_times": normalized.calendar_notification_times,
@@ -1340,7 +1656,19 @@ class AccountStore:
 
     def notification_recipients(self) -> list[NotificationRecipient]:
         with self._connection() as connection:
-            rows = self._fetchall(connection, f"SELECT * FROM {self._users_table()} WHERE active = 1")
+            users_table = self._users_table()
+            rows = self._fetchall(
+                connection,
+                f"""
+                SELECT profile.*,
+                       CASE WHEN only_users.username IS NULL THEN 0 ELSE 1 END AS vp_only,
+                       COALESCE(only_users.must_change_pin, 0) AS must_change_pin
+                FROM {users_table} profile
+                LEFT JOIN vp_only_users only_users ON only_users.user_id = profile.id
+                WHERE profile.active = 1
+                  AND (only_users.username IS NULL OR only_users.active = 1)
+                """,
+            )
             selected_class_rows = self._fetchall(
                 connection,
                 f"SELECT user_id, class_name FROM {self._selected_classes_table()} ORDER BY user_id ASC, class_name ASC",
@@ -1378,7 +1706,7 @@ class AccountStore:
                     selected_classes=selected_classes,
                     subject_selections={class_name: set(keys) for class_name, keys in (subject_selections or {}).items()},
                     notify_settings=settings_by_user.get(user.id, NotifySettings()),
-                    calendar_courses=self.get_calendar_course_ids(user.username),
+                    calendar_courses=set() if user.vp_only else self.get_calendar_course_ids(user.username),
                 )
             )
         return recipients

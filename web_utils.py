@@ -16,18 +16,162 @@ CALENDAR_PUBLIC_URL = os.getenv("CALENDAR_PUBLIC_URL", "http://127.0.0.1:3000").
 VERTRETUNGSPLAN_PUBLIC_URL = os.getenv("VERTRETUNGSPLAN_PUBLIC_URL", "http://127.0.0.1:8000").rstrip("/")
 
 
-def render_vp_navigation(active: str, csrf_token: str | None = None) -> str:
+def render_vp_navigation(
+    active: str,
+    csrf_token: str | None = None,
+    *,
+    is_admin: bool = False,
+    can_change_pin: bool = False,
+    force_pin_change: bool = False,
+    pin_modal_error: str | None = None,
+    pin_modal_changed: bool = False,
+    vp_user_modal_error: str | None = None,
+    vp_user_modal_created: bool = False,
+    session_username: str | None = None,
+) -> str:
     links = (("classes", "/", "Klassen"), ("teachers", "/lehrer", "Lehrer"),
              ("rooms", "/raeume", "Freie Räume"), ("notifications", "/abos", "Ankündigungen"))
     items = ""
     for key, href, label in links:
         active_class = ' class="active"' if key == active else ""
         items += f'<a{active_class} href="{href}">{label}</a>'
+    if is_admin:
+        items += '<button class="nav-button" type="button" data-vp-user-modal-open>VP-Nutzer hinzufügen</button>'
+    if can_change_pin:
+        items += '<button class="nav-button" type="button" data-pin-modal-open>PIN ändern</button>'
     logout = (
         f'<form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf_token" value="{escape(csrf_token)}">'
         f'<button class="logout-button" type="submit">Abmelden</button></form>' if csrf_token else ""
     )
-    return f'<nav class="nav">{items}<a href="{escape(CALENDAR_PUBLIC_URL)}">Kalender</a>{logout}{render_theme_toggle_button()}</nav>'
+    modal = (
+        render_pin_change_modal(
+            csrf_token,
+            force=force_pin_change,
+            error=pin_modal_error,
+            changed=pin_modal_changed,
+        )
+        if can_change_pin and csrf_token else ""
+    )
+    admin_modal = (
+        render_vp_user_modal(csrf_token, error=vp_user_modal_error, created=vp_user_modal_created)
+        if is_admin and csrf_token else ""
+    )
+    user_attr = f' data-session-user="{escape(session_username)}"' if session_username else ""
+    calendar_link = "" if can_change_pin else f'<a href="{escape(CALENDAR_PUBLIC_URL)}">Kalender</a>'
+    return f'<nav class="nav"{user_attr}>{items}{calendar_link}{logout}{render_theme_toggle_button()}</nav>{modal}{admin_modal}'
+
+
+def render_pin_change_modal(csrf_token: str | None, *, force: bool = False, error: str | None = None, changed: bool = False) -> str:
+    if not csrf_token:
+        return ""
+    message = ""
+    if changed:
+        message = '<p class="pin-modal-notice success">Deine PIN wurde geändert.</p>'
+    if error:
+        message = f'<p class="pin-modal-notice">{escape(error)}</p>'
+    close_button = '<button class="pin-modal-close" type="button" data-pin-modal-close aria-label="Schließen">×</button>'
+    open_attr = " open" if force or error or changed else ""
+    return f"""
+    <dialog class="pin-modal"{open_attr} data-pin-modal data-force-pin-change="{'1' if force else '0'}">
+      <form method="post" action="/pin-aendern" class="pin-modal-card">
+        <input type="hidden" name="csrf_token" value="{escape(csrf_token)}">
+        <div class="pin-modal-head">
+          <div><span>VP-only</span><h2>PIN ändern</h2></div>
+          {close_button}
+        </div>
+        {message}
+        <label>Neue PIN<input name="pin" type="password" inputmode="numeric" pattern="[0-9]{{4}}" minlength="4" maxlength="4" required autocomplete="new-password" autofocus></label>
+        <label>Neue PIN wiederholen<input name="pin_confirm" type="password" inputmode="numeric" pattern="[0-9]{{4}}" minlength="4" maxlength="4" required autocomplete="new-password"></label>
+        <button type="submit">PIN speichern</button>
+      </form>
+    </dialog>
+    <script>
+    (() => {{
+      const dialog = document.querySelector('[data-pin-modal]');
+      if (!dialog) return;
+      const force = dialog.dataset.forcePinChange === '1';
+      const openers = document.querySelectorAll('[data-pin-modal-open]');
+      const closers = document.querySelectorAll('[data-pin-modal-close]');
+      const isModal = () => {{
+        try {{ return dialog.matches(':modal'); }} catch (_) {{ return false; }}
+      }};
+      const open = () => {{
+        if (dialog.open && !isModal()) dialog.removeAttribute('open');
+        if (typeof dialog.showModal === 'function' && !dialog.open) dialog.showModal();
+        else dialog.setAttribute('open', '');
+      }};
+      const close = () => {{ dialog.close ? dialog.close() : dialog.removeAttribute('open'); }};
+      openers.forEach((button) => button.addEventListener('click', open));
+      closers.forEach((button) => button.addEventListener('click', close));
+      dialog.addEventListener('cancel', (event) => {{ if (force) event.preventDefault(); }});
+      dialog.querySelectorAll('input[type="password"]').forEach((input) => {{
+        input.addEventListener('input', () => input.value = input.value.replace(/\\D/g, '').slice(0, 4));
+      }});
+      if (dialog.hasAttribute('open')) {{
+        window.history.replaceState(null, '', '/');
+        window.setTimeout(open, 0);
+        const first = dialog.querySelector('input[type="password"]');
+        if (first) window.setTimeout(() => first.focus(), 50);
+      }}
+    }})();
+    </script>
+    """
+
+
+def render_vp_user_modal(csrf_token: str | None, *, error: str | None = None, created: bool = False) -> str:
+    if not csrf_token:
+        return ""
+    default_class = (os.getenv("VP_DEFAULT_CLASS", "11") or "11").strip() or "11"
+    message = ""
+    if created:
+        message = '<p class="pin-modal-notice success">Der VP-Nutzer wurde angelegt.</p>'
+    if error:
+        message = f'<p class="pin-modal-notice">{escape(error)}</p>'
+    open_attr = " open" if error or created else ""
+    return f"""
+    <dialog class="pin-modal"{open_attr} data-vp-user-modal>
+      <form method="post" action="/vp-nutzer" class="pin-modal-card">
+        <input type="hidden" name="csrf_token" value="{escape(csrf_token)}">
+        <div class="pin-modal-head">
+          <div><span>Admin</span><h2>VP-Nutzer hinzufügen</h2></div>
+          <button class="pin-modal-close" type="button" data-vp-user-modal-close aria-label="Schließen">×</button>
+        </div>
+        {message}
+        <label>Benutzername<input name="username" required minlength="3" maxlength="64" autocomplete="off" spellcheck="false" autofocus></label>
+        <label>Klasse<input name="class_name" required maxlength="64" value="{escape(default_class)}"></label>
+        <label>Start-PIN<input name="pin" type="password" inputmode="numeric" pattern="[0-9]{{4}}" minlength="4" maxlength="4" required autocomplete="new-password"></label>
+        <button type="submit">Anlegen</button>
+      </form>
+    </dialog>
+    <script>
+    (() => {{
+      const dialog = document.querySelector('[data-vp-user-modal]');
+      if (!dialog) return;
+      const openers = document.querySelectorAll('[data-vp-user-modal-open]');
+      const closers = document.querySelectorAll('[data-vp-user-modal-close]');
+      const isModal = () => {{
+        try {{ return dialog.matches(':modal'); }} catch (_) {{ return false; }}
+      }};
+      const open = () => {{
+        if (dialog.open && !isModal()) dialog.removeAttribute('open');
+        if (typeof dialog.showModal === 'function' && !dialog.open) dialog.showModal();
+        else dialog.setAttribute('open', '');
+      }};
+      const close = () => {{ dialog.close ? dialog.close() : dialog.removeAttribute('open'); }};
+      openers.forEach((button) => button.addEventListener('click', open));
+      closers.forEach((button) => button.addEventListener('click', close));
+      dialog.querySelectorAll('input[name="pin"]').forEach((input) => {{
+        input.addEventListener('input', () => input.value = input.value.replace(/\\D/g, '').slice(0, 4));
+      }});
+      if (dialog.hasAttribute('open')) {{
+        window.history.replaceState(null, '', '/');
+        window.setTimeout(open, 0);
+        const first = dialog.querySelector('input[name="username"]');
+        if (first) window.setTimeout(() => first.focus(), 50);
+      }}
+    }})();
+    </script>
+    """
 
 SESSION_WATCH_SCRIPT = """<script>
 (() => {
@@ -40,10 +184,16 @@ SESSION_WATCH_SCRIPT = """<script>
         credentials: 'same-origin', cache: 'no-store', headers: {'Accept': 'application/json'}
       });
       const onLoginPage = window.location.pathname === '/login';
-      if (onLoginPage && response.status === 204) {
+      if (onLoginPage && response.ok) {
         window.location.replace('/');
       } else if (!onLoginPage && (response.status === 401 || response.status === 403)) {
         window.location.replace('/login');
+      } else if (!onLoginPage && response.ok) {
+        const current = document.querySelector('.nav')?.dataset.sessionUser || '';
+        const payload = await response.json().catch(() => null);
+        if (current && payload?.username && current.toLowerCase() !== String(payload.username).toLowerCase()) {
+          window.location.reload();
+        }
       }
     } catch (_) {
       // Temporäre Netzwerkfehler dürfen keine gültige Sitzung beenden.
@@ -296,6 +446,7 @@ def render_theme_script() -> str:
 
 
 COMMON_CSS = """
+*, *::before, *::after { box-sizing: border-box; }
 :root {
     --background: #ffffff;
     --surface: #ffffff;
@@ -431,7 +582,8 @@ main {
     justify-content: flex-end;
 }
 
-.nav a {
+.nav a,
+.nav-button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -444,6 +596,12 @@ main {
     text-decoration: none;
     font-size: .875rem;
     font-weight: 650;
+    font-family: inherit;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
 }
 
 .theme-toggle {
@@ -543,8 +701,37 @@ main {
     border-color: var(--primary);
     color: white;
 }
+.nav-button:hover,
+.nav a:hover {
+    border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
+}
+.pin-modal {
+    position: fixed;
+    inset: 0;
+    margin: auto;
+    width: min(420px, calc(100vw - 24px));
+    max-height: calc(100dvh - 24px);
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    color: var(--text);
+    overflow: auto;
+}
+.pin-modal::backdrop { background: rgba(15, 23, 42, .55); }
+.pin-modal-card { display:grid; gap:12px; padding:16px; }
+.pin-modal-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.pin-modal-head span { display:block; margin-bottom:3px; color:var(--muted); font-size:.72rem; font-weight:750; text-transform:uppercase; letter-spacing:.04em; }
+.pin-modal-head h2 { margin:0; font-size:1.15rem; }
+.pin-modal-close { width:32px; height:32px; min-height:32px; padding:0; border:1px solid var(--border); border-radius:6px; background:var(--surface-muted); color:var(--text); font:inherit; font-size:1.15rem; cursor:pointer; }
+.pin-modal label { display:grid; gap:6px; font-weight:700; }
+.pin-modal input { min-height:40px; border:1px solid var(--border); border-radius:8px; padding:7px 10px; background:var(--background); color:var(--text); font:inherit; }
+.pin-modal button[type="submit"] { min-height:40px; border:0; border-radius:8px; padding:8px 14px; background:var(--primary); color:white; font:inherit; font-weight:800; cursor:pointer; }
+.pin-modal-notice { margin:0; padding:10px 12px; border-radius:8px; background:var(--error-bg); color:var(--error-text); }
+.pin-modal-notice.success { background:var(--good-bg); color:var(--good-text); }
 .logout-form { margin:0; }
 .logout-button { min-height:36px !important; height:36px !important; padding:0 12px !important; border:1px solid var(--border) !important; border-radius:6px !important; background:var(--surface) !important; color:var(--text) !important; font-size:.875rem !important; font-weight:650 !important; box-shadow:none !important; }
+.logout-button { min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .logout-button:hover { border-color:var(--bad-border) !important; color:var(--bad-text) !important; }
 .class-select-label { display:grid; gap:4px; min-width:180px; color:var(--muted); font-size:.75rem; font-weight:700; }
 .class-select { min-height:36px; padding:6px 32px 6px 10px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text); font:inherit; font-size:.875rem; font-weight:650; }
@@ -608,6 +795,10 @@ button:not(.theme-toggle),
     font: inherit;
     font-weight: 650;
     text-decoration: none;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 button:not(.theme-toggle):hover,
@@ -706,10 +897,28 @@ button:not(.theme-toggle):hover,
     }
 
     .nav > a,
+    .nav > .nav-button,
     .nav > .logout-form,
     .nav > .theme-toggle {
         min-width: 0;
         width: 100%;
+    }
+
+    .nav > a,
+    .nav > .nav-button,
+    .nav > .logout-form .logout-button {
+        height: 36px !important;
+        min-height: 36px !important;
+        max-height: 36px;
+        padding-left: 6px !important;
+        padding-right: 6px !important;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: normal;
+        hyphens: auto;
+        line-height: 1.05;
+        font-size: clamp(.68rem, 2.6vw, .875rem) !important;
+        text-align: center;
     }
 
     .nav > .logout-form {
@@ -780,6 +989,15 @@ button:not(.theme-toggle):hover,
     .panel {
         padding: 16px;
     }
+
+    .panel, .settings-card, .settings-shell, .settings-grid, .field-grid,
+    .time-tabs, .calendar-row, .category-schedule, .nav, .nav > * {
+        min-width: 0;
+        max-width: 100%;
+    }
+
+    .day-before-toggle { display:flex; align-items:center; gap:6px; min-width:0; font-size:.72rem; white-space:normal; }
+    .day-before-toggle input { flex:0 0 auto; width:16px; height:16px; }
 
     .choice-grid {
         grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));

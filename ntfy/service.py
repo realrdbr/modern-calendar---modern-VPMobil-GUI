@@ -107,6 +107,9 @@ class NtfyService:
         username = "u_" + secrets.token_hex(12)
         password = secrets.token_urlsafe(32)
         topic = "vpmobil-" + secrets.token_urlsafe(32).replace("_", "a").replace("-", "b")
+        if self.provisioner_url:
+            self._provision("ensure", topic=topic, username=username, password=password)
+            return topic, username, password
         add = self._compose(
             "exec", "-T", "-e", f"NTFY_PASSWORD={password}", "ntfy", "ntfy", "user", "add", username
         )

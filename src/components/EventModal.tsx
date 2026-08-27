@@ -22,7 +22,7 @@ interface Props {
 }
 
 export default function EventModal({ isOpen, onClose, onSave, onDelete, initialDate, initialTime, event, userCourses, allCourses = DEFAULT_COURSES, categories = [], username, preferences, isReadOnly = false, isAdmin = false }: Props) {
-  const canManageFerien = isAdmin || (username || '').toLowerCase() === 'gustavd';
+  const canManageFerien = isAdmin;
   // If editing an existing event or read-only, default to view mode.
   const [isViewMode, setIsViewMode] = useState(!!event || isReadOnly);
   

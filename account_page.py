@@ -32,6 +32,12 @@ main {{ width:min(1320px, calc(100% - 24px)); min-height:100vh; }}
 .settings-kicker {{ font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight:700; }}
 .card-hint {{ margin:0; color: var(--muted); font-size: 0.86rem; line-height:1.5; }}
 .field-grid {{ display:grid; gap:12px; }}
+.form-grid {{ display:grid; gap:12px; grid-template-columns:repeat(3, minmax(0, 1fr)); align-items:end; }}
+.table-wrap {{ overflow:auto; border:1px solid var(--border); border-radius:8px; }}
+table {{ width:100%; border-collapse:collapse; min-width:520px; }}
+th, td {{ padding:10px 12px; border-bottom:1px solid var(--border); text-align:left; font-size:.875rem; }}
+th {{ color:var(--muted); font-size:.75rem; text-transform:uppercase; letter-spacing:.04em; }}
+tr:last-child td {{ border-bottom:0; }}
 label {{ font-weight:700; display:grid; gap:6px; }}
 input, select {{ min-height:44px; border:1px solid var(--border); border-radius:10px; padding:8px 12px; font:inherit; background: var(--background); color: var(--text); }}
 input[type="checkbox"] {{ min-height:auto; width:18px; height:18px; padding:0; accent-color: var(--primary); }}
@@ -54,9 +60,12 @@ button:not(.theme-toggle) {{ min-height:44px; border:0; border-radius:10px; padd
 .subject-card[hidden], .empty-selection[hidden] {{ display:none; }}
 .subject-card h3 {{ font-size:1.02rem; }}
 .time-tabs {{ display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:9px; }}
-.time-tab {{ display:grid; gap:5px; min-width:0; padding:10px; border:1px solid var(--border); border-radius:13px; background:rgba(148,163,184,.04); }}
-.time-tab span {{ min-width:0; color:var(--muted); font-size:.72rem; font-weight:800; text-transform:uppercase; letter-spacing:.03em; overflow-wrap:anywhere; }}
-.time-tab input {{ width:100%; min-width:0; background:var(--surface); }}
+.time-tab {{ display:grid; grid-template-rows:minmax(18px, auto) 40px auto; align-content:start; gap:5px; min-width:0; padding:10px; border:1px solid var(--border); border-radius:13px; background:rgba(148,163,184,.04); }}
+.time-label {{ min-width:0; color:var(--muted); font-size:.72rem; font-weight:800; text-transform:uppercase; letter-spacing:.03em; overflow-wrap:anywhere; }}
+.time-tab > input {{ width:100%; min-width:0; height:40px; background:var(--surface); }}
+.day-before-toggle {{ display:flex; align-items:center; justify-content:flex-start; gap:6px; min-width:0; max-width:100%; font-size:.75rem; font-weight:700; color:var(--muted); line-height:1.2; }}
+.day-before-toggle > input {{ flex:0 0 auto; width:16px; height:16px; min-width:16px; min-height:16px; margin:0; }}
+.day-before-toggle > span {{ min-width:0; overflow-wrap:anywhere; }}
 .calendar-row {{ display:grid; grid-template-columns:minmax(125px, .8fr) minmax(240px, 1.4fr); gap:10px; align-items:end; }}
 .category-schedule {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; min-width:0; }}
 .category-block {{ display:grid; gap:9px; }}
@@ -71,6 +80,7 @@ code {{ word-break:break-all; }}
   .settings-grid {{ grid-template-columns:1fr; }}
   .panel {{ padding: 0 10px 22px; }}
   .settings-card {{ padding:14px; }}
+  .form-grid {{ grid-template-columns:1fr; }}
   .choice-list, .subject-list, .option-list {{ grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }}
   .settings-card-header {{ align-items:flex-start; flex-direction:column; }}
 }}
@@ -81,11 +91,12 @@ code {{ word-break:break-all; }}
   .choice-list, .subject-list, .option-list {{ grid-template-columns:repeat(2, minmax(0, 1fr)); gap:7px; }}
   .choice-pill span, .chip span {{ padding:7px 9px; overflow-wrap:anywhere; }}
   .time-tabs {{ grid-template-columns:1fr; }}
-  .time-tab {{ display:flex; align-items:center; justify-content:space-between; gap:10px; }}
-  .time-tab span {{ flex:1 1 auto; overflow-wrap:normal; }}
-  .time-tab input {{ flex:0 0 120px; width:120px; min-width:120px; min-height:40px; padding-left:8px; padding-right:6px; text-align:center; }}
-  .time-tab input::-webkit-datetime-edit {{ display:flex; justify-content:center; width:100%; padding:0; }}
-  .time-tab input::-webkit-calendar-picker-indicator {{ margin:0; padding:2px; }}
+  .time-tab {{ grid-template-columns:minmax(0, 1fr) 120px; grid-template-rows:auto auto; align-items:center; gap:6px 10px; }}
+  .time-label {{ overflow-wrap:normal; }}
+  .time-tab > input {{ width:120px; min-width:120px; min-height:40px; padding-left:8px; padding-right:6px; text-align:center; }}
+  .time-tab > input::-webkit-datetime-edit {{ display:flex; justify-content:center; width:100%; padding:0; }}
+  .time-tab > input::-webkit-calendar-picker-indicator {{ margin:0; padding:2px; }}
+  .day-before-toggle {{ grid-column:2; grid-row:2; align-self:start; white-space:normal; }}
   .calendar-row {{ grid-template-columns:minmax(88px, .7fr) minmax(0, 1.5fr); }}
   .category-schedule {{ grid-template-columns:minmax(0,1fr) minmax(82px,.72fr); }}
   .save-row button {{ width:100%; }}
@@ -179,6 +190,14 @@ def render_subscriptions(
     saved: bool = False,
     error: str | None = None,
     test_sent: bool = False,
+    is_admin: bool = False,
+    can_change_pin: bool = False,
+    force_pin_change: bool = False,
+    pin_modal_error: str | None = None,
+    pin_modal_changed: bool = False,
+    vp_user_modal_error: str | None = None,
+    vp_user_modal_created: bool = False,
+    session_username: str | None = None,
 ) -> str:
     message = '<p class="notice success">Deine Auswahl wurde gespeichert.</p>' if saved else ""
     if test_sent:
@@ -223,13 +242,25 @@ def render_subscriptions(
         for class_name in class_options
     )
     lesson_time_inputs = "".join(
-        f'<label class="time-tab"><span>{"Tagesübersicht" if index == 0 else f"Nächste Stunde {index}"}</span>'
-        f'<input type="time" name="lesson_notification_time" value="{escape(value)}" required step="60"></label>'
+        f'<label class="time-tab"><span class="time-label">{"Tagesübersicht" if index == 0 else f"Nächste Stunde {index}"}</span>'
+        f'<input type="time" name="lesson_notification_time" value="{escape(value)}" required step="60">'
+        + ('<span class="day-before-toggle"><input type="checkbox" name="daily_summary_day_before"'
+           + (' checked' if notify_settings.daily_summary_day_before else '') + '> <span>Vortag</span></span>' if index == 0 else '')
+        + '</label>'
         for index, value in enumerate(notify_settings.lesson_notification_times)
     )
+    calendar_card = "" if user.vp_only else f"""
+          <article class=\"settings-card\">
+            <div class=\"settings-card-header\"><div><div class=\"settings-kicker\">Kalender</div><h2>Erinnerungen</h2></div></div>
+            <div class=\"field-grid\">
+              <label class=\"toggle-row\"><input type=\"checkbox\" id=\"calendar_notifications_enabled\" name=\"calendar_notifications_enabled\"{" checked" if notify_settings.calendar_notifications_enabled else ""}><span>Kalender-Benachrichtigungen aktiv</span></label>
+              <div class=\"category-block\"><h3>Kategorien und Uhrzeiten</h3><div class=\"field-grid\">{event_type_checkboxes}</div></div>
+            </div>
+          </article>
+    """
     return _layout("Ankündigungen · VpMobil", f"""
     <header class=\"topbar\"><div class=\"brand\"><h1>Meine Ankündigungen</h1><p>{escape(user.username)} · Klasse {escape(user.class_name)}</p></div>
-      {render_vp_navigation("notifications", csrf_token)}</header>
+      {render_vp_navigation("notifications", csrf_token, is_admin=is_admin, can_change_pin=can_change_pin, force_pin_change=force_pin_change, pin_modal_error=pin_modal_error, pin_modal_changed=pin_modal_changed, vp_user_modal_error=vp_user_modal_error, vp_user_modal_created=vp_user_modal_created, session_username=session_username)}</header>
     {message}<section class=\"panel\"><form class=\"stack\" method=\"post\" action=\"/abos\">
       <input type=\"hidden\" name=\"csrf_token\" value=\"{escape(csrf_token)}\">
       {class_inputs}
@@ -247,13 +278,7 @@ def render_subscriptions(
             <label class=\"class-select-label\">Klasse anzeigen<select class=\"class-select\" data-class-select>{class_select_options}</select></label>
             {''.join(subject_sections)}
           </article>
-          <article class=\"settings-card\">
-            <div class=\"settings-card-header\"><div><div class=\"settings-kicker\">Kalender</div><h2>Erinnerungen</h2></div></div>
-            <div class=\"field-grid\">
-              <label class=\"toggle-row\"><input type=\"checkbox\" id=\"calendar_notifications_enabled\" name=\"calendar_notifications_enabled\"{" checked" if notify_settings.calendar_notifications_enabled else ""}><span>Kalender-Benachrichtigungen aktiv</span></label>
-              <div class=\"category-block\"><h3>Kategorien und Uhrzeiten</h3><div class=\"field-grid\">{event_type_checkboxes}</div></div>
-            </div>
-          </article>
+          {calendar_card}
         </div>
         <article class=\"settings-card\">
           <div class=\"settings-card-header\"><div><div class=\"settings-kicker\">ntfy</div><h2>App verbinden</h2></div></div>
@@ -290,4 +315,51 @@ def render_subscriptions(
         if (classSelect) activate(classSelect.value);
       }})();
     </script>
+    """)
+
+
+def render_vp_user_admin(
+    user: User,
+    vp_users: list[dict[str, object]],
+    csrf_token: str,
+    *,
+    created: bool = False,
+    error: str | None = None,
+) -> str:
+    message = '<p class="notice success">Der VP-Nutzer wurde angelegt.</p>' if created else ""
+    if error:
+        message = f'<p class="notice">{escape(error)}</p>'
+    rows = "".join(
+        "<tr>"
+        f"<td>{escape(str(row['username']))}</td>"
+        f"<td>{escape(str(row['class_name']))}</td>"
+        f"<td>{'Aktiv' if row['active'] else 'Gesperrt'}</td>"
+        f"<td>{escape(str(row['created_by']))}</td>"
+        "</tr>"
+        for row in vp_users
+    ) or '<tr><td colspan="4" class="muted">Noch keine reinen VP-Nutzer angelegt.</td></tr>'
+    return _layout("VP-Nutzer · VpMobil", f"""
+    <header class=\"topbar\"><div class=\"brand\"><h1>VP-Nutzer hinzufügen</h1><p>{escape(user.username)} · Admin</p></div>
+      {render_vp_navigation("vp-users", csrf_token, is_admin=True, session_username=user.username)}</header>
+    <section class=\"panel\"><div class=\"settings-shell\">
+      {message}
+      <article class=\"settings-card\">
+        <div class=\"settings-card-header\"><div><div class=\"settings-kicker\">Nur Vertretungsplan</div><h2>Neuer Nutzer</h2></div></div>
+        <form method=\"post\" action=\"/vp-nutzer\" class=\"form-grid\">
+          <input type=\"hidden\" name=\"csrf_token\" value=\"{escape(csrf_token)}\">
+          <label>Benutzername<input name=\"username\" required minlength=\"3\" maxlength=\"64\" autocomplete=\"off\" spellcheck=\"false\"></label>
+          <label>Klasse<input name=\"class_name\" required maxlength=\"64\" value=\"{escape(user.class_name)}\"></label>
+          <label>PIN<input name=\"pin\" type=\"password\" inputmode=\"numeric\" pattern=\"[0-9]{{4}}\" minlength=\"4\" maxlength=\"4\" required autocomplete=\"new-password\"></label>
+          <div class=\"save-row\"><button type=\"submit\">Anlegen</button></div>
+        </form>
+      </article>
+      <article class=\"settings-card\">
+        <div class=\"settings-card-header\"><div><div class=\"settings-kicker\">Bestehend</div><h2>VP-only-Nutzer</h2></div></div>
+        <div class=\"table-wrap\"><table>
+          <thead><tr><th>Benutzer</th><th>Klasse</th><th>Status</th><th>Angelegt von</th></tr></thead>
+          <tbody>{rows}</tbody>
+        </table></div>
+      </article>
+    </div></section>
+    <script>(() => {{ const input=document.querySelector('input[name="pin"]'); if(input) input.addEventListener('input',()=>input.value=input.value.replace(/\\D/g,'').slice(0,4)); }})();</script>
     """)

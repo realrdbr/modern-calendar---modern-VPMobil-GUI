@@ -30,6 +30,8 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
   const [editingEvent, setEditingEvent] = useState<AppEvent | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [swipePull, setSwipePull] = useState(0);
   const touchStart = useRef<{ x: number; y: number } | null>(null);
 
   const { preferences } = user;
@@ -214,14 +216,24 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
   const handleTouchStart = (event: TouchEvent<HTMLDivElement>) => {
     if ((navigator.maxTouchPoints || 0) < 1 || event.touches.length !== 1) return;
     touchStart.current = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+    setSwipePull(0);
+  };
+  const handleTouchMove = (event: TouchEvent<HTMLDivElement>) => {
+    const start = touchStart.current;
+    if (!start || event.touches.length !== 1 || (navigator.maxTouchPoints || 0) < 1) return;
+    const dx = event.touches[0].clientX - start.x;
+    const dy = event.touches[0].clientY - start.y;
+    if (Math.abs(dx) <= Math.abs(dy) * 1.25) return;
+    setSwipePull(Math.min(1, Math.max(0, (Math.abs(dx) - 60) / 90)) * (dx < 0 ? -1 : 1));
   };
   const handleTouchEnd = (event: TouchEvent<HTMLDivElement>) => {
     const start = touchStart.current;
     touchStart.current = null;
+    setSwipePull(0);
     if (!start || (navigator.maxTouchPoints || 0) < 1 || event.changedTouches.length !== 1) return;
     const dx = event.changedTouches[0].clientX - start.x;
     const dy = event.changedTouches[0].clientY - start.y;
-    if (Math.abs(dx) < 60 || Math.abs(dx) <= Math.abs(dy) * 1.25) return;
+    if (Math.abs(dx) < 150 || Math.abs(dx) <= Math.abs(dy) * 1.25) return;
     if (dx < 0) navigateNext(); else navigatePrev();
   };
 
@@ -302,8 +314,6 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
   const abWeek = getISOWeek(currentDate) % 2 === 0 ? 'A-Woche' : 'B-Woche';
   const WEEK_HOURS = ['07:00', '08:00', '09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '18:00', '19:00', '20:00', '21:00', '22:00'];
   
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-
   return (
     <div className={`flex h-screen ${theme.bgApp} ${theme.textMain} relative`}>
       {/* Mobile Menu Overlay */}
@@ -472,7 +482,8 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
         </header>
 
         {/* Calendar Grid */}
-        <div className={`flex-1 overflow-auto ${theme.bgApp} flex flex-col`} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd}>
+        <div className={`relative flex-1 overflow-auto ${theme.bgApp} flex flex-col`} onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd}>
+          {Math.abs(swipePull) > 0 && <div className={`pointer-events-none absolute top-1/2 z-20 -translate-y-1/2 text-2xl transition-opacity ${swipePull < 0 ? 'right-3' : 'left-3'}`} style={{opacity: Math.abs(swipePull)}} aria-hidden="true">{swipePull < 0 ? '→' : '←'}</div>}
           {view === 'week' ? (
             /* --- HOURLY WEEK VIEW --- */
             <div className="flex-1 overflow-auto flex flex-col min-w-[700px]">

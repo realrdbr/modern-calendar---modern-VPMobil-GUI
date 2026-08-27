@@ -546,9 +546,6 @@ async function startServer() {
       return res.status(403).json({ error: 'Nur Admins dürfen Admins entfernen.' });
     }
     const targetUsername = (req.params.username as string || '').toLowerCase();
-    if (targetUsername === 'gustavd') {
-      return res.status(400).json({ error: 'Der Hauptadmin (gustavd) kann nicht entfernt werden.' });
-    }
     const updated = await dbRemoveAdmin(targetUsername);
     res.json(updated);
   });
