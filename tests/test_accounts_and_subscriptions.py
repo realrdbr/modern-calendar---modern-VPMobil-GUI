@@ -136,6 +136,13 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         self.assertIn("height: 36px !important", COMMON_CSS)
         self.assertIn("font-size: clamp(.68rem, 2.6vw, .875rem) !important", COMMON_CSS)
 
+    def test_calendar_edge_swipe_is_enabled_for_all_touch_devices(self):
+        calendar_view = (Path(__file__).resolve().parent.parent / "src/components/CalendarView.tsx").read_text(encoding="utf-8")
+        function_body = calendar_view.split("const isTouchCalendarNavigationAvailable = () => {", 1)[1].split("  };", 1)[0]
+        self.assertIn("navigator.maxTouchPoints", function_body)
+        self.assertIn("'ontouchstart' in window", function_body)
+        self.assertNotIn("innerWidth", function_body)
+
     def test_ntfy_history_is_cleared_only_once_per_calendar_day(self):
         cache = Path(self.temp.name) / "cache.db"
         marker = Path(self.temp.name) / "cleanup-date"

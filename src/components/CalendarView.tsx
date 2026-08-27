@@ -232,7 +232,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
 
   const isTouchCalendarNavigationAvailable = () => {
     if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
-    return (navigator.maxTouchPoints || 0) > 0 && window.innerWidth <= 900;
+    return (navigator.maxTouchPoints || 0) > 0 || 'ontouchstart' in window;
   };
 
   const handleTouchStart = (event: TouchEvent<HTMLDivElement>) => {
