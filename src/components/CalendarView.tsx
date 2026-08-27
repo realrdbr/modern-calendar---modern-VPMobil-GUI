@@ -6,7 +6,7 @@ import { AppEvent, Course, COURSES, User, EventCategory } from '../types';
 import EventModal from './EventModal';
 import SettingsModal from './SettingsModal';
 import AdminModal from './AdminModal';
-import { Menu, X, Settings, Shield, LogOut } from 'lucide-react';
+import { Menu, X, Settings, Shield, LogOut, ChevronLeft, ChevronRight } from 'lucide-react';
 import { VERTRETUNGSPLAN_URL } from '../lib/externalLinks';
 
 interface Props {
@@ -15,6 +15,22 @@ interface Props {
   isInitialSetup?: boolean;
   onLogout?: () => void;
 }
+
+type EdgeSwipeDirection = 'left' | 'right';
+
+type EdgeSwipeGesture = {
+  edge: EdgeSwipeDirection;
+  startX: number;
+  startY: number;
+  maxScrollLeft: number;
+  distance: number;
+  horizontal: boolean;
+  hapticSent: boolean;
+};
+
+const SCROLL_EDGE_EPSILON = 2;
+const EDGE_SWIPE_THRESHOLD = 96;
+const EDGE_SWIPE_MAX_PULL = 132;
 
 export default function CalendarView({ user, onUpdatePreferences, isInitialSetup = false, onLogout }: Props) {
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -31,8 +47,8 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [swipePull, setSwipePull] = useState(0);
-  const touchStart = useRef<{ x: number; y: number } | null>(null);
+  const [edgeSwipePreview, setEdgeSwipePreview] = useState<{ edge: EdgeSwipeDirection; distance: number; armed: boolean } | null>(null);
+  const edgeSwipeGesture = useRef<EdgeSwipeGesture | null>(null);
 
   const { preferences } = user;
   const [systemPrefersDark, setSystemPrefersDark] = useState(() =>
@@ -213,28 +229,95 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
   const navigateToday = () => {
     setCurrentDate(new Date());
   };
+
+  const isTouchCalendarNavigationAvailable = () => {
+    if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+    return (navigator.maxTouchPoints || 0) > 0 && window.innerWidth <= 900;
+  };
+
   const handleTouchStart = (event: TouchEvent<HTMLDivElement>) => {
-    if ((navigator.maxTouchPoints || 0) < 1 || event.touches.length !== 1) return;
-    touchStart.current = { x: event.touches[0].clientX, y: event.touches[0].clientY };
-    setSwipePull(0);
+    edgeSwipeGesture.current = null;
+    setEdgeSwipePreview(null);
+    if (!isTouchCalendarNavigationAvailable() || event.touches.length !== 1 || isMobileMenuOpen || isModalOpen || isSettingsOpen || isAdminOpen) return;
+
+    const target = event.currentTarget;
+    const maxScrollLeft = Math.max(0, target.scrollWidth - target.clientWidth);
+    const edge = target.scrollLeft <= SCROLL_EDGE_EPSILON
+      ? 'left'
+      : target.scrollLeft >= maxScrollLeft - SCROLL_EDGE_EPSILON
+        ? 'right'
+        : null;
+    if (!edge) return;
+
+    edgeSwipeGesture.current = {
+      edge,
+      startX: event.touches[0].clientX,
+      startY: event.touches[0].clientY,
+      maxScrollLeft,
+      distance: 0,
+      horizontal: false,
+      hapticSent: false,
+    };
   };
+
   const handleTouchMove = (event: TouchEvent<HTMLDivElement>) => {
-    const start = touchStart.current;
-    if (!start || event.touches.length !== 1 || (navigator.maxTouchPoints || 0) < 1) return;
-    const dx = event.touches[0].clientX - start.x;
-    const dy = event.touches[0].clientY - start.y;
-    if (Math.abs(dx) <= Math.abs(dy) * 1.25) return;
-    setSwipePull(Math.min(1, Math.max(0, (Math.abs(dx) - 60) / 90)) * (dx < 0 ? -1 : 1));
+    const gesture = edgeSwipeGesture.current;
+    if (!gesture || event.touches.length !== 1 || !isTouchCalendarNavigationAvailable()) return;
+
+    const touch = event.touches[0];
+    const dx = touch.clientX - gesture.startX;
+    const dy = touch.clientY - gesture.startY;
+    const inwardDistance = gesture.edge === 'left' ? Math.max(0, dx) : Math.max(0, -dx);
+    const horizontalIntent = inwardDistance > 8 && inwardDistance > Math.abs(dy) * 1.15;
+    const currentTarget = event.currentTarget;
+    const stillAtRequiredScrollEdge = gesture.edge === 'left'
+      ? currentTarget.scrollLeft <= SCROLL_EDGE_EPSILON
+      : currentTarget.scrollLeft >= gesture.maxScrollLeft - SCROLL_EDGE_EPSILON;
+
+    if (!stillAtRequiredScrollEdge && !gesture.horizontal) {
+      edgeSwipeGesture.current = null;
+      setEdgeSwipePreview(null);
+      return;
+    }
+
+    if (!gesture.horizontal && Math.abs(dy) > 16 && inwardDistance <= Math.abs(dy)) {
+      edgeSwipeGesture.current = null;
+      setEdgeSwipePreview(null);
+      return;
+    }
+    if (!horizontalIntent && !gesture.horizontal) return;
+
+    if (event.cancelable) event.preventDefault();
+    const distance = Math.min(EDGE_SWIPE_MAX_PULL, inwardDistance);
+    const armed = distance >= EDGE_SWIPE_THRESHOLD;
+    if (armed && !gesture.hapticSent && 'vibrate' in navigator) {
+      navigator.vibrate(14);
+      gesture.hapticSent = true;
+    }
+    gesture.horizontal = true;
+    gesture.distance = distance;
+    setEdgeSwipePreview({ edge: gesture.edge, distance, armed });
   };
+
   const handleTouchEnd = (event: TouchEvent<HTMLDivElement>) => {
-    const start = touchStart.current;
-    touchStart.current = null;
-    setSwipePull(0);
-    if (!start || (navigator.maxTouchPoints || 0) < 1 || event.changedTouches.length !== 1) return;
-    const dx = event.changedTouches[0].clientX - start.x;
-    const dy = event.changedTouches[0].clientY - start.y;
-    if (Math.abs(dx) < 150 || Math.abs(dx) <= Math.abs(dy) * 1.25) return;
-    if (dx < 0) navigateNext(); else navigatePrev();
+    const gesture = edgeSwipeGesture.current;
+    edgeSwipeGesture.current = null;
+    setEdgeSwipePreview(null);
+    if (!gesture || event.changedTouches.length !== 1 || !gesture.horizontal) return;
+
+    const touch = event.changedTouches[0];
+    const dx = touch.clientX - gesture.startX;
+    const dy = touch.clientY - gesture.startY;
+    const finalDistance = gesture.edge === 'left' ? Math.max(0, dx) : Math.max(0, -dx);
+    if (finalDistance < EDGE_SWIPE_THRESHOLD || finalDistance <= Math.abs(dy) * 1.15) return;
+
+    if (gesture.edge === 'left') navigatePrev();
+    else navigateNext();
+  };
+
+  const handleTouchCancel = () => {
+    edgeSwipeGesture.current = null;
+    setEdgeSwipePreview(null);
   };
 
   const getCalendarDays = () => {
@@ -482,8 +565,25 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
         </header>
 
         {/* Calendar Grid */}
-        <div className={`relative flex-1 overflow-auto ${theme.bgApp} flex flex-col`} onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd}>
-          {Math.abs(swipePull) > 0 && <div className={`pointer-events-none absolute top-1/2 z-20 -translate-y-1/2 text-2xl transition-opacity ${swipePull < 0 ? 'right-3' : 'left-3'}`} style={{opacity: Math.abs(swipePull)}} aria-hidden="true">{swipePull < 0 ? '→' : '←'}</div>}
+        <div className={`relative flex-1 overflow-auto ${theme.bgApp} flex flex-col`} onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd} onTouchCancel={handleTouchCancel}>
+          {edgeSwipePreview && (
+            <div
+              className={`pointer-events-none fixed top-1/2 z-[70] grid h-11 w-11 -translate-y-1/2 place-items-center rounded-full bg-blue-600 text-white shadow-xl ring-1 ring-white/30 transition-[opacity,transform] duration-75 ${
+                edgeSwipePreview.armed ? 'bg-blue-500 scale-105' : ''
+              } ${edgeSwipePreview.edge === 'left' ? 'left-0' : 'right-0'}`}
+              style={{
+                opacity: Math.min(1, 0.32 + edgeSwipePreview.distance / EDGE_SWIPE_THRESHOLD),
+                transform: `translate(${edgeSwipePreview.edge === 'left' ? Math.min(56, edgeSwipePreview.distance * 0.52) : -Math.min(56, edgeSwipePreview.distance * 0.52)}px, -50%) scale(${edgeSwipePreview.armed ? 1.08 : 0.88 + Math.min(0.16, edgeSwipePreview.distance / 600)})`,
+                borderTopLeftRadius: edgeSwipePreview.edge === 'left' ? 0 : undefined,
+                borderBottomLeftRadius: edgeSwipePreview.edge === 'left' ? 0 : undefined,
+                borderTopRightRadius: edgeSwipePreview.edge === 'right' ? 0 : undefined,
+                borderBottomRightRadius: edgeSwipePreview.edge === 'right' ? 0 : undefined,
+              }}
+              aria-hidden="true"
+            >
+              {edgeSwipePreview.edge === 'left' ? <ChevronLeft className="h-7 w-7 stroke-[2.8]" /> : <ChevronRight className="h-7 w-7 stroke-[2.8]" />}
+            </div>
+          )}
           {view === 'week' ? (
             /* --- HOURLY WEEK VIEW --- */
             <div className="flex-1 overflow-auto flex flex-col min-w-[700px]">
