@@ -10,8 +10,10 @@ import hmac
 import json
 import os
 from pathlib import Path
+import queue
 import secrets
 import sqlite3
+import threading
 from typing import Any, Iterator, Mapping
 from urllib.parse import unquote, urlparse
 
@@ -26,6 +28,84 @@ try:
 except Exception:  # pragma: no cover
     pymysql = None
     DictCursor = None
+
+
+class MySQLConnectionPool:
+    """Thread-sicherer Verbindungspool für MariaDB/MySQL mit pymysql."""
+
+    def __init__(self, config: dict[str, Any], max_size: int = 10, timeout: float = 30.0):
+        self._config = config
+        self._max_size = max(1, max_size)
+        self._timeout = timeout
+        self._pool: queue.Queue[Any] = queue.Queue(maxsize=self._max_size)
+        self._lock = threading.Lock()
+        self._created_connections = 0
+
+    def get_connection(self) -> Any:
+        try:
+            conn = self._pool.get_nowait()
+        except queue.Empty:
+            with self._lock:
+                if self._created_connections < self._max_size:
+                    self._created_connections += 1
+                    try:
+                        return pymysql.connect(**self._config)
+                    except Exception:
+                        self._created_connections -= 1
+                        raise
+            try:
+                conn = self._pool.get(timeout=self._timeout)
+            except queue.Empty as error:
+                raise RuntimeError("Timeout beim Warten auf eine freie Datenbankverbindung aus dem Pool.") from error
+
+        try:
+            conn.ping(reconnect=True)
+            return conn
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            try:
+                return pymysql.connect(**self._config)
+            except Exception:
+                with self._lock:
+                    self._created_connections = max(0, self._created_connections - 1)
+                raise
+
+    def release_connection(self, conn: Any, discard: bool = False) -> None:
+        if discard:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            with self._lock:
+                self._created_connections = max(0, self._created_connections - 1)
+            return
+
+        try:
+            conn.rollback()
+            self._pool.put_nowait(conn)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            with self._lock:
+                self._created_connections = max(0, self._created_connections - 1)
+
+    def close_all(self) -> None:
+        while True:
+            try:
+                conn = self._pool.get_nowait()
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            except queue.Empty:
+                break
+        with self._lock:
+            self._created_connections = 0
 
 
 LOGIN_WINDOW = timedelta(minutes=15)
@@ -168,6 +248,7 @@ class AccountStore:
         self._backend = "sqlite"
         self.database_path: Path | None = None
         self._mysql_config: dict[str, Any] | None = None
+        self._mysql_pool: MySQLConnectionPool | None = None
 
         database_value = str(database)
         if database_value.startswith(("mysql://", "mariadb://")):
@@ -175,6 +256,8 @@ class AccountStore:
                 raise RuntimeError("Für MariaDB/MySQL wird das Paket `pymysql` benötigt.")
             self._backend = "mysql"
             self._mysql_config = self._parse_mysql_url(database_value)
+            pool_size = max(1, int(os.getenv("DB_POOL_SIZE", "10")))
+            self._mysql_pool = MySQLConnectionPool(self._mysql_config, max_size=pool_size)
         else:
             self.database_path = Path(database_value)
             self.database_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -242,16 +325,20 @@ class AccountStore:
                 connection.close()
             return
 
-        assert self._mysql_config is not None
-        connection = pymysql.connect(**self._mysql_config)
+        assert self._mysql_pool is not None
+        connection = self._mysql_pool.get_connection()
+        discard = False
         try:
             yield connection
             connection.commit()
         except Exception:
-            connection.rollback()
+            try:
+                connection.rollback()
+            except Exception:
+                discard = True
             raise
         finally:
-            connection.close()
+            self._mysql_pool.release_connection(connection, discard=discard)
 
     def _execute(self, connection: Any, query: str, params: tuple[Any, ...] = ()) -> Any:
         prepared = self._prepare_query(query)
@@ -391,6 +478,12 @@ class AccountStore:
                         description TEXT DEFAULT '',
                         author TEXT DEFAULT ''
                     );
+                    CREATE INDEX IF NOT EXISTS idx_calendar_events_lookup
+                        ON calendar_events(date, start_time);
+                    CREATE INDEX IF NOT EXISTS idx_calendar_events_course
+                        ON calendar_events(course_id);
+                    CREATE INDEX IF NOT EXISTS idx_calendar_events_type
+                        ON calendar_events(type);
                     CREATE TABLE IF NOT EXISTS calendar_event_categories (
                         id TEXT PRIMARY KEY,
                         name TEXT NOT NULL,
@@ -534,6 +627,22 @@ class AccountStore:
                 self._run(connection, statement)
             try:
                 self._run(connection, "CREATE INDEX idx_vp_login_attempts_lookup ON vp_login_attempts(username, ip_address, attempted_at)")
+            except Exception:
+                pass
+            try:
+                self._run(connection, "CREATE INDEX idx_events_lookup ON events(deleted_at, date, start_time)")
+            except Exception:
+                pass
+            try:
+                self._run(connection, "CREATE INDEX idx_events_course ON events(course_id)")
+            except Exception:
+                pass
+            try:
+                self._run(connection, "CREATE INDEX idx_events_type ON events(type)")
+            except Exception:
+                pass
+            try:
+                self._run(connection, "CREATE INDEX idx_events_date ON events(date)")
             except Exception:
                 pass
             try:
@@ -1199,12 +1308,18 @@ class AccountStore:
                         calendar_pin = user_row.get("calendar_pin")
                         valid = not calendar_pin or _verify_shared_pin(pin, calendar_pin)
                     elif user_row.get("vp_only_pin_hash") and bool(user_row.get("vp_only_active")):
-                        try:
-                            valid = self._hasher.verify(user_row.get("vp_only_pin_hash", ""), pin)
-                            if valid and self._hasher.check_needs_rehash(user_row.get("vp_only_pin_hash", "")):
+                        stored_pin = user_row.get("vp_only_pin_hash", "")
+                        if stored_pin.startswith("scrypt$"):
+                            valid = _verify_shared_pin(pin, stored_pin)
+                            if valid:
                                 self._run(connection, "UPDATE vp_only_users SET pin_hash = ? WHERE user_id = ?", (self._hasher.hash(pin), user_row["id"]))
-                        except (VerificationError, InvalidHashError):
-                            valid = False
+                        else:
+                            try:
+                                valid = self._hasher.verify(stored_pin, pin)
+                                if valid and self._hasher.check_needs_rehash(stored_pin):
+                                    self._run(connection, "UPDATE vp_only_users SET pin_hash = ? WHERE user_id = ?", (self._hasher.hash(pin), user_row["id"]))
+                            except (VerificationError, InvalidHashError):
+                                valid = False
                     if valid and user_row.get("calendar_username") is None:
                         self._run(
                             connection,

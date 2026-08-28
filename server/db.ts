@@ -51,6 +51,41 @@ export function decryptPrivateData(username: string, row: any): PrivateCalendarD
   return { categories: Array.isArray(parsed.categories) ? parsed.categories : [], events: Array.isArray(parsed.events) ? parsed.events : [] };
 }
 
+function encryptFernet(keyBase64: string, plaintext: string): Buffer {
+  const keyBytes = Buffer.from(keyBase64, 'base64');
+  const signingKey = keyBytes.subarray(0, 16);
+  const encryptionKey = keyBytes.subarray(16, 32);
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-128-cbc', encryptionKey, iv);
+  const timestamp = Buffer.alloc(8);
+  timestamp.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 1000)));
+  const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const basicParts = Buffer.concat([Buffer.from([0x80]), timestamp, iv, ciphertext]);
+  const hmac = crypto.createHmac('sha256', signingKey).update(basicParts).digest();
+  return Buffer.concat([basicParts, hmac]);
+}
+
+async function provisionNtfyUser(operation: 'ensure' | 'delete', payloadData: Record<string, any>) {
+  const provisionerUrl = process.env.NTFY_PROVISIONER_URL || 'http://ntfy-provisioner:8080';
+  const secret = process.env.NTFY_PROVISIONER_SECRET || process.env.APP_ENCRYPTION_KEY;
+  if (!provisionerUrl || !secret) return;
+  try {
+    const payload = { ...payloadData, timestamp: Math.floor(Date.now() / 1000) };
+    const body = Buffer.from(JSON.stringify(payload));
+    const signature = crypto.createHmac('sha256', secret).update(body).digest('hex');
+    await fetch(`${provisionerUrl}/${operation}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Provisioner-Signature': signature
+      },
+      body
+    });
+  } catch (error) {
+    // Falls der Provisioner lokal nicht erreichbar ist, still ignorieren
+  }
+}
+
 function hashPinLegacy(pin: string): string {
   return crypto.createHash('sha256').update(`${pin}_cal11_salt_2026`).digest('hex');
 }
@@ -367,6 +402,21 @@ export async function initDatabase() {
         await conn.query('ALTER TABLE events ADD COLUMN deleted_by VARCHAR(64) DEFAULT NULL;');
       } catch (e) {}
 
+      const createEventsIndexSafe = async (name: string, definition: string) => {
+        try {
+          await conn.query(`CREATE INDEX ${name} ON events ${definition}`);
+        } catch (e: any) {
+          if (e?.code !== 'ER_DUP_KEYNAME') {
+            console.warn(`[Database] Index ${name} konnte nicht angelegt werden: ${e.message}`);
+          }
+        }
+      };
+
+      await createEventsIndexSafe('idx_events_lookup', '(deleted_at, date, start_time)');
+      await createEventsIndexSafe('idx_events_course', '(course_id)');
+      await createEventsIndexSafe('idx_events_type', '(type)');
+      await createEventsIndexSafe('idx_events_date', '(date)');
+
       await conn.query(`
         DELETE FROM events
         WHERE COALESCE(NULLIF(end_date, ''), date) < DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 18 MONTH), '%Y-%m-%d')
@@ -587,9 +637,143 @@ export async function dbDeleteUser(username: string) {
   const uname = username.toLowerCase();
   if (isConnected && pool) {
     await pool.query('DELETE FROM users WHERE username = ?', [uname]);
+    try {
+      await pool.query('DELETE FROM vp_users WHERE LOWER(username) = LOWER(?)', [uname]);
+    } catch (e) {}
   } else {
     delete memoryStore.users[uname];
   }
+}
+
+// VP-Only User Operations
+export async function dbGetVpOnlyUsers() {
+  if (isConnected && pool) {
+    try {
+      const [rows]: any = await pool.query(`
+        SELECT only_users.username, vp.class_name, only_users.active, only_users.must_change_pin, only_users.created_by, only_users.created_at
+        FROM vp_only_users only_users
+        JOIN vp_users vp ON vp.id = only_users.user_id
+        ORDER BY only_users.created_at DESC, only_users.username ASC
+      `);
+      return rows.map((r: any) => ({
+        username: r.username,
+        className: r.class_name,
+        active: Boolean(r.active),
+        mustChangePin: Boolean(r.must_change_pin),
+        createdBy: r.created_by,
+        createdAt: r.created_at
+      }));
+    } catch (error: any) {
+      if (error?.code === 'ER_NO_SUCH_TABLE') return [];
+      throw error;
+    }
+  }
+  return [];
+}
+
+export async function dbCreateVpOnlyUser(username: string, pin: string, className: string, createdBy: string) {
+  const uname = username.trim().toLowerCase();
+  const cName = (className || '11').trim();
+  const cBy = createdBy.trim().toLowerCase();
+  if (!uname || uname.length < 3 || uname.length > 64) {
+    throw new Error('Der Benutzername muss 3 bis 64 Zeichen lang sein.');
+  }
+  if (!/^[a-zA-Z0-9._-]+$/.test(uname)) {
+    throw new Error('Der Benutzername darf nur Buchstaben, Zahlen, Punkt, Unterstrich und Bindestrich enthalten.');
+  }
+  if (!/^\d{4}$/.test(pin)) {
+    throw new Error('Die PIN muss aus genau vier Ziffern bestehen.');
+  }
+
+  if (isConnected && pool) {
+    const [existingUsers]: any = await pool.query('SELECT 1 FROM users WHERE LOWER(username) = LOWER(?)', [uname]);
+    const [existingVp]: any = await pool.query('SELECT 1 FROM vp_users WHERE LOWER(username) = LOWER(?)', [uname]);
+    if (existingUsers.length > 0 || existingVp.length > 0) {
+      throw new Error('Benutzername bereits vergeben.');
+    }
+
+    const topic = 'vpmobil-' + crypto.randomBytes(16).toString('hex');
+    const ntfyUsername = 'u_' + crypto.randomBytes(8).toString('hex');
+    const ntfyPassword = crypto.randomBytes(16).toString('hex');
+    const encKey = process.env.APP_ENCRYPTION_KEY || '';
+    let encryptedPassword = Buffer.from(ntfyPassword);
+    if (encKey) {
+      try {
+        encryptedPassword = encryptFernet(encKey, ntfyPassword);
+      } catch (e) {
+        console.warn('[Crypto] Fernet encryption fallback:', e);
+      }
+    }
+    const now = new Date().toISOString();
+
+    const [res]: any = await pool.query(`
+      INSERT INTO vp_users (username, pin_hash, class_name, active, ntfy_topic, ntfy_username, ntfy_password_encrypted, created_at)
+      VALUES (?, '', ?, 1, ?, ?, ?, ?)
+    `, [uname, cName, topic, ntfyUsername, encryptedPassword, now]);
+    const userId = res.insertId;
+
+    await pool.query(`
+      INSERT INTO vp_only_users (username, user_id, pin_hash, active, must_change_pin, created_by, created_at)
+      VALUES (?, ?, ?, 1, 1, ?, ?)
+    `, [uname, userId, hashPin(pin), cBy, now]);
+
+    await provisionNtfyUser('ensure', { topic, username: ntfyUsername, password: ntfyPassword });
+
+    return {
+      username: uname,
+      className: cName,
+      active: true,
+      mustChangePin: true,
+      createdBy: cBy,
+      createdAt: now
+    };
+  }
+  throw new Error('Keine Datenbankverbindung.');
+}
+
+export async function dbSetVpOnlyUserStatus(username: string, active: boolean) {
+  const uname = username.trim().toLowerCase();
+  if (isConnected && pool) {
+    await pool.query('UPDATE vp_only_users SET active = ? WHERE LOWER(username) = LOWER(?)', [active ? 1 : 0, uname]);
+    await pool.query('UPDATE vp_users SET active = ? WHERE LOWER(username) = LOWER(?)', [active ? 1 : 0, uname]);
+    if (!active) {
+      try {
+        await pool.query('DELETE FROM vp_only_sessions WHERE LOWER(username) = LOWER(?)', [uname]);
+      } catch (e) {}
+    }
+    return true;
+  }
+  return false;
+}
+
+export async function dbSetVpOnlyUserPin(username: string, pin: string, mustChangePin = false) {
+  const uname = username.trim().toLowerCase();
+  if (!/^\d{4}$/.test(pin)) {
+    throw new Error('Die PIN muss aus genau vier Ziffern bestehen.');
+  }
+  if (isConnected && pool) {
+    await pool.query('UPDATE vp_only_users SET pin_hash = ?, must_change_pin = ? WHERE LOWER(username) = LOWER(?)', [hashPin(pin), mustChangePin ? 1 : 0, uname]);
+    return true;
+  }
+  return false;
+}
+
+export async function dbDeleteVpOnlyUser(username: string) {
+  const uname = username.trim().toLowerCase();
+  if (isConnected && pool) {
+    let ntfyUsername = '';
+    try {
+      const [rows]: any = await pool.query('SELECT ntfy_username FROM vp_users WHERE LOWER(username) = LOWER(?)', [uname]);
+      ntfyUsername = rows[0]?.ntfy_username || '';
+    } catch (e) {}
+    await pool.query('DELETE FROM vp_only_users WHERE LOWER(username) = LOWER(?)', [uname]);
+    await pool.query('DELETE FROM vp_users WHERE LOWER(username) = LOWER(?)', [uname]);
+    if (ntfyUsername) {
+      await provisionNtfyUser('delete', { username: ntfyUsername });
+    }
+    return true;
+  }
+  return false;
 }
 
 // Course Operations

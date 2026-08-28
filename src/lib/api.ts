@@ -232,8 +232,25 @@ export async function removeAdmin(username: string) {
   return res.json();
 }
 
+export async function adminVerifyPin(pin: string) {
+  const res = await fetch(`${API_URL}/api/admin/verify-pin`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ pin })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Verifizierung fehlgeschlagen' }));
+    throw new Error(err.error || 'Verifizierung fehlgeschlagen');
+  }
+  return res.json();
+}
+
 export async function adminFetchUsers() {
   const res = await fetch(`${API_URL}/api/admin/users`, { headers: getHeaders() });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Fehler beim Laden der Benutzer' }));
+    throw new Error(err.error || 'Fehler beim Laden der Benutzer');
+  }
   return res.json();
 }
 
@@ -243,7 +260,10 @@ export async function adminUpdateUserStatus(username: string, status: 'ACTIVE' |
     headers: getHeaders(),
     body: JSON.stringify({ status })
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Fehler beim Aktualisieren' }));
+    throw new Error(err.error || 'Fehler beim Aktualisieren');
+  }
   return res.json();
 }
 
@@ -253,7 +273,10 @@ export async function adminAddUser(username: string, pin?: string) {
     headers: getHeaders(),
     body: JSON.stringify({ username, pin })
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Fehler beim Erstellen' }));
+    throw new Error(err.error || 'Fehler beim Erstellen');
+  }
   return res.json();
 }
 
@@ -262,7 +285,10 @@ export async function adminDeleteUser(username: string) {
     method: 'DELETE',
     headers: getHeaders()
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Fehler beim Löschen' }));
+    throw new Error(err.error || 'Fehler beim Löschen');
+  }
   return res.json();
 }
 
@@ -271,7 +297,83 @@ export async function adminResetUserPin(username: string) {
     method: 'PUT',
     headers: getHeaders()
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Fehler beim Zurücksetzen' }));
+    throw new Error(err.error || 'Fehler beim Zurücksetzen');
+  }
+  return res.json();
+}
+
+export async function adminSetUserPin(username: string, pin: string) {
+  const res = await fetch(`${API_URL}/api/admin/users/${username}/set-pin`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify({ pin })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Fehler beim Setzen des Passworts' }));
+    throw new Error(err.error || 'Fehler beim Setzen des Passworts');
+  }
+  return res.json();
+}
+
+export async function adminFetchVpUsers() {
+  const res = await fetch(`${API_URL}/api/admin/vp-users`, { headers: getHeaders() });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Fehler beim Laden der VP-Nutzer' }));
+    throw new Error(err.error || 'Fehler beim Laden der VP-Nutzer');
+  }
+  return res.json();
+}
+
+export async function adminAddVpUser(username: string, pin: string, className: string) {
+  const res = await fetch(`${API_URL}/api/admin/vp-users`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ username, pin, className })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Fehler beim Erstellen des VP-Nutzers' }));
+    throw new Error(err.error || 'Fehler beim Erstellen des VP-Nutzers');
+  }
+  return res.json();
+}
+
+export async function adminUpdateVpUserStatus(username: string, active: boolean) {
+  const res = await fetch(`${API_URL}/api/admin/vp-users/${username}/status`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify({ active })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Fehler beim Aktualisieren des Status' }));
+    throw new Error(err.error || 'Fehler beim Aktualisieren des Status');
+  }
+  return res.json();
+}
+
+export async function adminUpdateVpUserPin(username: string, pin: string, mustChangePin = false) {
+  const res = await fetch(`${API_URL}/api/admin/vp-users/${username}/pin`, {
+    method: 'PUT',
+    headers: getHeaders(),
+    body: JSON.stringify({ pin, mustChangePin })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Fehler beim Setzen der PIN' }));
+    throw new Error(err.error || 'Fehler beim Setzen der PIN');
+  }
+  return res.json();
+}
+
+export async function adminDeleteVpUser(username: string) {
+  const res = await fetch(`${API_URL}/api/admin/vp-users/${username}`, {
+    method: 'DELETE',
+    headers: getHeaders()
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: 'Fehler beim Löschen des VP-Nutzers' }));
+    throw new Error(err.error || 'Fehler beim Löschen des VP-Nutzers');
+  }
   return res.json();
 }
 

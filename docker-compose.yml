@@ -45,6 +45,8 @@ services:
       APP_TIMEZONE: ${APP_TIMEZONE:-Europe/Berlin}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?APP_ENCRYPTION_KEY muss gesetzt sein}
       CALENDAR_PRIVATE_DATA_KEY: ${CALENDAR_PRIVATE_DATA_KEY:-}
+    volumes:
+      - uploads_data:/app/uploads
     ports:
       - "${APP_BIND_HOST:-127.0.0.1}:${CAL11_PORT:-3000}:${CAL11_PORT:-3000}"
     networks:
@@ -157,6 +159,8 @@ services:
 volumes:
   mariadb_data:
     name: ${DB_VOLUME_NAME:-mariadb_data}
+  uploads_data:
+    name: ${UPLOADS_VOLUME_NAME:-uploads_data}
   caddy_data:
     driver: local
   caddy_config:

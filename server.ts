@@ -42,7 +42,12 @@ import {
   dbGetAdmins,
   dbIsAdmin,
   dbAddAdmin,
-  dbRemoveAdmin
+  dbRemoveAdmin,
+  dbGetVpOnlyUsers,
+  dbCreateVpOnlyUser,
+  dbSetVpOnlyUserStatus,
+  dbSetVpOnlyUserPin,
+  dbDeleteVpOnlyUser
 } from './server/db';
 
 function sanitizeUser(user: any) {
@@ -104,14 +109,13 @@ async function startServer() {
   };
   scheduleCalendarCleanup();
 
-  const uploadsDir = path.join(process.cwd(), 'uploads');
+  const uploadsDir = process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads');
   if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
   }
 
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
-  app.use('/uploads', express.static(uploadsDir));
 
   // Require active DB connection for all API routes
   app.use('/api', (req, res, next) => {
@@ -289,6 +293,8 @@ async function startServer() {
     (req as any).authUserStatus = user?.status || 'ACTIVE';
     next();
   };
+
+  app.use('/uploads', requireAuth, express.static(uploadsDir));
 
   const requireWriteAuth = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
     requireAuth(req, res, () => {
@@ -592,7 +598,7 @@ async function startServer() {
         });
       }
       const uniqueName = `${uuidv4()}${safeExt}`;
-      const filePath = path.join(process.cwd(), 'uploads', uniqueName);
+      const filePath = path.join(uploadsDir, uniqueName);
       await fs.promises.writeFile(filePath, buffer);
 
       res.json({
@@ -694,9 +700,21 @@ async function startServer() {
     res.status(201).json({ success: true, username: uname });
   });
 
+  app.post('/api/admin/verify-pin', requireAdmin, async (req, res) => {
+    const { pin } = req.body;
+    const currentUser = (req as any).authenticatedUser;
+    const user = await dbGetUser(currentUser);
+    if (!user) return res.status(404).json({ error: 'Benutzer nicht gefunden' });
+    if (!user.pin) return res.json({ success: true, message: 'Keine PIN gesetzt' });
+    if (!pin || !verifyPin(pin, user.pin)) {
+      return res.status(401).json({ error: 'Falsche Admin-PIN' });
+    }
+    return res.json({ success: true });
+  });
+
   app.delete('/api/admin/users/:username', requireAdmin, async (req, res) => {
-    const target = req.params.username as string;
-    if (await dbIsAdmin(target)) return res.status(400).json({ error: 'Admins können nicht gelöscht werden.' });
+    const target = (req.params.username as string || '').toLowerCase();
+    if (await dbIsAdmin(target)) return res.status(403).json({ error: 'Admins können sich gegenseitig nicht bearbeiten oder löschen.' });
     
     await dbDeleteUser(target);
     res.json({ success: true });
@@ -706,7 +724,7 @@ async function startServer() {
     const target = (req.params.username as string || '').toLowerCase();
     const { status } = req.body;
     if (await dbIsAdmin(target)) {
-      return res.status(400).json({ error: 'Admins können nur direkt in der Datenbank geändert werden.' });
+      return res.status(403).json({ error: 'Admins können sich gegenseitig nicht bearbeiten oder sperren.' });
     }
     if (status === 'ADMIN') {
       return res.status(400).json({ error: 'Admin-Rechte können nur direkt in der Datenbank vergeben werden.' });
@@ -716,10 +734,71 @@ async function startServer() {
   });
 
   app.put('/api/admin/users/:username/reset-pin', requireAdmin, async (req, res) => {
-    const target = req.params.username as string;
-    if (await dbIsAdmin(target)) return res.status(400).json({ error: 'Admin PIN kann nicht zurückgesetzt werden.' });
+    const target = (req.params.username as string || '').toLowerCase();
+    if (await dbIsAdmin(target)) return res.status(403).json({ error: 'Admin-PIN kann nicht von anderen Admins zurückgesetzt werden.' });
     await dbSaveUser(target, { pin: null });
     res.json({ success: true });
+  });
+
+  app.put('/api/admin/users/:username/set-pin', requireAdmin, async (req, res) => {
+    const target = (req.params.username as string || '').toLowerCase();
+    const { pin } = req.body;
+    if (await dbIsAdmin(target)) return res.status(403).json({ error: 'Admin-PIN kann nicht von anderen Admins geändert werden.' });
+    await dbSaveUser(target, { pin: pin || null });
+    res.json({ success: true });
+  });
+
+  // VP-Only User Admin Routes
+  app.get('/api/admin/vp-users', requireAdmin, async (req, res) => {
+    try {
+      const vpUsers = await dbGetVpOnlyUsers();
+      res.json(vpUsers);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Fehler beim Laden der VP-Nutzer' });
+    }
+  });
+
+  app.post('/api/admin/vp-users', requireAdmin, async (req, res) => {
+    const { username, pin, className } = req.body;
+    const currentUser = (req as any).authenticatedUser;
+    try {
+      const created = await dbCreateVpOnlyUser(username, pin, className, currentUser);
+      res.status(201).json(created);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Fehler beim Erstellen des VP-Nutzers' });
+    }
+  });
+
+  app.put('/api/admin/vp-users/:username/status', requireAdmin, async (req, res) => {
+    const target = (req.params.username as string || '').toLowerCase();
+    const { active } = req.body;
+    try {
+      await dbSetVpOnlyUserStatus(target, Boolean(active));
+      res.json({ success: true, active: Boolean(active) });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Fehler beim Aktualisieren des Status' });
+    }
+  });
+
+  app.put('/api/admin/vp-users/:username/pin', requireAdmin, async (req, res) => {
+    const target = (req.params.username as string || '').toLowerCase();
+    const { pin, mustChangePin } = req.body;
+    try {
+      await dbSetVpOnlyUserPin(target, String(pin), Boolean(mustChangePin));
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Fehler beim Setzen der PIN' });
+    }
+  });
+
+  app.delete('/api/admin/vp-users/:username', requireAdmin, async (req, res) => {
+    const target = (req.params.username as string || '').toLowerCase();
+    try {
+      await dbDeleteVpOnlyUser(target);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Fehler beim Löschen des VP-Nutzers' });
+    }
   });
 
   app.get('/api/categories', requireAuth, async (req, res) => {
