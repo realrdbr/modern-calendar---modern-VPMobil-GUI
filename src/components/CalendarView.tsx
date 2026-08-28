@@ -11,8 +11,9 @@ import { VERTRETUNGSPLAN_URL } from '../lib/externalLinks';
 
 interface Props {
   user: User;
-  onUpdatePreferences: (prefs: any, newPin?: string, newCourses?: string[]) => void;
+  onUpdatePreferences: (prefs: any, newPin?: string, newCourses?: string[], oldPin?: string) => void;
   isInitialSetup?: boolean;
+  forcePinChange?: boolean;
   onLogout?: () => void;
 }
 
@@ -34,7 +35,7 @@ const SCROLL_EDGE_EPSILON = 2;
 const EDGE_SWIPE_THRESHOLD = 96;
 const EDGE_SWIPE_MAX_PULL = 132;
 
-export default function CalendarView({ user, onUpdatePreferences, isInitialSetup = false, onLogout }: Props) {
+export default function CalendarView({ user, onUpdatePreferences, isInitialSetup = false, forcePinChange = false, onLogout }: Props) {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [view, setView] = useState<'month' | 'week'>('month');
   const [rawEvents, setRawEvents] = useState<AppEvent[]>([]);
@@ -412,7 +413,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
   const WEEK_HOURS = ['07:00', '08:00', '09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '18:00', '19:00', '20:00', '21:00', '22:00'];
   
   return (
-    <div className={`flex h-screen ${theme.bgApp} ${theme.textMain} relative`}>
+    <div className={`fixed inset-0 flex h-[100dvh] max-h-[100dvh] overflow-hidden ${theme.bgApp} ${theme.textMain}`}>
       {/* Mobile Menu Overlay */}
       {isMobileMenuOpen && (
         <div 
@@ -422,7 +423,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
       )}
 
       {/* Left Sidebar */}
-      <aside className={`fixed inset-y-0 left-0 z-50 transform ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} md:relative md:translate-x-0 transition-transform duration-200 w-64 md:w-60 border-r ${theme.border} flex flex-col shrink-0 ${theme.bgSidebar}`}>
+      <aside className={`fixed inset-y-0 left-0 z-50 transform ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} md:relative md:translate-x-0 transition-transform duration-200 w-64 md:w-60 border-r ${theme.border} flex min-h-0 flex-col shrink-0 ${theme.bgSidebar}`}>
         <div className={`px-4 py-3 border-b ${theme.border} ${theme.bgApp} flex justify-between items-center`}>
           <div>
             <h1 className="font-semibold text-base tracking-tight mb-0.5">Jahrgangskalender</h1>
@@ -444,7 +445,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
           </button>
         </div>
         
-        <div className="p-3 flex-1 flex flex-col">
+        <div className="p-3 flex-1 min-h-0 overflow-y-auto flex flex-col">
           <div className={`font-bold text-xs uppercase ${theme.textMuted} mb-2 flex justify-between`}>
             <span>Legende</span>
           </div>
@@ -531,7 +532,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
       </aside>
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
         {/* Header toolbar */}
         <header className={`flex items-center px-3 py-2 border-b ${theme.border} ${theme.bgToolbar} gap-2 md:gap-3 flex-wrap`}>
           <button 
@@ -579,7 +580,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
         </header>
 
         {/* Calendar Grid */}
-        <div className={`relative flex-1 overflow-auto ${theme.bgApp} flex flex-col`} onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd} onTouchCancel={handleTouchCancel}>
+        <div className={`relative flex-1 min-h-0 overflow-auto ${theme.bgApp} flex flex-col`} onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd} onTouchCancel={handleTouchCancel}>
           {edgeSwipePreview && (
             <div
               className={`pointer-events-none fixed top-1/2 z-[70] grid h-11 w-11 -translate-y-1/2 place-items-center rounded-full bg-blue-600 text-white shadow-xl ring-1 ring-white/30 transition-[opacity,transform] duration-75 ${
@@ -600,7 +601,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
           )}
           {view === 'week' ? (
             /* --- HOURLY WEEK VIEW --- */
-            <div className="flex-1 overflow-auto flex flex-col min-w-[700px]">
+            <div className="flex-1 min-h-0 overflow-auto flex flex-col min-w-[700px]">
               {/* Week View Header */}
               <div className={`grid grid-cols-[60px_1fr_1fr_1fr_1fr_1fr_1fr_1fr] border-b ${theme.border} ${theme.bgGridHeader} sticky top-0 z-20`}>
                 <div className={`p-2 border-r ${theme.border} text-center font-bold text-xs ${theme.textFaint} flex items-center justify-center`}>
@@ -672,7 +673,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
               </div>
 
               {/* Section: Hourly Timeline (07:00 - 22:00) */}
-              <div className="flex-1 overflow-y-auto">
+              <div className="flex-1 min-h-0 overflow-y-auto">
                 {WEEK_HOURS.map((hour) => {
                   const hourNum = parseInt(hour.split(':')[0], 10);
                   return (
@@ -721,7 +722,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
             </div>
           ) : (
             /* --- MONTH VIEW --- */
-            <div className="min-w-[700px] flex-1 flex flex-col">
+            <div className="min-w-[700px] flex-1 min-h-0 flex flex-col">
               {/* Day Headers */}
               <div className={`grid grid-cols-[40px_1fr_1fr_1fr_1fr_1fr_1fr_1fr] border-b ${theme.border} ${theme.bgGridHeader} sticky top-0 z-20`}>
                 <div className={`p-2 border-r ${theme.border}`}></div>
@@ -911,7 +912,8 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
           initialCourses={user.courses}
           allCourses={allCourses}
           categories={categories}
-          defaultTab={isInitialSetup ? 'kurse' : 'allgemein'}
+          defaultTab={forcePinChange ? 'allgemein' : isInitialSetup ? 'kurse' : 'allgemein'}
+          forcePinChange={forcePinChange}
           onSave={onUpdatePreferences}
           username={user.username}
           onCategoriesChanged={async () => { await Promise.all([loadCategories(), loadEvents()]); }}

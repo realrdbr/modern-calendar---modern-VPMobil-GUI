@@ -397,6 +397,13 @@ class AccountStore:
                         color TEXT NOT NULL,
                         sort_order INTEGER NOT NULL DEFAULT 0
                     );
+                    CREATE TABLE IF NOT EXISTS courses (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        teacher TEXT NOT NULL DEFAULT '',
+                        type TEXT NOT NULL DEFAULT 'GK',
+                        sort_order INTEGER NOT NULL DEFAULT 999
+                    );
                     """
                 )
                 self._sqlite_add_column_if_missing(connection, "users", "pin_hash", "TEXT NOT NULL DEFAULT ''")
@@ -756,7 +763,7 @@ class AccountStore:
                 )
         return row is not None
 
-    def _ensure_shared_calendar_user(self, connection: Any, username: str, pin: str) -> None:
+    def _ensure_shared_calendar_user(self, connection: Any, username: str, pin: str | None) -> None:
         if self._backend != "mysql":
             return
         self._run(
@@ -766,7 +773,7 @@ class AccountStore:
             VALUES (?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE pin = VALUES(pin)
             """,
-            (username.lower(), "[]", _hash_shared_pin(pin), json.dumps({}), "ACTIVE"),
+            (username.lower(), "[]", _hash_shared_pin(pin) if pin else None, json.dumps({}), "ACTIVE"),
         )
 
     def _bootstrap_vp_user_from_calendar(
@@ -935,7 +942,8 @@ class AccountStore:
         ntfy_username: str, ntfy_password: str,
     ) -> User:
         username = validate_username(username)
-        validate_pin(pin)
+        if pin:
+            validate_pin(pin)
         if not class_name.strip() or len(class_name) > 64:
             raise ValueError("Die Klasse ist ungültig.")
         encrypted_password = self._fernet.encrypt(ntfy_password.encode("utf-8"))
@@ -947,7 +955,7 @@ class AccountStore:
                         """INSERT INTO users
                         (username, pin_hash, class_name, ntfy_topic, ntfy_username, ntfy_password_encrypted, created_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                        (username, self._hasher.hash(pin), class_name.strip(), ntfy_topic,
+                        (username, self._hasher.hash(pin) if pin else "", class_name.strip(), ntfy_topic,
                          ntfy_username, encrypted_password, to_db_time(utcnow())),
                     )
                     last_id = cursor.lastrowid
@@ -958,7 +966,7 @@ class AccountStore:
                         VALUES (?, ?, ?, ?, ?)
                         ON CONFLICT(username) DO UPDATE SET pin = excluded.pin
                         """,
-                        (username, "[]", _hash_shared_pin(pin), json.dumps({}), "ACTIVE"),
+                        (username, "[]", _hash_shared_pin(pin) if pin else None, json.dumps({}), "ACTIVE"),
                     )
                     row = self._fetchone(connection, "SELECT * FROM users WHERE id = ?", (last_id,))
                     return self._user_from_row(row)
@@ -1035,6 +1043,196 @@ class AccountStore:
             for row in rows
         ]
 
+    def list_admin_panel_users(self) -> list[dict[str, Any]]:
+        with self._connection() as connection:
+            if self._backend == "sqlite":
+                rows = self._fetchall(
+                    connection,
+                    """SELECT * FROM (
+                    SELECT users.username, users.class_name, users.active,
+                              CASE WHEN only_users.username IS NULL THEN 0 ELSE 1 END AS vp_only,
+                              COALESCE(calendar_users.status, 'ACTIVE') AS calendar_status
+                    FROM users
+                    LEFT JOIN vp_only_users only_users ON only_users.user_id = users.id
+                    LEFT JOIN calendar_users ON calendar_users.username = users.username COLLATE NOCASE
+                    UNION
+                    SELECT calendar_users.username, '', 1,
+                              0 AS vp_only, COALESCE(calendar_users.status, 'ACTIVE') AS calendar_status
+                    FROM calendar_users
+                    LEFT JOIN users ON users.username = calendar_users.username COLLATE NOCASE
+                    WHERE users.id IS NULL
+                    ) listed_users
+                    ORDER BY LOWER(username) ASC""",
+                )
+            else:
+                rows = self._fetchall(
+                    connection,
+                    """SELECT vp.username, vp.class_name, vp.active,
+                              IF(only_users.username IS NULL, 0, 1) AS vp_only,
+                              COALESCE(u.status, 'ACTIVE') AS calendar_status
+                    FROM vp_users vp
+                    LEFT JOIN vp_only_users only_users ON only_users.user_id = vp.id
+                    LEFT JOIN users u ON LOWER(u.username) = LOWER(vp.username)
+                    UNION
+                    SELECT u.username, COALESCE(vp.class_name, ''), 1,
+                              0 AS vp_only, COALESCE(u.status, 'ACTIVE') AS calendar_status
+                    FROM users u
+                    LEFT JOIN vp_users vp ON LOWER(vp.username) = LOWER(u.username)
+                    WHERE vp.id IS NULL
+                    ORDER BY username ASC""",
+                )
+        users = []
+        for row in rows:
+            vp_only = bool(row["vp_only"])
+            calendar_status = row["calendar_status"] or "ACTIVE"
+            users.append({
+                "username": row["username"],
+                "class_name": row["class_name"] or "",
+                "kind": "VP-only" if vp_only else "Kalender + VP",
+                "status": "BLOCKED" if vp_only and not bool(row["active"]) else calendar_status,
+                "vp_only": vp_only,
+                "can_set_calendar_status": not vp_only,
+                "is_admin": (not vp_only) and calendar_status == "ADMIN",
+            })
+        return users
+
+    def set_calendar_status(self, username: str, status: str) -> None:
+        username = validate_username(username)
+        if status not in {"ACTIVE", "READ_ONLY", "BLOCKED"}:
+            raise ValueError("Ungültiger Status.")
+        with self._connection() as connection:
+            if self._backend == "sqlite":
+                cursor = self._execute(
+                    connection,
+                    "UPDATE calendar_users SET status = ? WHERE username = ? COLLATE NOCASE AND status <> 'ADMIN'",
+                    (status, username),
+                )
+            else:
+                cursor = self._execute(
+                    connection,
+                    "UPDATE users SET status = ? WHERE LOWER(username) = LOWER(?) AND status <> 'ADMIN'",
+                    (status, username),
+                )
+            changed = cursor.rowcount
+            if self._backend == "mysql":
+                cursor.close()
+            if changed != 1:
+                raise ValueError("Kalendernutzer nicht gefunden oder nicht änderbar.")
+            if status == "BLOCKED":
+                self.delete_user_sessions(username)
+
+    def get_global_calendar_categories(self) -> list[dict[str, Any]]:
+        table = "calendar_event_categories" if self._backend == "sqlite" else "event_categories"
+        with self._connection() as connection:
+            rows = self._fetchall(connection, f"SELECT id, name, color, sort_order FROM {table} ORDER BY sort_order ASC, name ASC")
+        return [{"id": row["id"], "name": row["name"], "color": row["color"], "sort_order": int(row["sort_order"])} for row in rows]
+
+    def save_global_calendar_category(self, category_id: str, name: str, color: str) -> None:
+        category_id = category_id.strip().upper().replace(" ", "_")
+        name = name.strip()
+        color = color.strip()
+        if not category_id or len(category_id) > 64 or not name or len(name) > 64:
+            raise ValueError("Ungültige Kategorie.")
+        if not (len(color) == 7 and color.startswith("#") and all(char in "0123456789abcdefABCDEF" for char in color[1:])):
+            raise ValueError("Ungültige Farbe.")
+        table = "calendar_event_categories" if self._backend == "sqlite" else "event_categories"
+        with self._connection() as connection:
+            order_row = self._fetchone(connection, f"SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM {table}")
+            sort_order = int(order_row["next_order"] or 0)
+            if self._backend == "sqlite":
+                self._run(
+                    connection,
+                    f"""INSERT INTO {table}(id, name, color, sort_order) VALUES (?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET name = excluded.name, color = excluded.color""",
+                    (category_id, name, color, sort_order),
+                )
+            else:
+                self._run(
+                    connection,
+                    f"""INSERT INTO {table}(id, name, color, sort_order) VALUES (?, ?, ?, ?)
+                    ON DUPLICATE KEY UPDATE name = VALUES(name), color = VALUES(color)""",
+                    (category_id, name, color, sort_order),
+                )
+
+    def delete_global_calendar_category(self, category_id: str) -> None:
+        category_id = category_id.strip()
+        if not category_id or len(category_id) > 64:
+            raise ValueError("Ungültige Kategorie.")
+        table = "calendar_event_categories" if self._backend == "sqlite" else "event_categories"
+        with self._connection() as connection:
+            self._run(connection, f"DELETE FROM {table} WHERE id = ?", (category_id,))
+
+    def get_global_courses(self) -> list[dict[str, Any]]:
+        with self._connection() as connection:
+            rows = self._fetchall(connection, "SELECT id, name, teacher, type, sort_order FROM courses ORDER BY sort_order ASC, name ASC")
+        return [{"id": row["id"], "name": row["name"], "teacher": row["teacher"], "type": row["type"], "sort_order": int(row["sort_order"])} for row in rows]
+
+    def save_global_course(self, course_id: str, name: str, teacher: str, course_type: str) -> None:
+        course_id = course_id.strip() or name.strip()
+        name = name.strip() or course_id
+        teacher = teacher.strip()
+        if not course_id or len(course_id) > 64 or not name or len(name) > 64 or len(teacher) > 64:
+            raise ValueError("Ungültiger Kurs.")
+        if course_type not in {"LK", "GK", "AG"}:
+            raise ValueError("Ungültiger Kurstyp.")
+        with self._connection() as connection:
+            order_row = self._fetchone(connection, "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM courses")
+            sort_order = int(order_row["next_order"] or 0)
+            if self._backend == "sqlite":
+                self._run(
+                    connection,
+                    """INSERT INTO courses(id, name, teacher, type, sort_order) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET name = excluded.name, teacher = excluded.teacher, type = excluded.type""",
+                    (course_id, name, teacher, course_type, sort_order),
+                )
+            else:
+                self._run(
+                    connection,
+                    """INSERT INTO courses(id, name, teacher, type, sort_order) VALUES (?, ?, ?, ?, ?)
+                    ON DUPLICATE KEY UPDATE name = VALUES(name), teacher = VALUES(teacher), type = VALUES(type)""",
+                    (course_id, name, teacher, course_type, sort_order),
+                )
+
+    def delete_global_course(self, course_id: str) -> None:
+        course_id = course_id.strip()
+        if not course_id or len(course_id) > 64:
+            raise ValueError("Ungültiger Kurs.")
+        with self._connection() as connection:
+            self._run(connection, "DELETE FROM courses WHERE id = ?", (course_id,))
+
+    def reorder_global_courses(self, course_ids: list[str], course_types: list[str]) -> None:
+        if len(course_ids) != len(course_types) or len(course_ids) > 500:
+            raise ValueError("Ungültige Kurs-Reihenfolge.")
+        normalized: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for course_id, course_type in zip(course_ids, course_types):
+            course_id = str(course_id).strip()
+            course_type = str(course_type).strip().upper()
+            if not course_id or len(course_id) > 64 or course_type not in {"LK", "GK", "AG"}:
+                raise ValueError("Ungültige Kurs-Reihenfolge.")
+            lowered = course_id.lower()
+            if lowered in seen:
+                raise ValueError("Doppelte Kurse in der Reihenfolge.")
+            seen.add(lowered)
+            normalized.append((course_id, course_type))
+        if not normalized:
+            return
+        with self._connection() as connection:
+            existing_rows = self._fetchall(
+                connection,
+                f"SELECT id FROM courses WHERE LOWER(id) IN ({','.join('?' for _ in normalized)})",
+                tuple(course_id.lower() for course_id, _course_type in normalized),
+            )
+            existing = {str(row["id"]).lower() for row in existing_rows}
+            if existing != {course_id.lower() for course_id, _course_type in normalized}:
+                raise ValueError("Mindestens ein Kurs existiert nicht.")
+            for sort_order, (course_id, course_type) in enumerate(normalized):
+                self._run(
+                    connection,
+                    "UPDATE courses SET sort_order = ?, type = ? WHERE LOWER(id) = LOWER(?)",
+                    (sort_order, course_type, course_id),
+                )
+
     def change_vp_only_pin(self, username: str, new_pin: str) -> None:
         username = validate_username(username)
         validate_pin(new_pin)
@@ -1050,21 +1248,132 @@ class AccountStore:
             if changed != 1:
                 raise ValueError("PIN kann nur für aktive VP-only-Nutzer geändert werden.")
 
+    def admin_set_user_pin(self, username: str, new_pin: str) -> None:
+        username = validate_username(username)
+        validate_pin(new_pin)
+        with self._connection() as connection:
+            if self._backend == "sqlite":
+                vp_only_row = self._fetchone(
+                    connection,
+                    """SELECT only_users.user_id
+                    FROM vp_only_users only_users
+                    JOIN users ON users.id = only_users.user_id
+                    WHERE users.username = ? COLLATE NOCASE AND users.active = 1 AND only_users.active = 1""",
+                    (username,),
+                )
+                if vp_only_row:
+                    self._run(
+                        connection,
+                        "UPDATE vp_only_users SET pin_hash = ?, must_change_pin = 1 WHERE user_id = ?",
+                        (self._hasher.hash(new_pin), vp_only_row["user_id"]),
+                    )
+                    self._run(connection, "DELETE FROM sessions WHERE user_id = ?", (vp_only_row["user_id"],))
+                    self._run(connection, "DELETE FROM vp_only_sessions WHERE username = ? COLLATE NOCASE", (username,))
+                    return
+                current = self._fetchone(
+                    connection,
+                    "SELECT preferences FROM calendar_users WHERE username = ? COLLATE NOCASE",
+                    (username,),
+                )
+                if not current:
+                    raise ValueError("Benutzer nicht gefunden.")
+                try:
+                    preferences = json.loads(current["preferences"] or "{}")
+                except json.JSONDecodeError:
+                    preferences = {}
+                preferences["forcePinChange"] = True
+                self._run(
+                    connection,
+                    "UPDATE users SET pin_hash = ? WHERE username = ? COLLATE NOCASE",
+                    (self._hasher.hash(new_pin), username),
+                )
+                self._run(
+                    connection,
+                    "UPDATE calendar_users SET pin = ?, preferences = ? WHERE username = ? COLLATE NOCASE",
+                    (_hash_shared_pin(new_pin), json.dumps(preferences), username),
+                )
+                self._run(
+                    connection,
+                    "DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE username = ? COLLATE NOCASE)",
+                    (username,),
+                )
+                self._run(connection, "DELETE FROM vp_only_sessions WHERE username = ? COLLATE NOCASE", (username,))
+            else:
+                vp_only_row = self._fetchone(
+                    connection,
+                    """SELECT only_users.user_id
+                    FROM vp_only_users only_users
+                    JOIN vp_users vp ON vp.id = only_users.user_id
+                    LEFT JOIN users u ON LOWER(u.username) = LOWER(vp.username)
+                    WHERE LOWER(vp.username) = LOWER(?) AND u.username IS NULL AND vp.active = 1 AND only_users.active = 1""",
+                    (username,),
+                )
+                if vp_only_row:
+                    self._run(
+                        connection,
+                        "UPDATE vp_only_users SET pin_hash = ?, must_change_pin = 1 WHERE user_id = ?",
+                        (self._hasher.hash(new_pin), vp_only_row["user_id"]),
+                    )
+                    self._run(connection, "DELETE FROM vp_only_sessions WHERE LOWER(username) = LOWER(?)", (username,))
+                    return
+                current = self._fetchone(connection, "SELECT preferences FROM users WHERE LOWER(username) = LOWER(?)", (username,))
+                if not current:
+                    raise ValueError("Benutzer nicht gefunden.")
+                try:
+                    preferences = json.loads(current["preferences"] or "{}")
+                except json.JSONDecodeError:
+                    preferences = {}
+                preferences["forcePinChange"] = True
+                self._run(
+                    connection,
+                    "UPDATE users SET pin = ?, preferences = ? WHERE LOWER(username) = LOWER(?)",
+                    (_hash_shared_pin(new_pin), json.dumps(preferences), username),
+                )
+                self._run(connection, "UPDATE vp_users SET pin_hash = '' WHERE LOWER(username) = LOWER(?)", (username,))
+                self._run(connection, "DELETE FROM app_sessions WHERE LOWER(username) = LOWER(?)", (username,))
+                self._run(connection, "DELETE FROM vp_only_sessions WHERE LOWER(username) = LOWER(?)", (username,))
+
     def delete_user(self, username: str) -> None:
         username = validate_username(username)
         with self._connection() as connection:
             if self._backend == "sqlite":
+                user_id_row = self._fetchone(
+                    connection,
+                    "SELECT id FROM users WHERE username = ? COLLATE NOCASE",
+                    (username,),
+                )
                 cursor = self._execute(connection, "DELETE FROM users WHERE username = ? COLLATE NOCASE", (username,))
-                deleted = cursor.rowcount
-                self._run(connection, "DELETE FROM calendar_users WHERE username = ? COLLATE NOCASE", (username,))
+                deleted = max(cursor.rowcount, 0)
+                cursor = self._execute(connection, "DELETE FROM calendar_users WHERE username = ? COLLATE NOCASE", (username,))
+                deleted += max(cursor.rowcount, 0)
+                cursor = self._execute(connection, "DELETE FROM vp_only_sessions WHERE username = ? COLLATE NOCASE", (username,))
+                deleted += max(cursor.rowcount, 0)
+                if user_id_row:
+                    cursor = self._execute(connection, "DELETE FROM vp_only_users WHERE user_id = ?", (user_id_row["id"],))
+                    deleted += max(cursor.rowcount, 0)
             else:
                 cursor = self._execute(connection, "DELETE FROM vp_users WHERE LOWER(username) = LOWER(?)", (username,))
-                deleted = cursor.rowcount
-                self._run(connection, "DELETE FROM users WHERE LOWER(username) = LOWER(?)", (username,))
+                deleted = max(cursor.rowcount, 0)
+                if self._backend == "mysql":
+                    cursor.close()
+                cursor = self._execute(connection, "DELETE FROM users WHERE LOWER(username) = LOWER(?)", (username,))
+                deleted += max(cursor.rowcount, 0)
+                if self._backend == "mysql":
+                    cursor.close()
+                cursor = self._execute(connection, "DELETE FROM vp_only_sessions WHERE LOWER(username) = LOWER(?)", (username,))
+                deleted += max(cursor.rowcount, 0)
+                if self._backend == "mysql":
+                    cursor.close()
+                cursor = self._execute(
+                    connection,
+                    "DELETE FROM app_sessions WHERE LOWER(username) = LOWER(?)",
+                    (username,),
+                )
+                deleted += max(cursor.rowcount, 0)
             if self._backend == "mysql":
                 cursor.close()
-            if deleted != 1:
-                raise ValueError("Benutzer nicht gefunden.")
+            if deleted < 1:
+                return
 
     def set_pin(self, username: str, pin: str) -> None:
         username = validate_username(username)

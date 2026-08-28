@@ -22,6 +22,7 @@ export interface UserPreferences {
   colorSonstiges: string;
   colorFerien: string;
   categoryColors?: Record<string, string>;
+  forcePinChange?: boolean;
 }
 
 export interface User {

@@ -12,6 +12,7 @@ interface Props {
   allCourses?: Course[];
   categories?: EventCategory[];
   defaultTab?: 'allgemein' | 'design' | 'kurse' | 'feedback';
+  forcePinChange?: boolean;
   onSave: (prefs: UserPreferences, newPin?: string, newCourses?: string[], oldPin?: string) => void;
   username: string;
   onCategoriesChanged?: () => Promise<void> | void;
@@ -31,6 +32,7 @@ export default function SettingsModal({
     { id: 'FERIEN', name: 'Freie Tage / Ferien', color: '#f1c40f' }
   ],
   defaultTab = 'allgemein',
+  forcePinChange = false,
   onSave,
   username,
   onCategoriesChanged
@@ -68,6 +70,15 @@ export default function SettingsModal({
 
   if (!isOpen) return null;
 
+  const requestClose = () => {
+    if (forcePinChange) {
+      alert('Bitte ändere zuerst deine PIN.');
+      setActiveTab('allgemein');
+      return;
+    }
+    onClose();
+  };
+
   const toggleCourse = (id: string) => {
     const targetId = id === 'Chor' ? 'CHO' : id;
     const newSelected = new Set<string>();
@@ -96,6 +107,11 @@ export default function SettingsModal({
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
+    if (forcePinChange && !/^\d{4}$/.test(newPin.trim())) {
+      alert('Bitte lege zuerst eine neue vierstellige PIN fest.');
+      setActiveTab('allgemein');
+      return;
+    }
     onSave(
       {
         darkMode,
@@ -105,7 +121,8 @@ export default function SettingsModal({
         colorHausaufgabe: categoryColors['HAUSAUFGABE'] || colorHausaufgabe,
         colorSonstiges: categoryColors['SONSTIGES'] || colorSonstiges,
         colorFerien: categoryColors['FERIEN'] || colorFerien,
-        categoryColors
+        categoryColors,
+        forcePinChange: false
       },
       newPin.trim() !== '' ? newPin.trim() : undefined,
       Array.from(selectedCourses),
@@ -237,7 +254,7 @@ export default function SettingsModal({
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={requestClose}
             aria-label="Schließen"
             className={`p-1.5 rounded-lg ${theme.bgHover} ${theme.textMuted} hover:${theme.textMain} transition-colors`}
           >
@@ -286,7 +303,7 @@ export default function SettingsModal({
             </h2>
             <button
               type="button"
-              onClick={onClose}
+              onClick={requestClose}
               aria-label="Schließen"
               className={`p-1.5 rounded-lg ${theme.bgHover} ${theme.textFaint} hover:${theme.textMain} transition-colors`}
             >
@@ -322,7 +339,7 @@ export default function SettingsModal({
                     </p>
                   </div>
                   <div className="max-w-xs space-y-4">
-                    {hasPin && (
+                    {hasPin && !forcePinChange && (
                       <div>
                         <label className={`block text-xs sm:text-sm font-semibold ${theme.textMuted} mb-1.5`}>
                           Aktueller PIN-Code
@@ -340,7 +357,7 @@ export default function SettingsModal({
 
                     <div>
                       <label className={`block text-xs sm:text-sm font-semibold ${theme.textMuted} mb-1.5`}>
-                        {hasPin ? 'Neuer PIN-Code (optional)' : '4-stelliger PIN-Code festlegen'}
+                        {forcePinChange ? 'Neue persönliche PIN festlegen' : hasPin ? 'Neuer PIN-Code (optional)' : '4-stelliger PIN-Code festlegen'}
                       </label>
                       <input
                         type="password"
@@ -553,7 +570,7 @@ export default function SettingsModal({
             <div className={`flex items-center justify-end p-4 sm:p-5 border-t ${theme.border} ${theme.bgModal} gap-2`}>
               <button
                 type="button"
-                onClick={onClose}
+                onClick={requestClose}
                 className={`px-5 py-2.5 text-xs sm:text-sm font-semibold ${theme.textMuted} ${theme.bgHover} rounded-xl transition-colors cursor-pointer`}
               >
                 Abbrechen

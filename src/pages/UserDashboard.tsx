@@ -233,6 +233,7 @@ export default function UserDashboard() {
       if (newPin !== undefined) {
         updateData.newPin = newPin;
         updateData.oldPin = oldPin;
+        updateData.preferences = { ...preferences, forcePinChange: false };
       }
       if (newCourses !== undefined) {
         updateData.courses = newCourses;
@@ -374,7 +375,8 @@ export default function UserDashboard() {
     <CalendarView
       user={user}
       onUpdatePreferences={handleUpdatePreferences}
-      isInitialSetup={user.courses.length === 0}
+      isInitialSetup={user.courses.length === 0 || !!user.preferences.forcePinChange}
+      forcePinChange={!!user.preferences.forcePinChange}
       onLogout={handleLogout}
     />
   );

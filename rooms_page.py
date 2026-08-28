@@ -72,6 +72,12 @@ def render_rooms_page(
     plan_version: str = "",
     logout_csrf_token: str | None = None,
     is_admin: bool = False,
+    admin_authenticated: bool = False,
+    admin_users: list[dict[str, object]] | None = None,
+    admin_categories: list[dict[str, object]] | None = None,
+    admin_courses: list[dict[str, object]] | None = None,
+    admin_modal_error: str | None = None,
+    admin_modal_success: str | None = None,
     can_change_pin: bool = False,
     force_pin_change: bool = False,
     pin_modal_error: str | None = None,
@@ -257,7 +263,7 @@ def render_rooms_page(
                 <p>Freie Räume nach Datum und Stunde anzeigen.</p>
             </div>
 
-            {render_vp_navigation("rooms", logout_csrf_token, is_admin=is_admin, can_change_pin=can_change_pin, force_pin_change=force_pin_change, pin_modal_error=pin_modal_error, pin_modal_changed=pin_modal_changed, vp_user_modal_error=vp_user_modal_error, vp_user_modal_created=vp_user_modal_created, session_username=session_username)}
+            {render_vp_navigation("rooms", logout_csrf_token, is_admin=is_admin, admin_authenticated=admin_authenticated, admin_users=admin_users, admin_categories=admin_categories, admin_courses=admin_courses, admin_modal_error=admin_modal_error, admin_modal_success=admin_modal_success, can_change_pin=can_change_pin, force_pin_change=force_pin_change, pin_modal_error=pin_modal_error, pin_modal_changed=pin_modal_changed, vp_user_modal_error=vp_user_modal_error, vp_user_modal_created=vp_user_modal_created, session_username=session_username)}
         </header>
 
         <section class="panel">

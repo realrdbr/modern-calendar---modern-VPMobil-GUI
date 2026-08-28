@@ -89,6 +89,53 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         self.assertIsNotNone(changed)
         self.assertFalse(changed.must_change_pin)
 
+    def test_admin_set_pin_forces_next_user_pin_change(self):
+        import json
+        vp_user = self.store.create_vp_only_user(
+            "vpguest", "2468", "11", created_by="alice",
+            ntfy_topic="vpmobil-vpguest", ntfy_username="ntfy_vpguest", ntfy_password="secret",
+        )
+        self.store.change_vp_only_pin("vpguest", "1357")
+        self.store.admin_set_user_pin("alice", "9999")
+        self.store.admin_set_user_pin("vpguest", "8642")
+
+        self.assertIsNone(self.store.authenticate("alice", "1234", "127.0.0.1"))
+        self.assertEqual(self.store.authenticate("alice", "9999", "127.0.0.1").username, "alice")
+        self.assertIsNone(self.store.authenticate("vpguest", "1357", "127.0.0.1"))
+        changed_vp = self.store.authenticate("vpguest", "8642", "127.0.0.1")
+        self.assertIsNotNone(changed_vp)
+        self.assertTrue(changed_vp.must_change_pin)
+
+        with self.store._connection() as connection:
+            preferences = connection.execute(
+                "SELECT preferences FROM calendar_users WHERE username = ?",
+                ("alice",),
+            ).fetchone()[0]
+        self.assertTrue(json.loads(preferences)["forcePinChange"])
+
+    def test_global_courses_can_be_reordered_and_moved_between_sections(self):
+        self.store.save_global_course("MA1", "Mathe", "Kön", "GK")
+        self.store.save_global_course("DE1", "Deutsch", "Hof", "GK")
+        self.store.save_global_course("CH1", "Chemie", "Ada", "LK")
+
+        self.store.reorder_global_courses(["DE1", "CH1", "MA1"], ["LK", "LK", "AG"])
+
+        courses = self.store.get_global_courses()
+        self.assertEqual([course["id"] for course in courses], ["DE1", "CH1", "MA1"])
+        self.assertEqual([course["type"] for course in courses], ["LK", "LK", "AG"])
+
+    def test_delete_user_removes_calendar_only_leftover_account(self):
+        import sqlite3
+        with sqlite3.connect(Path(self.temp.name) / "accounts.sqlite") as connection:
+            connection.execute(
+                "INSERT INTO calendar_users(username, courses, pin, preferences, status) VALUES (?, ?, ?, ?, ?)",
+                ("leftover", "[]", None, "{}", "ACTIVE"),
+            )
+
+        self.assertTrue(any(row["username"] == "leftover" for row in self.store.list_admin_panel_users()))
+        self.store.delete_user("leftover")
+        self.assertFalse(any(row["username"] == "leftover" for row in self.store.list_admin_panel_users()))
+
     def test_admin_navigation_is_only_rendered_for_admin_flag(self):
         vp_user = self.store.create_vp_only_user(
             "vpguest", "2468", "11", created_by="alice",
@@ -111,9 +158,26 @@ class AccountAndSubscriptionTests(unittest.TestCase):
             [CalendarEventTypeOption("KLAUSUR", "Klausur")],
             "csrf", "https://ntfy.invalid", can_change_pin=True,
         )
-        self.assertNotIn("VP-Nutzer hinzufügen", normal_page)
-        self.assertIn("VP-Nutzer hinzufügen", admin_page)
-        self.assertNotIn("VP-Nutzer hinzufügen", vp_only_page)
+        self.assertNotIn("data-admin-modal-open", normal_page)
+        self.assertIn("data-admin-modal-open", admin_page)
+        self.assertIn("Admin-Passwort", admin_page)
+        self.assertNotIn("Alle Benutzer", admin_page)
+        elevated_admin_page = render_subscriptions(
+            self.alice, ["11"], ("11",), {"11": []}, {"11": set()},
+            NotifySettings(), [], "csrf", "https://ntfy.invalid", is_admin=True, admin_authenticated=True,
+            admin_courses=[{"id": "MA1", "name": "Mathe", "teacher": "Kön", "type": "LK", "sort_order": 0}],
+            admin_modal_success="__open__",
+        )
+        self.assertIn("calendar-admin-sidebar", elevated_admin_page)
+        self.assertIn("admin-tab-button", elevated_admin_page)
+        self.assertIn("data-admin-course-save-form", elevated_admin_page)
+        self.assertIn('data-admin-course-move="left"', elevated_admin_page)
+        self.assertIn('name="teacher"', elevated_admin_page)
+        self.assertIn('data-admin-authenticated="1"', elevated_admin_page)
+        self.assertIn("/admin/lock", elevated_admin_page)
+        self.assertNotIn("__open__", elevated_admin_page)
+        self.assertNotIn("Adminbereich entsperrt", elevated_admin_page)
+        self.assertNotIn("data-admin-modal-open", vp_only_page)
         self.assertIn("data-pin-modal-open", vp_only_page)
         self.assertNotIn("Kalender-Benachrichtigungen aktiv", vp_only_page)
         self.assertNotIn('name="calendar_event_type"', vp_only_page)
@@ -150,6 +214,24 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         self.assertIn("dx > 0 && gesture.canPullFromLeft", calendar_view)
         self.assertIn("dx < 0 && gesture.canPullFromRight", calendar_view)
         self.assertIn("edge: null", calendar_view)
+
+    def test_calendar_layout_uses_dynamic_viewport_and_scrolls_only_calendar_area(self):
+        calendar_view = (Path(__file__).resolve().parent.parent / "src/components/CalendarView.tsx").read_text(encoding="utf-8")
+        self.assertIn("fixed inset-0", calendar_view)
+        self.assertIn("h-[100dvh]", calendar_view)
+        self.assertIn("max-h-[100dvh]", calendar_view)
+        self.assertIn("flex-1 min-h-0 overflow-auto", calendar_view)
+        index_css = (Path(__file__).resolve().parent.parent / "src/index.css").read_text(encoding="utf-8")
+        self.assertIn("#root", index_css)
+        self.assertIn("overflow: hidden", index_css)
+
+    def test_calendar_admin_modal_mobile_tabs_are_top_compact_and_reauths_every_open(self):
+        admin_modal = (Path(__file__).resolve().parent.parent / "src/components/AdminModal.tsx").read_text(encoding="utf-8")
+        self.assertIn("flex-col sm:flex-row", admin_modal)
+        self.assertIn("border-b sm:border-b-0 sm:border-r", admin_modal)
+        self.assertIn("p-2 sm:p-4 flex flex-row sm:flex-col", admin_modal)
+        self.assertIn("setIsAuthenticated(false)", admin_modal)
+        self.assertIn("setAdminToken('')", admin_modal)
 
     def test_ntfy_history_is_cleared_only_once_per_calendar_day(self):
         cache = Path(self.temp.name) / "cache.db"
@@ -922,10 +1004,14 @@ class AccountAndSubscriptionTests(unittest.TestCase):
             user_columns = {row["name"] for row in connection.execute("PRAGMA table_info(users)")}
             calendar_user_columns = {row["name"] for row in connection.execute("PRAGMA table_info(calendar_users)")}
             calendar_event_columns = {row["name"] for row in connection.execute("PRAGMA table_info(calendar_events)")}
+            courses_table = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'courses'",
+            ).fetchone()
         self.assertIn("pin_hash", user_columns)
         self.assertIn("active", user_columns)
         self.assertIn("status", calendar_user_columns)
         self.assertIn("start_time", calendar_event_columns)
+        self.assertIsNotNone(courses_table)
 
     def test_mysql_index_migrations_do_not_depend_on_if_not_exists_syntax(self):
         self.assertNotIn(

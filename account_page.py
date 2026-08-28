@@ -191,6 +191,12 @@ def render_subscriptions(
     error: str | None = None,
     test_sent: bool = False,
     is_admin: bool = False,
+    admin_authenticated: bool = False,
+    admin_users: list[dict[str, object]] | None = None,
+    admin_categories: list[dict[str, object]] | None = None,
+    admin_courses: list[dict[str, object]] | None = None,
+    admin_modal_error: str | None = None,
+    admin_modal_success: str | None = None,
     can_change_pin: bool = False,
     force_pin_change: bool = False,
     pin_modal_error: str | None = None,
@@ -260,7 +266,7 @@ def render_subscriptions(
     """
     return _layout("Ankündigungen · VpMobil", f"""
     <header class=\"topbar\"><div class=\"brand\"><h1>Meine Ankündigungen</h1><p>{escape(user.username)} · Klasse {escape(user.class_name)}</p></div>
-      {render_vp_navigation("notifications", csrf_token, is_admin=is_admin, can_change_pin=can_change_pin, force_pin_change=force_pin_change, pin_modal_error=pin_modal_error, pin_modal_changed=pin_modal_changed, vp_user_modal_error=vp_user_modal_error, vp_user_modal_created=vp_user_modal_created, session_username=session_username)}</header>
+      {render_vp_navigation("notifications", csrf_token, is_admin=is_admin, admin_authenticated=admin_authenticated, admin_users=admin_users, admin_categories=admin_categories, admin_courses=admin_courses, admin_modal_error=admin_modal_error, admin_modal_success=admin_modal_success, can_change_pin=can_change_pin, force_pin_change=force_pin_change, pin_modal_error=pin_modal_error, pin_modal_changed=pin_modal_changed, vp_user_modal_error=vp_user_modal_error, vp_user_modal_created=vp_user_modal_created, session_username=session_username)}</header>
     {message}<section class=\"panel\"><form class=\"stack\" method=\"post\" action=\"/abos\">
       <input type=\"hidden\" name=\"csrf_token\" value=\"{escape(csrf_token)}\">
       {class_inputs}
@@ -315,51 +321,4 @@ def render_subscriptions(
         if (classSelect) activate(classSelect.value);
       }})();
     </script>
-    """)
-
-
-def render_vp_user_admin(
-    user: User,
-    vp_users: list[dict[str, object]],
-    csrf_token: str,
-    *,
-    created: bool = False,
-    error: str | None = None,
-) -> str:
-    message = '<p class="notice success">Der VP-Nutzer wurde angelegt.</p>' if created else ""
-    if error:
-        message = f'<p class="notice">{escape(error)}</p>'
-    rows = "".join(
-        "<tr>"
-        f"<td>{escape(str(row['username']))}</td>"
-        f"<td>{escape(str(row['class_name']))}</td>"
-        f"<td>{'Aktiv' if row['active'] else 'Gesperrt'}</td>"
-        f"<td>{escape(str(row['created_by']))}</td>"
-        "</tr>"
-        for row in vp_users
-    ) or '<tr><td colspan="4" class="muted">Noch keine reinen VP-Nutzer angelegt.</td></tr>'
-    return _layout("VP-Nutzer · VpMobil", f"""
-    <header class=\"topbar\"><div class=\"brand\"><h1>VP-Nutzer hinzufügen</h1><p>{escape(user.username)} · Admin</p></div>
-      {render_vp_navigation("vp-users", csrf_token, is_admin=True, session_username=user.username)}</header>
-    <section class=\"panel\"><div class=\"settings-shell\">
-      {message}
-      <article class=\"settings-card\">
-        <div class=\"settings-card-header\"><div><div class=\"settings-kicker\">Nur Vertretungsplan</div><h2>Neuer Nutzer</h2></div></div>
-        <form method=\"post\" action=\"/vp-nutzer\" class=\"form-grid\">
-          <input type=\"hidden\" name=\"csrf_token\" value=\"{escape(csrf_token)}\">
-          <label>Benutzername<input name=\"username\" required minlength=\"3\" maxlength=\"64\" autocomplete=\"off\" spellcheck=\"false\"></label>
-          <label>Klasse<input name=\"class_name\" required maxlength=\"64\" value=\"{escape(user.class_name)}\"></label>
-          <label>PIN<input name=\"pin\" type=\"password\" inputmode=\"numeric\" pattern=\"[0-9]{{4}}\" minlength=\"4\" maxlength=\"4\" required autocomplete=\"new-password\"></label>
-          <div class=\"save-row\"><button type=\"submit\">Anlegen</button></div>
-        </form>
-      </article>
-      <article class=\"settings-card\">
-        <div class=\"settings-card-header\"><div><div class=\"settings-kicker\">Bestehend</div><h2>VP-only-Nutzer</h2></div></div>
-        <div class=\"table-wrap\"><table>
-          <thead><tr><th>Benutzer</th><th>Klasse</th><th>Status</th><th>Angelegt von</th></tr></thead>
-          <tbody>{rows}</tbody>
-        </table></div>
-      </article>
-    </div></section>
-    <script>(() => {{ const input=document.querySelector('input[name="pin"]'); if(input) input.addEventListener('input',()=>input.value=input.value.replace(/\\D/g,'').slice(0,4)); }})();</script>
     """)

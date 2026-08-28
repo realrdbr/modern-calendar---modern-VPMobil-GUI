@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
 import { v4 as uuidv4 } from 'uuid';
 import {
@@ -9,6 +10,8 @@ import {
   dbGetUser,
   dbGetUsers,
   dbSaveUser,
+  dbAdminSetUserPin,
+  dbCreateVpOnlyUser,
   dbDeleteUser,
   dbGetEvents,
   dbGetPrivateCalendar,
@@ -67,6 +70,56 @@ function eventRetentionCutoff(): string {
 function safeEventUpdate(body: any) {
   const allowed = ['title', 'date', 'endDate', 'startTime', 'endTime', 'courseId', 'type', 'description', 'attachments'];
   return Object.fromEntries(allowed.filter(key => body[key] !== undefined).map(key => [key, body[key]]));
+}
+
+const adminElevations = new Map<string, { tokenHash: string; expiresAt: number }>();
+const adminPasswordAttempts = new Map<string, { count: number; lockUntil: number; lastFailedAt: number }>();
+const ADMIN_ELEVATION_MS = 15 * 60 * 1000;
+const ADMIN_PASSWORD_WINDOW_MS = 15 * 60 * 1000;
+const ADMIN_PASSWORD_LOCK_MS = 30 * 60 * 1000;
+const ADMIN_PASSWORD_MAX_FAILURES = 5;
+
+function adminSecretHash(value: string): string {
+  return crypto.createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function verifyAdminPanelPassword(candidate: unknown): { ok: boolean; error?: string } {
+  const configured = process.env.ADMIN_PANEL_PASSWORD || '';
+  if (configured.length < 12) return { ok: false, error: 'ADMIN_PANEL_PASSWORD ist nicht sicher konfiguriert.' };
+  if (typeof candidate !== 'string' || candidate.length === 0 || candidate.length > 256) return { ok: false };
+  return {
+    ok: crypto.timingSafeEqual(Buffer.from(adminSecretHash(candidate), 'hex'), Buffer.from(adminSecretHash(configured), 'hex'))
+  };
+}
+
+function stableJson(value: Record<string, unknown>): string {
+  const sorted = Object.keys(value).sort().reduce<Record<string, unknown>>((acc, key) => {
+    acc[key] = value[key];
+    return acc;
+  }, {});
+  return JSON.stringify(sorted);
+}
+
+async function callNtfyProvisioner(operation: 'ensure' | 'delete', payload: Record<string, unknown>) {
+  const baseUrl = (process.env.NTFY_PROVISIONER_URL || '').replace(/\/$/, '');
+  const secret = process.env.NTFY_PROVISIONER_SECRET || process.env.APP_ENCRYPTION_KEY || '';
+  if (!baseUrl || !secret) throw new Error('ntfy-Provisionierung ist nicht konfiguriert.');
+  const body = stableJson({ ...payload, timestamp: Math.floor(Date.now() / 1000) });
+  const signature = crypto.createHmac('sha256', secret).update(body).digest('hex');
+  const response = await fetch(`${baseUrl}/${operation}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Provisioner-Signature': signature },
+    body,
+  });
+  if (!response.ok) throw new Error(`ntfy-Provisionierung wurde abgelehnt (${response.status}).`);
+}
+
+async function provisionNtfyReader(topic: string, username: string, password: string) {
+  await callNtfyProvisioner('ensure', { password, topic, username });
+}
+
+async function deleteNtfyReader(username: string) {
+  await callNtfyProvisioner('delete', { username });
 }
 
 async function startServer() {
@@ -309,6 +362,23 @@ async function startServer() {
     });
   };
 
+  const requireElevatedAdmin = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    requireAdmin(req, res, () => {
+      const currentUser = String((req as any).authenticatedUser || '').toLowerCase();
+      const provided = String(req.get('X-Admin-Token') || '');
+      const elevation = adminElevations.get(currentUser);
+      if (!elevation || elevation.expiresAt <= Date.now()) {
+        adminElevations.delete(currentUser);
+        return res.status(403).json({ error: 'Adminbereich nicht entsperrt oder abgelaufen.' });
+      }
+      const providedHash = adminSecretHash(provided);
+      if (!provided || !crypto.timingSafeEqual(Buffer.from(providedHash, 'hex'), Buffer.from(elevation.tokenHash, 'hex'))) {
+        return res.status(403).json({ error: 'Admin-Elevation ungültig.' });
+      }
+      next();
+    });
+  };
+
   const calendarStreams = new Map<express.Response, string>();
   const broadcastCalendarChange = (privateOwner?: string) => {
     const payload = `event: calendar-change\ndata: ${JSON.stringify({ changedAt: Date.now() })}\n\n`;
@@ -368,10 +438,13 @@ async function startServer() {
 
     let pinToSave: string | undefined = undefined;
     if (newPin !== undefined) {
-      if (existing.pin) {
+      if (existing.pin && !existing.preferences?.forcePinChange) {
         if (!oldPin || !verifyPin(oldPin, existing.pin)) {
           return res.status(400).json({ error: 'Der aktuelle PIN ist falsch.' });
         }
+      }
+      if (typeof newPin !== 'string' || !/^\d{4}$/.test(newPin)) {
+        return res.status(400).json({ error: 'Die neue PIN muss exakt vier Ziffern enthalten.' });
       }
       pinToSave = newPin;
     }
@@ -522,6 +595,33 @@ async function startServer() {
   });
 
   // Admin Management API Routes
+  app.post('/api/admin/elevate', requireAdmin, async (req, res) => {
+    const currentUser = String((req as any).authenticatedUser || '').toLowerCase();
+    const key = `${currentUser}::${req.ip || req.socket.remoteAddress || 'unknown'}`;
+    const now = Date.now();
+    const attempt = adminPasswordAttempts.get(key);
+    if (attempt && now - attempt.lastFailedAt > ADMIN_PASSWORD_WINDOW_MS) {
+      adminPasswordAttempts.delete(key);
+    } else if (attempt?.lockUntil && attempt.lockUntil > now) {
+      return res.status(429).json({ error: `Zu viele Admin-Passwortversuche. Bitte warte ${Math.ceil((attempt.lockUntil - now) / 1000)} Sekunden.` });
+    }
+
+    const verification = verifyAdminPanelPassword(req.body?.password);
+    if (!verification.ok) {
+      const current = adminPasswordAttempts.get(key) || { count: 0, lockUntil: 0, lastFailedAt: now };
+      current.count += 1;
+      current.lastFailedAt = now;
+      if (current.count >= ADMIN_PASSWORD_MAX_FAILURES) current.lockUntil = now + ADMIN_PASSWORD_LOCK_MS;
+      adminPasswordAttempts.set(key, current);
+      return res.status(401).json({ error: verification.error || 'Admin-Passwort falsch.' });
+    }
+
+    adminPasswordAttempts.delete(key);
+    const adminToken = crypto.randomBytes(32).toString('base64url');
+    adminElevations.set(currentUser, { tokenHash: adminSecretHash(adminToken), expiresAt: now + ADMIN_ELEVATION_MS });
+    res.json({ adminToken, expiresIn: ADMIN_ELEVATION_MS / 1000 });
+  });
+
   app.get('/api/admins', requireAdmin, async (req, res) => {
     const admins = await dbGetAdmins();
     res.json(admins);
@@ -613,7 +713,7 @@ async function startServer() {
     res.json(courses);
   });
 
-  app.post('/api/courses', requireAdmin, async (req, res) => {
+  app.post('/api/courses', requireElevatedAdmin, async (req, res) => {
     const { id, name, teacher, type } = req.body;
     const course = {
       id: id || name,
@@ -625,7 +725,7 @@ async function startServer() {
     res.status(201).json(saved);
   });
 
-  app.put('/api/courses/reorder', requireAdmin, async (req, res) => {
+  app.put('/api/courses/reorder', requireElevatedAdmin, async (req, res) => {
     const { courseIds } = req.body;
     if (Array.isArray(courseIds)) {
       await dbReorderCourses(courseIds);
@@ -634,7 +734,7 @@ async function startServer() {
     res.status(400).json({ error: 'courseIds must be an array' });
   });
 
-  app.put('/api/courses/:id', requireAdmin, async (req, res) => {
+  app.put('/api/courses/:id', requireElevatedAdmin, async (req, res) => {
     const { name, teacher, type } = req.body;
     const courseId = req.params.id as string;
     const course = {
@@ -647,19 +747,19 @@ async function startServer() {
     res.json(saved);
   });
 
-  app.delete('/api/courses/:id', requireAdmin, async (req, res) => {
+  app.delete('/api/courses/:id', requireElevatedAdmin, async (req, res) => {
     const id = req.params.id as string;
     await dbDeleteCourse(id);
     res.json({ success: true });
   });
 
-  app.post('/api/courses/reset-defaults', requireAdmin, async (req, res) => {
+  app.post('/api/courses/reset-defaults', requireElevatedAdmin, async (req, res) => {
     const courses = await dbResetCoursesToDefaults();
     res.json(courses);
   });
 
   // Admin Panel Routes
-  app.get('/api/admin/users', requireAdmin, async (req, res) => {
+  app.get('/api/admin/users', requireElevatedAdmin, async (req, res) => {
     const users = await dbGetUsers();
     
     // Add isAdmin flag to each user for the frontend
@@ -671,13 +771,43 @@ async function startServer() {
     res.json(usersWithAdminFlag);
   });
 
-  app.post('/api/admin/users', requireAdmin, async (req, res) => {
-    const { username, pin } = req.body;
+  app.post('/api/admin/users', requireElevatedAdmin, async (req, res) => {
+    const { username, pin, vpOnly, className } = req.body;
     const uname = (username || '').toLowerCase();
     if (!uname) return res.status(400).json({ error: 'Username erforderlich' });
+    if (pin !== undefined && pin !== '' && (typeof pin !== 'string' || !/^\d{4}$/.test(pin))) {
+      return res.status(400).json({ error: 'Die PIN muss leer sein oder exakt vier Ziffern enthalten.' });
+    }
     
     const existing = await dbGetUser(uname);
     if (existing) return res.status(400).json({ error: 'Username bereits vergeben' });
+    const allKnownUsers = await dbGetUsers();
+    if (allKnownUsers.some((user: any) => String(user.username).toLowerCase() === uname)) {
+      return res.status(400).json({ error: 'Name bereits vergeben.' });
+    }
+
+    if (vpOnly) {
+      if (!pin) return res.status(400).json({ error: 'VP-only-Nutzer brauchen eine vierstellige Start-PIN.' });
+      const ntfyUsername = `u_${crypto.randomBytes(12).toString('hex')}`;
+      const ntfyPassword = crypto.randomBytes(32).toString('base64url');
+      const ntfyTopic = `vpmobil-${crypto.randomBytes(32).toString('base64url').replace(/[_-]/g, 'a')}`;
+      try {
+        await provisionNtfyReader(ntfyTopic, ntfyUsername, ntfyPassword);
+        const created = await dbCreateVpOnlyUser({
+          username: uname,
+          pin,
+          className: String(className || process.env.VP_DEFAULT_CLASS || '11'),
+          createdBy: String((req as any).authenticatedUser || ''),
+          ntfyTopic,
+          ntfyUsername,
+          ntfyPassword,
+        });
+        return res.status(201).json({ success: true, username: created.username, vpOnly: true });
+      } catch (error: any) {
+        await deleteNtfyReader(ntfyUsername).catch(() => undefined);
+        return res.status(400).json({ error: error.message || 'VP-only-Nutzer konnte nicht angelegt werden.' });
+      }
+    }
 
     await dbSaveUser(uname, {
       courses: [],
@@ -694,7 +824,7 @@ async function startServer() {
     res.status(201).json({ success: true, username: uname });
   });
 
-  app.delete('/api/admin/users/:username', requireAdmin, async (req, res) => {
+  app.delete('/api/admin/users/:username', requireElevatedAdmin, async (req, res) => {
     const target = req.params.username as string;
     if (await dbIsAdmin(target)) return res.status(400).json({ error: 'Admins können nicht gelöscht werden.' });
     
@@ -702,9 +832,13 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  app.put('/api/admin/users/:username/status', requireAdmin, async (req, res) => {
+  app.put('/api/admin/users/:username/status', requireElevatedAdmin, async (req, res) => {
     const target = (req.params.username as string || '').toLowerCase();
     const { status } = req.body;
+    const existing = await dbGetUser(target);
+    if (!existing) {
+      return res.status(404).json({ error: 'Kalendernutzer nicht gefunden.' });
+    }
     if (await dbIsAdmin(target)) {
       return res.status(400).json({ error: 'Admins können nur direkt in der Datenbank geändert werden.' });
     }
@@ -715,11 +849,29 @@ async function startServer() {
     res.json({ success: true, status });
   });
 
-  app.put('/api/admin/users/:username/reset-pin', requireAdmin, async (req, res) => {
+  app.put('/api/admin/users/:username/reset-pin', requireElevatedAdmin, async (req, res) => {
     const target = req.params.username as string;
+    const existing = await dbGetUser(target);
+    if (!existing) return res.status(404).json({ error: 'Kalendernutzer nicht gefunden.' });
     if (await dbIsAdmin(target)) return res.status(400).json({ error: 'Admin PIN kann nicht zurückgesetzt werden.' });
     await dbSaveUser(target, { pin: null });
     res.json({ success: true });
+  });
+
+  app.put('/api/admin/users/:username/pin', requireElevatedAdmin, async (req, res) => {
+    const target = req.params.username as string;
+    const { pin } = req.body || {};
+    if (typeof pin !== 'string' || !/^\d{4}$/.test(pin)) {
+      return res.status(400).json({ error: 'Die PIN muss exakt vier Ziffern enthalten.' });
+    }
+    if (await dbIsAdmin(target)) return res.status(400).json({ error: 'Admin-PINs können nur durch den Benutzer selbst geändert werden.' });
+    try {
+      await dbAdminSetUserPin(target, pin);
+      await deleteUserSessions(target);
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message || 'PIN konnte nicht gesetzt werden.' });
+    }
   });
 
   app.get('/api/categories', requireAuth, async (req, res) => {
@@ -753,27 +905,27 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  app.post('/api/categories', requireAdmin, async (req, res) => {
+  app.post('/api/categories', requireElevatedAdmin, async (req, res) => {
     const saved = await dbSaveCategory(req.body);
     broadcastCalendarChange();
     res.json(saved);
   });
 
-  app.put('/api/categories/:id', requireAdmin, async (req, res) => {
+  app.put('/api/categories/:id', requireElevatedAdmin, async (req, res) => {
     const id = req.params.id as string;
     const saved = await dbSaveCategory({ ...req.body, id });
     broadcastCalendarChange();
     res.json(saved);
   });
 
-  app.delete('/api/categories/:id', requireAdmin, async (req, res) => {
+  app.delete('/api/categories/:id', requireElevatedAdmin, async (req, res) => {
     const id = req.params.id as string;
     await dbDeleteCategory(id);
     broadcastCalendarChange();
     res.json({ success: true });
   });
 
-  app.put('/api/categories/reorder', requireAdmin, async (req, res) => {
+  app.put('/api/categories/reorder', requireElevatedAdmin, async (req, res) => {
     const { categoryIds } = req.body;
     if (Array.isArray(categoryIds)) {
       await dbReorderCategories(categoryIds);

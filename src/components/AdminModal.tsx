@@ -1,5 +1,5 @@
 import React, { useState, useEffect, FormEvent } from 'react';
-import { adminFetchUsers, adminUpdateUserStatus, adminResetUserPin, adminAddUser, adminDeleteUser, fetchCategories, saveCategory, deleteCategory, reorderCategories, fetchCourses, saveCourse, deleteCourse, reorderCourses } from '../lib/api';
+import { adminElevate, adminFetchUsers, adminUpdateUserStatus, adminResetUserPin, adminSetUserPin, adminAddUser, adminDeleteUser, fetchCategories, saveCategory, deleteCategory, reorderCategories, fetchCourses, saveCourse, deleteCourse, reorderCourses } from '../lib/api';
 import { User, EventCategory, UserPreferences, Course } from '../types';
 import { X, ShieldCheck, Search, ShieldAlert, KeyRound, Check, Trash2, Plus, GripVertical, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Layers } from 'lucide-react';
 
@@ -12,14 +12,14 @@ interface Props {
 
 export default function AdminModal({ isOpen, onClose, username, preferences }: Props) {
   const [activeTab, setActiveTab] = useState<'users' | 'categories' | 'courses'>('users');
-  const [users, setUsers] = useState<{ username: string; status: 'ACTIVE' | 'READ_ONLY' | 'BLOCKED' | 'ADMIN', isAdmin?: boolean }[]>([]);
+  const [users, setUsers] = useState<{ username: string; status: 'ACTIVE' | 'READ_ONLY' | 'BLOCKED' | 'ADMIN' | 'VP_ONLY', isAdmin?: boolean, vpOnly?: boolean }[]>([]);
   const [categories, setCategories] = useState<EventCategory[]>([]);
   const [courses, setCourses] = useState<Course[]>([]);
   
-  // Pin protection
-  const [pinInput, setPinInput] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [adminToken, setAdminToken] = useState('');
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [pinError, setPinError] = useState('');
+  const [authError, setAuthError] = useState('');
 
   const isDark = preferences.darkMode;
   const theme = {
@@ -40,36 +40,49 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
     if (isOpen && isAuthenticated) {
       loadData();
     }
-  }, [isOpen, isAuthenticated]);
+  }, [isOpen, isAuthenticated, adminToken]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setAdminPassword('');
+      setAdminToken('');
+      setIsAuthenticated(false);
+      setAuthError('');
+      setActiveTab('users');
+    }
+  }, [isOpen]);
+
+  const handleClose = () => {
+    setAdminPassword('');
+    setAdminToken('');
+    setIsAuthenticated(false);
+    setAuthError('');
+    setActiveTab('users');
+    onClose();
+  };
 
   const loadData = async () => {
     try {
-      const fetchedUsers = await adminFetchUsers();
+      const fetchedUsers = await adminFetchUsers(adminToken);
       setUsers(fetchedUsers);
       const fetchedCats = await fetchCategories();
       setCategories(fetchedCats);
       const fetchedCourses = await fetchCourses();
       setCourses(fetchedCourses);
     } catch (err) {
-      console.error(err);
+      setAuthError(err instanceof Error ? err.message : 'Admin-Daten konnten nicht geladen werden.');
     }
   };
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const res = await fetch(`/api/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, pin: pinInput })
-      });
-      if (res.ok) {
-        setIsAuthenticated(true);
-      } else {
-        setPinError('Falsches Passwort.');
-      }
+      const elevated = await adminElevate(adminPassword);
+      setAdminToken(elevated.adminToken);
+      setIsAuthenticated(true);
+      setAuthError('');
     } catch (err) {
-      setPinError('Fehler bei der Anmeldung.');
+      setAuthError(err instanceof Error ? err.message : 'Fehler bei der Admin-Anmeldung.');
     }
   };
 
@@ -77,15 +90,20 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
   const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
   const [newUserName, setNewUserName] = useState('');
   const [newUserPin, setNewUserPin] = useState('');
+  const [newUserClass, setNewUserClass] = useState('11');
+  const [newUserVpOnly, setNewUserVpOnly] = useState(false);
+  const [pinEdits, setPinEdits] = useState<Record<string, string>>({});
   
   const handleAddUser = async () => {
     if (!newUserName.trim()) return;
     try {
-      await adminAddUser(newUserName.trim(), newUserPin.trim() || undefined);
-      const fetchedUsers = await adminFetchUsers();
+      await adminAddUser(newUserName.trim(), newUserPin.trim() || undefined, adminToken, newUserVpOnly, newUserClass.trim() || '11');
+      const fetchedUsers = await adminFetchUsers(adminToken);
       setUsers(fetchedUsers);
       setNewUserName('');
       setNewUserPin('');
+      setNewUserClass('11');
+      setNewUserVpOnly(false);
     } catch (e: any) {
       alert(e.message || 'Fehler beim Erstellen');
     }
@@ -94,7 +112,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
   const handleDeleteUser = async (uname: string) => {
     if (!confirm(`Benutzer ${uname} wirklich löschen?`)) return;
     try {
-      await adminDeleteUser(uname);
+      await adminDeleteUser(uname, adminToken);
       setUsers(prev => prev.filter(u => u.username !== uname));
     } catch (e: any) {
       alert(e.message || 'Fehler beim Löschen');
@@ -108,7 +126,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
   };
   
   const handleSelectAllUsers = () => {
-    const mutableUsers = users.filter(u => !u.isAdmin && u.status !== 'ADMIN').map(u => u.username);
+    const mutableUsers = users.filter(u => !u.isAdmin && u.status !== 'ADMIN' && !u.vpOnly).map(u => u.username);
     if (selectedUsers.length === mutableUsers.length) {
       setSelectedUsers([]);
     } else {
@@ -120,7 +138,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
     if (!selectedUsers.length) return;
     try {
       for (const uname of selectedUsers) {
-        await adminUpdateUserStatus(uname, status);
+        await adminUpdateUserStatus(uname, status, adminToken);
       }
       setUsers(prev => prev.map(u => selectedUsers.includes(u.username) ? { ...u, status } : u));
       setSelectedUsers([]);
@@ -131,7 +149,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
 
   const handleUpdateStatus = async (uname: string, status: 'ACTIVE' | 'READ_ONLY' | 'BLOCKED') => {
     try {
-      await adminUpdateUserStatus(uname, status);
+      await adminUpdateUserStatus(uname, status, adminToken);
       setUsers(prev => prev.map(u => u.username === uname ? { ...u, status } : u));
     } catch (err) {
       alert('Fehler beim Speichern');
@@ -141,10 +159,25 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
   const handleResetPin = async (uname: string) => {
     if (!confirm(`PIN von ${uname} wirklich zurücksetzen?`)) return;
     try {
-      await adminResetUserPin(uname);
+      await adminResetUserPin(uname, adminToken);
       alert(`PIN für ${uname} wurde gelöscht.`);
     } catch (err) {
       alert('Fehler beim Zurücksetzen.');
+    }
+  };
+
+  const handleSetUserPin = async (uname: string) => {
+    const pin = pinEdits[uname] || '';
+    if (!/^\d{4}$/.test(pin)) {
+      alert('Die neue PIN muss exakt vier Ziffern enthalten.');
+      return;
+    }
+    try {
+      await adminSetUserPin(uname, pin, adminToken);
+      setPinEdits(prev => ({ ...prev, [uname]: '' }));
+      alert(`Neue Start-PIN für ${uname} wurde gesetzt. Der Benutzer muss sie beim nächsten Login ändern.`);
+    } catch (err: any) {
+      alert(err.message || 'Fehler beim Setzen der PIN.');
     }
   };
 
@@ -157,7 +190,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
     const id = newCatName.trim().toUpperCase().replace(/\s+/g, '_');
     const newCat = { id, name: newCatName.trim(), color: newCatColor, sort_order: categories.length };
     try {
-      const saved = await saveCategory(newCat);
+      const saved = await saveCategory(newCat, adminToken);
       setCategories(prev => [...prev, saved]);
       setNewCatName('');
     } catch (e) {
@@ -167,7 +200,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
 
   const handleUpdateCategory = async (id: string, name: string, color: string) => {
     try {
-      const saved = await saveCategory({ id, name, color });
+      const saved = await saveCategory({ id, name, color }, adminToken);
       setCategories(prev => prev.map(c => c.id === id ? saved : c));
     } catch (e) {
       alert('Fehler beim Speichern');
@@ -177,7 +210,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
   const handleDeleteCategory = async (id: string) => {
     if (!confirm('Kategorie wirklich löschen?')) return;
     try {
-      await deleteCategory(id);
+      await deleteCategory(id, adminToken);
       setCategories(prev => prev.filter(c => c.id !== id));
     } catch (e) {
       alert('Fehler beim Löschen');
@@ -204,7 +237,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
     const id = cleanName.replace(/\s+/g, '_');
     const newCourse: Course = { id, name: cleanName, teacher: newCourseTeacher.trim(), type: newCourseType };
     try {
-      await saveCourse(newCourse);
+      await saveCourse(newCourse, adminToken);
       const fetchedCourses = await fetchCourses();
       setCourses(fetchedCourses);
       setNewCourseName('');
@@ -218,7 +251,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
     try {
       const updated: Course = { id, name, teacher, type };
       setCourses(prev => prev.map(c => c.id === id ? updated : c));
-      await saveCourse(updated);
+      await saveCourse(updated, adminToken);
     } catch (e) {
       alert('Fehler beim Speichern');
     }
@@ -227,7 +260,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
   const handleDeleteCourse = async (id: string) => {
     if (!confirm('Kurs wirklich löschen?')) return;
     try {
-      await deleteCourse(id);
+      await deleteCourse(id, adminToken);
       setCourses(prev => prev.filter(c => c.id !== id));
     } catch (e) {
       alert('Fehler beim Löschen');
@@ -297,9 +330,9 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
 
     try {
       if (sourceCourse.type !== targetCourse.type) {
-        await saveCourse(updatedSource);
+        await saveCourse(updatedSource, adminToken);
       }
-      await reorderCourses(newCourses.map(c => c.id));
+      await reorderCourses(newCourses.map(c => c.id), adminToken);
     } catch (err) {
       console.error('Failed to save reordered courses', err);
     }
@@ -347,8 +380,8 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
     handleDragEnd();
 
     try {
-      await saveCourse(updatedSource);
-      await reorderCourses(newCourses.map(c => c.id));
+      await saveCourse(updatedSource, adminToken);
+      await reorderCourses(newCourses.map(c => c.id), adminToken);
     } catch (err) {
       console.error('Failed to save reordered courses', err);
     }
@@ -376,7 +409,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
 
     setCourses(newCourses);
     try {
-      await reorderCourses(newCourses.map(c => c.id));
+      await reorderCourses(newCourses.map(c => c.id), adminToken);
     } catch (err) {
       console.error('Failed to save order', err);
     }
@@ -401,8 +434,8 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
 
     setCourses(newCourses);
     try {
-      await saveCourse(updated);
-      await reorderCourses(newCourses.map(c => c.id));
+      await saveCourse(updated, adminToken);
+      await reorderCourses(newCourses.map(c => c.id), adminToken);
     } catch (err) {
       console.error('Failed to save course', err);
     }
@@ -418,21 +451,22 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
             <h2 className={`text-xl font-bold ${theme.textMain}`}>
               Admin-Bereich
             </h2>
-            <button onClick={onClose} className={`${theme.textMuted} ${theme.bgHover} p-1 rounded-lg`}>
+            <button onClick={handleClose} className={`${theme.textMuted} ${theme.bgHover} p-1 rounded-lg`}>
               <X className="w-5 h-5" />
             </button>
           </div>
           <form onSubmit={handleAuth} className="space-y-4">
             <div>
-              <label className={`block text-sm font-semibold ${theme.textMuted} mb-1`}>Bitte Passwort eingeben</label>
+              <label className={`block text-sm font-semibold ${theme.textMuted} mb-1`}>Admin-Passwort eingeben</label>
               <input
                 type="password"
-                value={pinInput}
-                onChange={e => setPinInput(e.target.value)}
+                value={adminPassword}
+                onChange={e => setAdminPassword(e.target.value)}
+                autoComplete="current-password"
                 className={`w-full px-4 py-2.5 ${theme.bgInput} border ${theme.borderInput} ${theme.textMain} rounded-xl text-center font-mono text-xl tracking-widest focus:outline-none`}
               />
             </div>
-            {pinError && <p className="text-sm text-rose-500 font-medium">{pinError}</p>}
+            {authError && <p className="text-sm text-rose-500 font-medium">{authError}</p>}
             <button type="submit" className="w-full py-2.5 rounded-xl font-bold text-white shadow-xs" style={{ backgroundColor: theme.accent }}>
               Verifizieren
             </button>
@@ -443,21 +477,21 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
   }
 
   return (
-    <div className={`fixed inset-0 z-[100] flex items-center justify-center ${theme.overlay} p-4 sm:p-6`}>
-      <div className={`w-full max-w-4xl max-h-[90vh] ${theme.bgModal} rounded-lg shadow-lg border ${theme.border} flex flex-col overflow-hidden`}>
+    <div className={`fixed inset-0 z-[100] flex items-center justify-center ${theme.overlay} p-2 sm:p-6`}>
+      <div className={`w-full max-w-4xl max-h-[calc(100dvh-16px)] sm:max-h-[90vh] ${theme.bgModal} rounded-lg shadow-lg border ${theme.border} flex flex-col overflow-hidden`}>
         
         <div className={`flex items-center justify-between px-6 py-4 border-b ${theme.border} ${theme.bgSidebar}`}>
           <h2 className={`text-xl font-bold ${theme.textMain} flex items-center gap-2`}>
             Admin-Einstellungen
           </h2>
-          <button onClick={onClose} className={`p-2 rounded-xl ${theme.bgHover} ${theme.textMuted} transition-colors`}>
+          <button onClick={handleClose} className={`p-2 rounded-xl ${theme.bgHover} ${theme.textMuted} transition-colors`}>
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <div className="flex flex-1 overflow-hidden">
+        <div className="flex flex-1 min-h-0 flex-col sm:flex-row overflow-hidden">
           {/* Sidebar */}
-          <div className={`w-48 sm:w-56 shrink-0 border-r ${theme.border} ${theme.bgSidebar} p-4 flex flex-col gap-2`}>
+          <div className={`w-full sm:w-56 shrink-0 border-b sm:border-b-0 sm:border-r ${theme.border} ${theme.bgSidebar} p-2 sm:p-4 flex flex-row sm:flex-col gap-2 overflow-x-auto`}>
             {[
               { id: 'users', label: 'Benutzer' },
               { id: 'categories', label: 'Kategorien' },
@@ -466,7 +500,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as any)}
-                className={`w-full text-left px-4 py-3 text-sm font-semibold rounded-xl transition-all ${
+                className={`flex-1 sm:w-full min-w-max text-center sm:text-left px-4 py-2.5 sm:py-3 text-sm font-semibold rounded-xl transition-all ${
                   activeTab === tab.id 
                     ? `text-white shadow-xs` 
                     : `${theme.textMuted} ${theme.bgHover}`
@@ -479,7 +513,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
           </div>
 
           {/* Content */}
-          <div className={`flex-1 p-6 overflow-y-auto ${theme.bgModal}`}>
+          <div className={`flex-1 min-h-0 p-4 sm:p-6 overflow-y-auto ${theme.bgModal}`}>
             {activeTab === 'users' && (
               <div className="space-y-6">
                 <div>
@@ -487,24 +521,43 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
                   <p className={`text-sm ${theme.textFaint}`}>Setze PINs zurück oder sperre Benutzer (Lesezugriff oder komplett blockiert).</p>
                 </div>
                 
-                <div className={`flex items-center gap-3 p-4 border ${theme.border} rounded-xl ${theme.bgInput}`}>
+                <div className={`grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_90px_105px_auto_auto] items-center gap-3 p-4 border ${theme.border} rounded-xl ${theme.bgInput}`}>
                   <input
                     type="text"
                     value={newUserName}
                     onChange={e => setNewUserName(e.target.value)}
                     placeholder="Benutzername"
-                    className={`flex-1 px-3 py-2 border ${theme.borderInput} ${theme.bgModal} rounded-lg text-sm ${theme.textMain} focus:outline-none`}
+                    className={`min-w-0 px-3 py-2 border ${theme.borderInput} ${theme.bgModal} rounded-lg text-sm ${theme.textMain} focus:outline-none`}
+                  />
+                  <input
+                    type="text"
+                    value={newUserClass}
+                    onChange={e => setNewUserClass(e.target.value.slice(0, 64))}
+                    placeholder="Klasse"
+                    className={`min-w-0 px-3 py-2 border ${theme.borderInput} ${theme.bgModal} rounded-lg text-sm ${theme.textMain} focus:outline-none`}
                   />
                   <input
                     type="password"
                     value={newUserPin}
-                    onChange={e => setNewUserPin(e.target.value)}
-                    placeholder="Passwort (optional)"
-                    className={`flex-1 px-3 py-2 border ${theme.borderInput} ${theme.bgModal} rounded-lg text-sm ${theme.textMain} focus:outline-none`}
+                    onChange={e => setNewUserPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                    placeholder="PIN optional"
+                    inputMode="numeric"
+                    pattern="[0-9]{4}"
+                    maxLength={4}
+                    className={`min-w-0 px-3 py-2 border ${theme.borderInput} ${theme.bgModal} rounded-lg text-sm ${theme.textMain} focus:outline-none`}
                   />
+                  <label className={`flex items-center justify-center gap-2 px-3 py-2 border ${theme.borderInput} ${theme.bgModal} rounded-lg text-xs font-bold ${theme.textMain}`}>
+                    <input
+                      type="checkbox"
+                      checked={newUserVpOnly}
+                      onChange={e => setNewUserVpOnly(e.target.checked)}
+                      className="h-4 w-4"
+                    />
+                    VP-only
+                  </label>
                   <button
                     onClick={handleAddUser}
-                    disabled={!newUserName.trim()}
+                    disabled={!newUserName.trim() || (newUserVpOnly && newUserPin.length !== 4)}
                     className="px-4 py-2 text-white text-sm font-bold rounded-lg disabled:opacity-50 shadow-xs"
                     style={{ backgroundColor: theme.accent }}
                   >
@@ -517,7 +570,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
                     <div className="flex items-center gap-3">
                       <input
                         type="checkbox"
-                        checked={users.filter(u => !u.isAdmin && u.status !== 'ADMIN').length > 0 && selectedUsers.length === users.filter(u => !u.isAdmin && u.status !== 'ADMIN').length}
+                        checked={users.filter(u => !u.isAdmin && u.status !== 'ADMIN' && !u.vpOnly).length > 0 && selectedUsers.length === users.filter(u => !u.isAdmin && u.status !== 'ADMIN' && !u.vpOnly).length}
                         onChange={handleSelectAllUsers}
                         className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                       />
@@ -536,6 +589,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
                   <div className={`divide-y ${theme.border}`}>
                     {users.map(u => {
                       const isUserAdmin = u.isAdmin || u.status === 'ADMIN';
+                      const isVpOnly = !!u.vpOnly || u.status === 'VP_ONLY';
                       return (
                         <div key={u.username} className={`p-4 flex items-center justify-between ${theme.bgInput} hover:bg-black/5 dark:hover:bg-white/5`}>
                           <div className="flex items-center gap-3">
@@ -543,7 +597,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
                               type="checkbox"
                               checked={selectedUsers.includes(u.username)}
                               onChange={() => handleSelectUser(u.username)}
-                              disabled={isUserAdmin}
+                              disabled={isUserAdmin || isVpOnly}
                               className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-30"
                             />
                             <div>
@@ -551,7 +605,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
                                 <span className={`font-bold text-base ${theme.textMain}`}>{u.username}</span>
                               </div>
                               <div className={`text-xs font-semibold mt-1 ${isUserAdmin ? 'text-purple-500' : u.status === 'ACTIVE' ? 'text-emerald-500' : u.status === 'READ_ONLY' ? 'text-amber-500' : 'text-rose-500'}`}>
-                                {isUserAdmin ? 'Admin' : u.status === 'ACTIVE' ? 'Aktiv' : u.status === 'READ_ONLY' ? 'Nur Lesezugriff' : 'Gesperrt'}
+                                {isUserAdmin ? 'Admin' : isVpOnly ? 'Nur Vertretungsplan' : u.status === 'ACTIVE' ? 'Aktiv' : u.status === 'READ_ONLY' ? 'Nur Lesezugriff' : 'Gesperrt'}
                               </div>
                             </div>
                           </div>
@@ -559,23 +613,49 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
                           <div className="flex items-center gap-2">
                             {!isUserAdmin ? (
                               <>
-                                <select
-                                  value={u.status || 'ACTIVE'}
-                                  onChange={(e) => handleUpdateStatus(u.username, e.target.value as any)}
-                                  className={`text-xs px-2 py-1.5 rounded-lg border ${theme.border} ${theme.bgModal} ${theme.textMain} focus:outline-none`}
-                                >
-                                  <option value="ACTIVE">Aktiv</option>
-                                  <option value="READ_ONLY">Nur Lesen</option>
-                                  <option value="BLOCKED">Sperren</option>
-                                </select>
-                                <button
-                                  onClick={() => handleResetPin(u.username)}
-                                  title="Passwort zurücksetzen"
-                                  className="px-2 py-1.5 text-xs font-semibold text-rose-500 bg-rose-50 dark:bg-rose-950/30 rounded-lg hover:bg-rose-100 dark:hover:bg-rose-900/50 transition-colors flex items-center gap-1.5 cursor-pointer"
-                                >
-                                  <KeyRound className="w-3.5 h-3.5" />
-                                  Passwort zurücksetzen
-                                </button>
+                                {!isVpOnly && (
+                                  <>
+                                    <select
+                                      value={u.status || 'ACTIVE'}
+                                      onChange={(e) => handleUpdateStatus(u.username, e.target.value as any)}
+                                      className={`text-xs px-2 py-1.5 rounded-lg border ${theme.border} ${theme.bgModal} ${theme.textMain} focus:outline-none`}
+                                    >
+                                      <option value="ACTIVE">Aktiv</option>
+                                      <option value="READ_ONLY">Nur Lesen</option>
+                                      <option value="BLOCKED">Sperren</option>
+                                    </select>
+                                    <div className="flex items-center gap-1">
+                                      <input
+                                        type="password"
+                                        value={pinEdits[u.username] || ''}
+                                        onChange={(e) => setPinEdits(prev => ({ ...prev, [u.username]: e.target.value.replace(/\D/g, '').slice(0, 4) }))}
+                                        placeholder="PIN"
+                                        inputMode="numeric"
+                                        pattern="[0-9]{4}"
+                                        maxLength={4}
+                                        className={`w-16 text-xs px-2 py-1.5 rounded-lg border ${theme.border} ${theme.bgModal} ${theme.textMain} focus:outline-none text-center tracking-widest`}
+                                        aria-label={`Neue PIN für ${u.username}`}
+                                      />
+                                      <button
+                                        onClick={() => handleSetUserPin(u.username)}
+                                        disabled={(pinEdits[u.username] || '').length !== 4}
+                                        title="Neue Start-PIN setzen"
+                                        className="px-2 py-1.5 text-xs font-semibold text-amber-700 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-300 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/50 transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                                      >
+                                        <KeyRound className="w-3.5 h-3.5" />
+                                        PIN ändern
+                                      </button>
+                                    </div>
+                                    <button
+                                      onClick={() => handleResetPin(u.username)}
+                                      title="PIN zurücksetzen"
+                                      className="px-2 py-1.5 text-xs font-semibold text-rose-500 bg-rose-50 dark:bg-rose-950/30 rounded-lg hover:bg-rose-100 dark:hover:bg-rose-900/50 transition-colors flex items-center gap-1.5 cursor-pointer"
+                                    >
+                                      <KeyRound className="w-3.5 h-3.5" />
+                                      PIN zurücksetzen
+                                    </button>
+                                  </>
+                                )}
                                 <button
                                   onClick={() => handleDeleteUser(u.username)}
                                   title="Benutzer löschen"

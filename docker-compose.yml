@@ -24,6 +24,7 @@ services:
     restart: unless-stopped
     depends_on:
       - mariadb
+      - ntfy-provisioner
     environment:
       HOST: ${HOST:-0.0.0.0}
       BIND_HOST: ${BIND_HOST:-0.0.0.0}
@@ -45,6 +46,9 @@ services:
       APP_TIMEZONE: ${APP_TIMEZONE:-Europe/Berlin}
       APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?APP_ENCRYPTION_KEY muss gesetzt sein}
       CALENDAR_PRIVATE_DATA_KEY: ${CALENDAR_PRIVATE_DATA_KEY:-}
+      NTFY_PROVISIONER_URL: http://ntfy-provisioner:8080
+      NTFY_PROVISIONER_SECRET: ${APP_ENCRYPTION_KEY:?APP_ENCRYPTION_KEY muss gesetzt sein}
+      ADMIN_PANEL_PASSWORD: ${ADMIN_PANEL_PASSWORD:?ADMIN_PANEL_PASSWORD muss gesetzt sein}
     ports:
       - "${APP_BIND_HOST:-127.0.0.1}:${CAL11_PORT:-3000}:${CAL11_PORT:-3000}"
     networks:
@@ -119,6 +123,7 @@ services:
       NTFY_PROVISIONER_SECRET: ${APP_ENCRYPTION_KEY:?APP_ENCRYPTION_KEY muss gesetzt sein}
       NTFY_CACHE_FILE: /var/lib/ntfy/cache.db
       NTFY_HISTORY_CLEANUP_MARKER: /var/lib/ntfy/.history-cleanup-date
+      ADMIN_PANEL_PASSWORD: ${ADMIN_PANEL_PASSWORD:?ADMIN_PANEL_PASSWORD muss gesetzt sein}
       CALENDAR_PUBLIC_URL: ${CALENDAR_PUBLIC_URL:-http://127.0.0.1:3000}
       VERTRETUNGSPLAN_PUBLIC_URL: ${VERTRETUNGSPLAN_PUBLIC_URL:-http://127.0.0.1:8000}
       SCHULNUMMER: ${SCHULNUMMER}

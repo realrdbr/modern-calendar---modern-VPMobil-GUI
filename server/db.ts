@@ -35,6 +35,24 @@ function privateDataKey(): Buffer {
   return crypto.createHash('sha256').update(secret || 'development-only-private-calendar-key').digest();
 }
 
+function fernetEncrypt(plaintext: string): Buffer {
+  const rawKey = process.env.APP_ENCRYPTION_KEY || '';
+  if (!rawKey) throw new Error('APP_ENCRYPTION_KEY fehlt.');
+  const key = Buffer.from(rawKey, 'base64url');
+  if (key.length !== 32) throw new Error('APP_ENCRYPTION_KEY ist kein gültiger Fernet-Schlüssel.');
+  const signingKey = key.subarray(0, 16);
+  const encryptionKey = key.subarray(16);
+  const version = Buffer.from([0x80]);
+  const timestamp = Buffer.alloc(8);
+  timestamp.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 1000)));
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-128-cbc', encryptionKey, iv);
+  const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const signed = Buffer.concat([version, timestamp, iv, ciphertext]);
+  const signature = crypto.createHmac('sha256', signingKey).update(signed).digest();
+  return Buffer.from(Buffer.concat([signed, signature]).toString('base64url'), 'utf8');
+}
+
 export function encryptPrivateData(username: string, data: PrivateCalendarData) {
   const nonce = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', privateDataKey(), nonce);
@@ -497,12 +515,27 @@ export async function dbGetUser(username: string) {
 
 export async function dbGetUsers() {
   if (isConnected && pool) {
-    const [rows]: any = await pool.query('SELECT username, status FROM users ORDER BY username ASC');
-    return rows.map((r: any) => ({ username: r.username, status: r.status || 'ACTIVE' }));
+    const [vpOnlyTables]: any = await pool.query("SHOW TABLES LIKE 'vp_only_users'");
+    if (vpOnlyTables.length) {
+      const [rows]: any = await pool.query(`
+        SELECT username, status, 0 AS vpOnly FROM users
+        UNION
+        SELECT vp.username, IF(vp.active = 1 AND only_users.active = 1, 'VP_ONLY', 'BLOCKED') AS status, 1 AS vpOnly
+        FROM vp_only_users only_users
+        JOIN vp_users vp ON vp.id = only_users.user_id
+        LEFT JOIN users u ON LOWER(u.username) = LOWER(vp.username)
+        WHERE u.username IS NULL
+        ORDER BY username ASC
+      `);
+      return rows.map((r: any) => ({ username: r.username, status: r.status || 'ACTIVE', vpOnly: !!r.vpOnly }));
+    }
+    const [rows]: any = await pool.query('SELECT username, status, 0 AS vpOnly FROM users ORDER BY username ASC');
+    return rows.map((r: any) => ({ username: r.username, status: r.status || 'ACTIVE', vpOnly: false }));
   }
   return Object.keys(memoryStore.users).sort().map(uname => ({
     username: uname,
-    status: memoryStore.users[uname].status || 'ACTIVE'
+    status: memoryStore.users[uname].status || 'ACTIVE',
+    vpOnly: false,
   }));
 }
 
@@ -583,9 +616,76 @@ export async function dbSaveUser(username: string, data: { courses?: string[]; p
   return { username: uname, ...memoryStore.users[uname] };
 }
 
+export async function dbAdminSetUserPin(username: string, pin: string) {
+  if (!/^\d{4}$/.test(pin)) {
+    throw new Error('Die PIN muss exakt vier Ziffern enthalten.');
+  }
+  const uname = username.toLowerCase();
+  const existing = await dbGetUser(uname);
+  if (!existing) {
+    throw new Error('Kalendernutzer nicht gefunden.');
+  }
+  if (existing.status === 'ADMIN') {
+    throw new Error('Admin-PINs können nur durch den Benutzer selbst geändert werden.');
+  }
+  const preferences = { ...(existing.preferences || DEFAULT_PREFERENCES), forcePinChange: true };
+  return dbSaveUser(uname, { pin, preferences });
+}
+
+export async function dbCreateVpOnlyUser(data: {
+  username: string;
+  pin: string;
+  className: string;
+  createdBy: string;
+  ntfyTopic: string;
+  ntfyUsername: string;
+  ntfyPassword: string;
+}) {
+  const uname = data.username.trim().toLowerCase();
+  if (!/^[A-Za-z0-9._-]{3,64}$/.test(uname)) throw new Error('Ungültiger Benutzername.');
+  if (!/^\d{4}$/.test(data.pin)) throw new Error('VP-only-Nutzer brauchen eine vierstellige Start-PIN.');
+  const className = data.className.trim();
+  if (!className || className.length > 64) throw new Error('Ungültige Klasse.');
+  const encryptedPassword = fernetEncrypt(data.ntfyPassword);
+  if (isConnected && pool) {
+    const [existingCalendar]: any = await pool.query('SELECT 1 FROM users WHERE LOWER(username) = LOWER(?)', [uname]);
+    if (existingCalendar.length) throw new Error('Name bereits vergeben.');
+    const [existingVp]: any = await pool.query("SHOW TABLES LIKE 'vp_users'");
+    if (!existingVp.length) throw new Error('VP-Tabellen sind noch nicht migriert. Starte den VP-Dienst einmal neu.');
+    const [existingVpUser]: any = await pool.query('SELECT 1 FROM vp_users WHERE LOWER(username) = LOWER(?)', [uname]);
+    if (existingVpUser.length) throw new Error('Name bereits vergeben.');
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const [result]: any = await connection.query(
+        `INSERT INTO vp_users(username, pin_hash, class_name, active, ntfy_topic, ntfy_username, ntfy_password_encrypted, created_at)
+         VALUES (?, '', ?, 1, ?, ?, ?, ?)`,
+        [uname, className, data.ntfyTopic, data.ntfyUsername, encryptedPassword, new Date().toISOString()]
+      );
+      await connection.query(
+        `INSERT INTO vp_only_users(username, user_id, pin_hash, active, must_change_pin, created_by, created_at)
+         VALUES (?, ?, ?, 1, 1, ?, ?)`,
+        [uname, result.insertId, hashPin(data.pin), data.createdBy.toLowerCase(), new Date().toISOString()]
+      );
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+    return { username: uname, status: 'VP_ONLY', vpOnly: true };
+  }
+  throw new Error('VP-only-Nutzer benötigen die gemeinsame Datenbank.');
+}
+
 export async function dbDeleteUser(username: string) {
   const uname = username.toLowerCase();
   if (isConnected && pool) {
+    const [vpRows]: any = await pool.query("SHOW TABLES LIKE 'vp_users'");
+    if (vpRows.length) {
+      await pool.query('DELETE FROM vp_users WHERE LOWER(username) = LOWER(?)', [uname]);
+    }
     await pool.query('DELETE FROM users WHERE username = ?', [uname]);
   } else {
     delete memoryStore.users[uname];

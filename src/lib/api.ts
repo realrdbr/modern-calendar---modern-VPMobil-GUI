@@ -1,9 +1,10 @@
 export const API_URL = '';
 
-function getHeaders() {
+function getHeaders(adminToken?: string) {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json'
   };
+  if (adminToken) headers['X-Admin-Token'] = adminToken;
   return headers;
 }
 
@@ -156,36 +157,36 @@ export async function fetchCourses() {
   return res.json();
 }
 
-export async function saveCourse(courseData: { id?: string; name: string; teacher: string; type: 'LK' | 'GK' | 'AG' }) {
+export async function saveCourse(courseData: { id?: string; name: string; teacher: string; type: 'LK' | 'GK' | 'AG' }, adminToken?: string) {
   if (courseData.id) {
     const res = await fetch(`${API_URL}/api/courses/${courseData.id}`, {
       method: 'PUT',
-      headers: getHeaders(),
+      headers: getHeaders(adminToken),
       body: JSON.stringify(courseData),
     });
     return res.json();
   }
   const res = await fetch(`${API_URL}/api/courses`, {
     method: 'POST',
-    headers: getHeaders(),
+    headers: getHeaders(adminToken),
     body: JSON.stringify(courseData),
   });
   return res.json();
 }
 
-export async function reorderCourses(courseIds: string[]) {
+export async function reorderCourses(courseIds: string[], adminToken?: string) {
   const res = await fetch(`${API_URL}/api/courses/reorder`, {
     method: 'PUT',
-    headers: getHeaders(),
+    headers: getHeaders(adminToken),
     body: JSON.stringify({ courseIds }),
   });
   return res.json();
 }
 
-export async function deleteCourse(id: string) {
+export async function deleteCourse(id: string, adminToken?: string) {
   const res = await fetch(`${API_URL}/api/courses/${id}`, {
     method: 'DELETE',
-    headers: getHeaders(),
+    headers: getHeaders(adminToken),
   });
   return res.json();
 }
@@ -232,46 +233,71 @@ export async function removeAdmin(username: string) {
   return res.json();
 }
 
-export async function adminFetchUsers() {
-  const res = await fetch(`${API_URL}/api/admin/users`, { headers: getHeaders() });
+export async function adminElevate(password: string) {
+  const res = await fetch(`${API_URL}/api/admin/elevate`, {
+    method: 'POST',
+    headers: getHeaders(),
+    credentials: 'same-origin',
+    body: JSON.stringify({ password })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Admin-Passwort wurde abgelehnt.');
+  return data as { adminToken: string; expiresIn: number };
+}
+
+export async function adminFetchUsers(adminToken?: string) {
+  const res = await fetch(`${API_URL}/api/admin/users`, { headers: getHeaders(adminToken) });
   return res.json();
 }
 
-export async function adminUpdateUserStatus(username: string, status: 'ACTIVE' | 'READ_ONLY' | 'BLOCKED') {
+export async function adminUpdateUserStatus(username: string, status: 'ACTIVE' | 'READ_ONLY' | 'BLOCKED', adminToken?: string) {
   const res = await fetch(`${API_URL}/api/admin/users/${username}/status`, {
     method: 'PUT',
-    headers: getHeaders(),
+    headers: getHeaders(adminToken),
     body: JSON.stringify({ status })
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
-export async function adminAddUser(username: string, pin?: string) {
+export async function adminAddUser(username: string, pin?: string, adminToken?: string, vpOnly = false, className?: string) {
   const res = await fetch(`${API_URL}/api/admin/users`, {
     method: 'POST',
-    headers: getHeaders(),
-    body: JSON.stringify({ username, pin })
+    headers: getHeaders(adminToken),
+    body: JSON.stringify({ username, pin, vpOnly, className })
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
-export async function adminDeleteUser(username: string) {
+export async function adminDeleteUser(username: string, adminToken?: string) {
   const res = await fetch(`${API_URL}/api/admin/users/${username}`, {
     method: 'DELETE',
-    headers: getHeaders()
+    headers: getHeaders(adminToken)
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
-export async function adminResetUserPin(username: string) {
+export async function adminResetUserPin(username: string, adminToken?: string) {
   const res = await fetch(`${API_URL}/api/admin/users/${username}/reset-pin`, {
     method: 'PUT',
-    headers: getHeaders()
+    headers: getHeaders(adminToken)
   });
   if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function adminSetUserPin(username: string, pin: string, adminToken?: string) {
+  const res = await fetch(`${API_URL}/api/admin/users/${username}/pin`, {
+    method: 'PUT',
+    headers: getHeaders(adminToken),
+    body: JSON.stringify({ pin })
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(async () => ({ error: await res.text() }));
+    throw new Error(error.error || 'PIN konnte nicht gesetzt werden.');
+  }
   return res.json();
 }
 
@@ -298,35 +324,35 @@ export async function deletePrivateCategory(id: string) {
   return data;
 }
 
-export async function saveCategory(category: { id?: string; name: string; color: string; sort_order?: number }) {
+export async function saveCategory(category: { id?: string; name: string; color: string; sort_order?: number }, adminToken?: string) {
   if (category.id) {
     const res = await fetch(`${API_URL}/api/categories/${category.id}`, {
       method: 'PUT',
-      headers: getHeaders(),
+      headers: getHeaders(adminToken),
       body: JSON.stringify(category),
     });
     return res.json();
   }
   const res = await fetch(`${API_URL}/api/categories`, {
     method: 'POST',
-    headers: getHeaders(),
+    headers: getHeaders(adminToken),
     body: JSON.stringify(category),
   });
   return res.json();
 }
 
-export async function deleteCategory(id: string) {
+export async function deleteCategory(id: string, adminToken?: string) {
   const res = await fetch(`${API_URL}/api/categories/${id}`, {
     method: 'DELETE',
-    headers: getHeaders(),
+    headers: getHeaders(adminToken),
   });
   return res.json();
 }
 
-export async function reorderCategories(categoryIds: string[]) {
+export async function reorderCategories(categoryIds: string[], adminToken?: string) {
   const res = await fetch(`${API_URL}/api/categories/reorder`, {
     method: 'PUT',
-    headers: getHeaders(),
+    headers: getHeaders(adminToken),
     body: JSON.stringify({ categoryIds }),
   });
   return res.json();
