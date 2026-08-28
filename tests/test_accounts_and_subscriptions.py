@@ -243,6 +243,16 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         self.assertIn("setIsAuthenticated(false)", admin_modal)
         self.assertIn("setAdminToken('')", admin_modal)
 
+    def test_calendar_admin_can_set_vp_only_pin_in_correct_table(self):
+        admin_modal = (Path(__file__).resolve().parent.parent / "src/components/AdminModal.tsx").read_text(encoding="utf-8")
+        self.assertIn("onClick={() => handleSetUserPin(u.username)}", admin_modal)
+        self.assertIn("disabled={(pinEdits[u.username] || '').length !== 4}", admin_modal)
+
+        db_module = (Path(__file__).resolve().parent.parent / "server/db.ts").read_text(encoding="utf-8")
+        self.assertIn("UPDATE vp_only_users SET pin_hash = ?, must_change_pin = 1 WHERE user_id = ?", db_module)
+        self.assertIn("[hashPin(pin), vpOnlyRows[0].user_id]", db_module)
+        self.assertIn("UPDATE vp_users SET pin_hash = ?", db_module)
+
     def test_ntfy_history_is_cleared_only_once_per_calendar_day(self):
         cache = Path(self.temp.name) / "cache.db"
         marker = Path(self.temp.name) / "cleanup-date"

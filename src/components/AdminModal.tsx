@@ -637,47 +637,47 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
                             {!isUserAdmin ? (
                               <>
                                 {!isVpOnly && (
-                                  <>
-                                    <select
-                                      value={u.status || 'ACTIVE'}
-                                      onChange={(e) => handleUpdateStatus(u.username, e.target.value as any)}
-                                      className={`text-xs px-2 py-1.5 rounded-lg border ${theme.border} ${theme.bgModal} ${theme.textMain} focus:outline-none`}
-                                    >
-                                      <option value="ACTIVE">Aktiv</option>
-                                      <option value="READ_ONLY">Nur Lesen</option>
-                                      <option value="BLOCKED">Sperren</option>
-                                    </select>
-                                    <div className="flex items-center gap-1">
-                                      <input
-                                        type="password"
-                                        value={pinEdits[u.username] || ''}
-                                        onChange={(e) => setPinEdits(prev => ({ ...prev, [u.username]: e.target.value.replace(/\D/g, '').slice(0, 4) }))}
-                                        placeholder="PIN"
-                                        inputMode="numeric"
-                                        pattern="[0-9]{4}"
-                                        maxLength={4}
-                                        className={`w-16 text-xs px-2 py-1.5 rounded-lg border ${theme.border} ${theme.bgModal} ${theme.textMain} focus:outline-none text-center tracking-widest`}
-                                        aria-label={`Neue PIN für ${u.username}`}
-                                      />
-                                      <button
-                                        onClick={() => handleSetUserPin(u.username)}
-                                        disabled={(pinEdits[u.username] || '').length !== 4}
-                                        title="Neue Start-PIN setzen"
-                                        className="px-2 py-1.5 text-xs font-semibold text-amber-700 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-300 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/50 transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                                      >
-                                        <KeyRound className="w-3.5 h-3.5" />
-                                        PIN ändern
-                                      </button>
-                                    </div>
-                                    <button
-                                      onClick={() => handleResetPin(u.username)}
-                                      title="PIN zurücksetzen"
-                                      className="px-2 py-1.5 text-xs font-semibold text-rose-500 bg-rose-50 dark:bg-rose-950/30 rounded-lg hover:bg-rose-100 dark:hover:bg-rose-900/50 transition-colors flex items-center gap-1.5 cursor-pointer"
-                                    >
-                                      <KeyRound className="w-3.5 h-3.5" />
-                                      PIN zurücksetzen
-                                    </button>
-                                  </>
+                                  <select
+                                    value={u.status || 'ACTIVE'}
+                                    onChange={(e) => handleUpdateStatus(u.username, e.target.value as any)}
+                                    className={`text-xs px-2 py-1.5 rounded-lg border ${theme.border} ${theme.bgModal} ${theme.textMain} focus:outline-none`}
+                                  >
+                                    <option value="ACTIVE">Aktiv</option>
+                                    <option value="READ_ONLY">Nur Lesen</option>
+                                    <option value="BLOCKED">Sperren</option>
+                                  </select>
+                                )}
+                                <div className="flex items-center gap-1">
+                                  <input
+                                    type="password"
+                                    value={pinEdits[u.username] || ''}
+                                    onChange={(e) => setPinEdits(prev => ({ ...prev, [u.username]: e.target.value.replace(/\D/g, '').slice(0, 4) }))}
+                                    placeholder="PIN"
+                                    inputMode="numeric"
+                                    pattern="[0-9]{4}"
+                                    maxLength={4}
+                                    className={`w-16 text-xs px-2 py-1.5 rounded-lg border ${theme.border} ${theme.bgModal} ${theme.textMain} focus:outline-none text-center tracking-widest`}
+                                    aria-label={`Neue PIN für ${u.username}`}
+                                  />
+                                  <button
+                                    onClick={() => handleSetUserPin(u.username)}
+                                    disabled={(pinEdits[u.username] || '').length !== 4}
+                                    title="Neue Start-PIN setzen"
+                                    className="px-2 py-1.5 text-xs font-semibold text-amber-700 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-300 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/50 transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                                  >
+                                    <KeyRound className="w-3.5 h-3.5" />
+                                    PIN ändern
+                                  </button>
+                                </div>
+                                {!isVpOnly && (
+                                  <button
+                                    onClick={() => handleResetPin(u.username)}
+                                    title="PIN zurücksetzen"
+                                    className="px-2 py-1.5 text-xs font-semibold text-rose-500 bg-rose-50 dark:bg-rose-950/30 rounded-lg hover:bg-rose-100 dark:hover:bg-rose-900/50 transition-colors flex items-center gap-1.5 cursor-pointer"
+                                  >
+                                    <KeyRound className="w-3.5 h-3.5" />
+                                    PIN zurücksetzen
+                                  </button>
                                 )}
                                 <button
                                   onClick={() => handleDeleteUser(u.username)}

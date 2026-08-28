@@ -176,6 +176,10 @@ export async function deleteUserSessions(username: string): Promise<void> {
   }
   if (isConnected && pool) {
     await pool.query('DELETE FROM app_sessions WHERE LOWER(username) = LOWER(?)', [normalized]);
+    const [vpOnlySessionTables]: any = await pool.query("SHOW TABLES LIKE 'vp_only_sessions'");
+    if (vpOnlySessionTables.length) {
+      await pool.query('DELETE FROM vp_only_sessions WHERE LOWER(username) = LOWER(?)', [normalized]);
+    }
   }
 }
 
@@ -621,6 +625,33 @@ export async function dbAdminSetUserPin(username: string, pin: string) {
     throw new Error('Die PIN muss exakt vier Ziffern enthalten.');
   }
   const uname = username.toLowerCase();
+  if (isConnected && pool) {
+    const [vpOnlyTables]: any = await pool.query("SHOW TABLES LIKE 'vp_only_users'");
+    const [vpUserTables]: any = await pool.query("SHOW TABLES LIKE 'vp_users'");
+    if (vpOnlyTables.length && vpUserTables.length) {
+      const [vpOnlyRows]: any = await pool.query(
+        `SELECT only_users.user_id
+         FROM vp_only_users only_users
+         JOIN vp_users vp ON vp.id = only_users.user_id
+         LEFT JOIN users calendar_users ON LOWER(calendar_users.username) = LOWER(vp.username)
+         WHERE LOWER(vp.username) = LOWER(?)
+           AND calendar_users.username IS NULL
+           AND vp.active = 1
+           AND only_users.active = 1
+         LIMIT 1`,
+        [uname]
+      );
+      if (vpOnlyRows.length) {
+        await pool.query(
+          'UPDATE vp_only_users SET pin_hash = ?, must_change_pin = 1 WHERE user_id = ?',
+          [hashPin(pin), vpOnlyRows[0].user_id]
+        );
+        await pool.query('UPDATE vp_users SET pin_hash = ? WHERE LOWER(username) = LOWER(?)', ['', uname]);
+        await deleteUserSessions(uname);
+        return { success: true, vpOnly: true };
+      }
+    }
+  }
   const existing = await dbGetUser(uname);
   if (!existing) {
     throw new Error('Kalendernutzer nicht gefunden.');
