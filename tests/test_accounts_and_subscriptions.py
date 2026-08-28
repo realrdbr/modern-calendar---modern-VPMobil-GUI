@@ -12,9 +12,9 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from accounts import AccountStore, CalendarEventTypeOption, NotifySettings
+from accounts import AccountStore, CalendarEventTypeOption, NotifySettings, _hash_shared_pin
 from account_page import render_login, render_subscriptions
-from main import resolve_cookie_domain
+from main import AppRequestHandler, resolve_cookie_domain
 from main import cleanup_ntfy_history_once_per_day
 from ntfy.service import NtfyService, resolve_ntfy_internal_url
 from subscriptions import SubscriptionNotifier, subject_key, subject_options
@@ -89,6 +89,36 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         self.assertIsNotNone(changed)
         self.assertFalse(changed.must_change_pin)
 
+    def test_vp_only_login_accepts_scrypt_pin_hashes_from_calendar_admin(self):
+        vp_user = self.store.create_vp_only_user(
+            "vpguest", "2468", "11", created_by="alice",
+            ntfy_topic="vpmobil-vpguest", ntfy_username="ntfy_vpguest", ntfy_password="secret",
+        )
+        import sqlite3
+        with sqlite3.connect(Path(self.temp.name) / "accounts.sqlite") as connection:
+            connection.execute(
+                "UPDATE vp_only_users SET pin_hash = ? WHERE username = ?",
+                (_hash_shared_pin("2468"), "vpguest"),
+            )
+
+        authenticated = self.store.authenticate("vpguest", "2468", "127.0.0.1")
+        self.assertIsNotNone(authenticated)
+        self.assertTrue(authenticated.vp_only)
+
+        with sqlite3.connect(Path(self.temp.name) / "accounts.sqlite") as connection:
+            stored_pin = connection.execute(
+                "SELECT pin_hash FROM vp_only_users WHERE username = ?",
+                ("vpguest",),
+            ).fetchone()[0]
+        self.assertFalse(stored_pin.startswith("scrypt$"))
+        self.assertTrue(stored_pin.startswith("$argon2"))
+
+    def test_login_restart_wins_over_pin_stage_when_form_submits_both_values(self):
+        from urllib.parse import parse_qs
+        data = parse_qs("stage=pin&username=alice&stage=restart", keep_blank_values=True)
+        stage = "restart" if "restart" in data.get("stage", []) else AppRequestHandler._field(data, "stage")
+        self.assertEqual(stage, "restart")
+
     def test_admin_set_pin_forces_next_user_pin_change(self):
         import json
         vp_user = self.store.create_vp_only_user(
@@ -136,7 +166,7 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         self.store.delete_user("leftover")
         self.assertFalse(any(row["username"] == "leftover" for row in self.store.list_admin_panel_users()))
 
-    def test_admin_navigation_is_only_rendered_for_admin_flag(self):
+    def test_vp_navigation_has_no_admin_portal_but_keeps_vp_only_pin_change(self):
         vp_user = self.store.create_vp_only_user(
             "vpguest", "2468", "11", created_by="alice",
             ntfy_topic="vpmobil-vpguest", ntfy_username="ntfy_vpguest", ntfy_password="secret",
@@ -144,10 +174,6 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         normal_page = render_subscriptions(
             self.alice, ["11"], ("11",), {"11": []}, {"11": set()},
             NotifySettings(), [], "csrf", "https://ntfy.invalid",
-        )
-        admin_page = render_subscriptions(
-            self.alice, ["11"], ("11",), {"11": []}, {"11": set()},
-            NotifySettings(), [], "csrf", "https://ntfy.invalid", is_admin=True,
         )
         vp_only_page = render_subscriptions(
             vp_user, ["11"], ("11",), {"11": []}, {"11": set()},
@@ -159,25 +185,9 @@ class AccountAndSubscriptionTests(unittest.TestCase):
             "csrf", "https://ntfy.invalid", can_change_pin=True,
         )
         self.assertNotIn("data-admin-modal-open", normal_page)
-        self.assertIn("data-admin-modal-open", admin_page)
-        self.assertIn("Admin-Passwort", admin_page)
-        self.assertNotIn("Alle Benutzer", admin_page)
-        elevated_admin_page = render_subscriptions(
-            self.alice, ["11"], ("11",), {"11": []}, {"11": set()},
-            NotifySettings(), [], "csrf", "https://ntfy.invalid", is_admin=True, admin_authenticated=True,
-            admin_courses=[{"id": "MA1", "name": "Mathe", "teacher": "Kön", "type": "LK", "sort_order": 0}],
-            admin_modal_success="__open__",
-        )
-        self.assertIn("calendar-admin-sidebar", elevated_admin_page)
-        self.assertIn("admin-tab-button", elevated_admin_page)
-        self.assertIn("data-admin-course-save-form", elevated_admin_page)
-        self.assertIn('data-admin-course-move="left"', elevated_admin_page)
-        self.assertIn('name="teacher"', elevated_admin_page)
-        self.assertIn('data-admin-authenticated="1"', elevated_admin_page)
-        self.assertIn("/admin/lock", elevated_admin_page)
-        self.assertNotIn("__open__", elevated_admin_page)
-        self.assertNotIn("Adminbereich entsperrt", elevated_admin_page)
+        self.assertNotIn("data-admin-modal", normal_page)
         self.assertNotIn("data-admin-modal-open", vp_only_page)
+        self.assertNotIn("data-admin-modal", vp_only_page)
         self.assertIn("data-pin-modal-open", vp_only_page)
         self.assertNotIn("Kalender-Benachrichtigungen aktiv", vp_only_page)
         self.assertNotIn('name="calendar_event_type"', vp_only_page)

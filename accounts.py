@@ -92,6 +92,21 @@ def _verify_shared_pin(pin: str, stored_pin: str | None) -> bool:
     return hmac.compare_digest(pin, stored_pin)
 
 
+def _verify_account_pin(hasher: PasswordHasher, stored_pin: str | None, pin: str) -> tuple[bool, bool]:
+    """Prüft PINs aus allen unterstützten DB-Versionen.
+
+    Rückgabe: (gültig, sollte_auf_argon2_aktualisiert_werden).
+    """
+    if not stored_pin:
+        return False, False
+    try:
+        valid = hasher.verify(stored_pin, pin)
+        return valid, bool(valid and hasher.check_needs_rehash(stored_pin))
+    except (VerificationError, InvalidHashError):
+        valid = _verify_shared_pin(pin, stored_pin)
+        return valid, valid
+
+
 @dataclass(frozen=True)
 class User:
     id: int
@@ -1472,15 +1487,13 @@ class AccountStore:
                 )
                 if user_row is not None and bool(user_row["active"]):
                     stored_pin = user_row["vp_only_pin_hash"] if bool(user_row["vp_only"]) else user_row["pin_hash"]
-                    try:
-                        valid = (not bool(user_row["vp_only"]) or bool(user_row["vp_only_active"])) and self._hasher.verify(stored_pin, pin)
-                        if valid and self._hasher.check_needs_rehash(stored_pin):
-                            if bool(user_row["vp_only"]):
-                                self._run(connection, "UPDATE vp_only_users SET pin_hash = ? WHERE user_id = ?", (self._hasher.hash(pin), user_row["id"]))
-                            else:
-                                self._run(connection, "UPDATE users SET pin_hash = ? WHERE id = ?", (self._hasher.hash(pin), user_row["id"]))
-                    except (VerificationError, InvalidHashError):
-                        valid = False
+                    valid, needs_rehash = _verify_account_pin(self._hasher, stored_pin, pin)
+                    valid = (not bool(user_row["vp_only"]) or bool(user_row["vp_only_active"])) and valid
+                    if valid and needs_rehash:
+                        if bool(user_row["vp_only"]):
+                            self._run(connection, "UPDATE vp_only_users SET pin_hash = ? WHERE user_id = ?", (self._hasher.hash(pin), user_row["id"]))
+                        else:
+                            self._run(connection, "UPDATE users SET pin_hash = ? WHERE id = ?", (self._hasher.hash(pin), user_row["id"]))
                 self._run(
                     connection,
                     "INSERT INTO login_attempts(username, ip_address, attempted_at, successful) VALUES (?, ?, ?, ?)",
@@ -1508,12 +1521,9 @@ class AccountStore:
                         calendar_pin = user_row.get("calendar_pin")
                         valid = not calendar_pin or _verify_shared_pin(pin, calendar_pin)
                     elif user_row.get("vp_only_pin_hash") and bool(user_row.get("vp_only_active")):
-                        try:
-                            valid = self._hasher.verify(user_row.get("vp_only_pin_hash", ""), pin)
-                            if valid and self._hasher.check_needs_rehash(user_row.get("vp_only_pin_hash", "")):
-                                self._run(connection, "UPDATE vp_only_users SET pin_hash = ? WHERE user_id = ?", (self._hasher.hash(pin), user_row["id"]))
-                        except (VerificationError, InvalidHashError):
-                            valid = False
+                        valid, needs_rehash = _verify_account_pin(self._hasher, user_row.get("vp_only_pin_hash", ""), pin)
+                        if valid and needs_rehash:
+                            self._run(connection, "UPDATE vp_only_users SET pin_hash = ? WHERE user_id = ?", (self._hasher.hash(pin), user_row["id"]))
                     if valid and user_row.get("calendar_username") is None:
                         self._run(
                             connection,

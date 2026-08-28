@@ -38,7 +38,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
 
   useEffect(() => {
     if (isOpen && isAuthenticated) {
-      loadData();
+      loadData(adminToken);
     }
   }, [isOpen, isAuthenticated, adminToken]);
 
@@ -61,16 +61,32 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
     onClose();
   };
 
-  const loadData = async () => {
+  const isAdminElevationError = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error || '');
+    return /Admin-Elevation|Adminbereich|abgelaufen|entsperrt/i.test(message);
+  };
+
+  const handleAdminRequestError = (error: unknown) => {
+    if (!isAdminElevationError(error)) return false;
+    setAdminPassword('');
+    setAdminToken('');
+    setIsAuthenticated(false);
+    setAuthError('Adminbereich abgelaufen. Bitte erneut verifizieren.');
+    return true;
+  };
+
+  const loadData = async (token = adminToken) => {
     try {
-      const fetchedUsers = await adminFetchUsers(adminToken);
+      const fetchedUsers = await adminFetchUsers(token);
       setUsers(fetchedUsers);
       const fetchedCats = await fetchCategories();
       setCategories(fetchedCats);
       const fetchedCourses = await fetchCourses();
       setCourses(fetchedCourses);
     } catch (err) {
-      setAuthError(err instanceof Error ? err.message : 'Admin-Daten konnten nicht geladen werden.');
+      if (!handleAdminRequestError(err)) {
+        setAuthError(err instanceof Error ? err.message : 'Admin-Daten konnten nicht geladen werden.');
+      }
     }
   };
 
@@ -78,9 +94,11 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
     e.preventDefault();
     try {
       const elevated = await adminElevate(adminPassword);
-      setAdminToken(elevated.adminToken);
+      const token = elevated.adminToken;
+      setAdminToken(token);
       setIsAuthenticated(true);
       setAuthError('');
+      await loadData(token);
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : 'Fehler bei der Admin-Anmeldung.');
     }
@@ -96,6 +114,11 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
   
   const handleAddUser = async () => {
     if (!newUserName.trim()) return;
+    if (!adminToken) {
+      setAuthError('Bitte verifiziere den Adminbereich erneut.');
+      setIsAuthenticated(false);
+      return;
+    }
     try {
       await adminAddUser(newUserName.trim(), newUserPin.trim() || undefined, adminToken, newUserVpOnly, newUserClass.trim() || '11');
       const fetchedUsers = await adminFetchUsers(adminToken);
@@ -105,7 +128,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
       setNewUserClass('11');
       setNewUserVpOnly(false);
     } catch (e: any) {
-      alert(e.message || 'Fehler beim Erstellen');
+      if (!handleAdminRequestError(e)) alert(e.message || 'Fehler beim Erstellen');
     }
   };
 
@@ -115,7 +138,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
       await adminDeleteUser(uname, adminToken);
       setUsers(prev => prev.filter(u => u.username !== uname));
     } catch (e: any) {
-      alert(e.message || 'Fehler beim Löschen');
+      if (!handleAdminRequestError(e)) alert(e.message || 'Fehler beim Löschen');
     }
   };
 
@@ -143,7 +166,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
       setUsers(prev => prev.map(u => selectedUsers.includes(u.username) ? { ...u, status } : u));
       setSelectedUsers([]);
     } catch (err) {
-      alert('Fehler beim Speichern');
+      if (!handleAdminRequestError(err)) alert('Fehler beim Speichern');
     }
   };
 
@@ -152,7 +175,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
       await adminUpdateUserStatus(uname, status, adminToken);
       setUsers(prev => prev.map(u => u.username === uname ? { ...u, status } : u));
     } catch (err) {
-      alert('Fehler beim Speichern');
+      if (!handleAdminRequestError(err)) alert('Fehler beim Speichern');
     }
   };
 
@@ -162,7 +185,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
       await adminResetUserPin(uname, adminToken);
       alert(`PIN für ${uname} wurde gelöscht.`);
     } catch (err) {
-      alert('Fehler beim Zurücksetzen.');
+      if (!handleAdminRequestError(err)) alert('Fehler beim Zurücksetzen.');
     }
   };
 
@@ -177,7 +200,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
       setPinEdits(prev => ({ ...prev, [uname]: '' }));
       alert(`Neue Start-PIN für ${uname} wurde gesetzt. Der Benutzer muss sie beim nächsten Login ändern.`);
     } catch (err: any) {
-      alert(err.message || 'Fehler beim Setzen der PIN.');
+      if (!handleAdminRequestError(err)) alert(err.message || 'Fehler beim Setzen der PIN.');
     }
   };
 
@@ -194,7 +217,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
       setCategories(prev => [...prev, saved]);
       setNewCatName('');
     } catch (e) {
-      alert('Fehler beim Speichern');
+      if (!handleAdminRequestError(e)) alert('Fehler beim Speichern');
     }
   };
 
@@ -203,7 +226,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
       const saved = await saveCategory({ id, name, color }, adminToken);
       setCategories(prev => prev.map(c => c.id === id ? saved : c));
     } catch (e) {
-      alert('Fehler beim Speichern');
+      if (!handleAdminRequestError(e)) alert('Fehler beim Speichern');
     }
   };
 
@@ -213,7 +236,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
       await deleteCategory(id, adminToken);
       setCategories(prev => prev.filter(c => c.id !== id));
     } catch (e) {
-      alert('Fehler beim Löschen');
+      if (!handleAdminRequestError(e)) alert('Fehler beim Löschen');
     }
   };
 
@@ -243,7 +266,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
       setNewCourseName('');
       setNewCourseTeacher('');
     } catch (e) {
-      alert('Fehler beim Speichern');
+      if (!handleAdminRequestError(e)) alert('Fehler beim Speichern');
     }
   };
 
@@ -253,7 +276,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
       setCourses(prev => prev.map(c => c.id === id ? updated : c));
       await saveCourse(updated, adminToken);
     } catch (e) {
-      alert('Fehler beim Speichern');
+      if (!handleAdminRequestError(e)) alert('Fehler beim Speichern');
     }
   };
 
@@ -263,7 +286,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
       await deleteCourse(id, adminToken);
       setCourses(prev => prev.filter(c => c.id !== id));
     } catch (e) {
-      alert('Fehler beim Löschen');
+      if (!handleAdminRequestError(e)) alert('Fehler beim Löschen');
     }
   };
 
@@ -334,7 +357,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
       }
       await reorderCourses(newCourses.map(c => c.id), adminToken);
     } catch (err) {
-      console.error('Failed to save reordered courses', err);
+      if (!handleAdminRequestError(err)) console.error('Failed to save reordered courses', err);
     }
   };
 
@@ -383,7 +406,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
       await saveCourse(updatedSource, adminToken);
       await reorderCourses(newCourses.map(c => c.id), adminToken);
     } catch (err) {
-      console.error('Failed to save reordered courses', err);
+      if (!handleAdminRequestError(err)) console.error('Failed to save reordered courses', err);
     }
   };
 
@@ -411,7 +434,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
     try {
       await reorderCourses(newCourses.map(c => c.id), adminToken);
     } catch (err) {
-      console.error('Failed to save order', err);
+      if (!handleAdminRequestError(err)) console.error('Failed to save order', err);
     }
   };
 
@@ -437,7 +460,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
       await saveCourse(updated, adminToken);
       await reorderCourses(newCourses.map(c => c.id), adminToken);
     } catch (err) {
-      console.error('Failed to save course', err);
+      if (!handleAdminRequestError(err)) console.error('Failed to save course', err);
     }
   };
 

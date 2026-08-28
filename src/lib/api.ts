@@ -8,6 +8,17 @@ function getHeaders(adminToken?: string) {
   return headers;
 }
 
+async function readError(res: Response, fallback: string) {
+  const text = await res.text();
+  if (!text) return fallback;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed.error || fallback;
+  } catch {
+    return text;
+  }
+}
+
 export async function checkUser(username?: string) {
   const url = username ? `${API_URL}/api/check?username=${encodeURIComponent(username)}` : `${API_URL}/api/check`;
   const res = await fetch(url, { headers: getHeaders() });
@@ -162,15 +173,19 @@ export async function saveCourse(courseData: { id?: string; name: string; teache
     const res = await fetch(`${API_URL}/api/courses/${courseData.id}`, {
       method: 'PUT',
       headers: getHeaders(adminToken),
+      credentials: adminToken ? 'same-origin' : undefined,
       body: JSON.stringify(courseData),
     });
+    if (!res.ok) throw new Error(await readError(res, 'Kurs konnte nicht gespeichert werden.'));
     return res.json();
   }
   const res = await fetch(`${API_URL}/api/courses`, {
     method: 'POST',
     headers: getHeaders(adminToken),
+    credentials: adminToken ? 'same-origin' : undefined,
     body: JSON.stringify(courseData),
   });
+  if (!res.ok) throw new Error(await readError(res, 'Kurs konnte nicht gespeichert werden.'));
   return res.json();
 }
 
@@ -178,8 +193,10 @@ export async function reorderCourses(courseIds: string[], adminToken?: string) {
   const res = await fetch(`${API_URL}/api/courses/reorder`, {
     method: 'PUT',
     headers: getHeaders(adminToken),
+    credentials: adminToken ? 'same-origin' : undefined,
     body: JSON.stringify({ courseIds }),
   });
+  if (!res.ok) throw new Error(await readError(res, 'Kurs-Reihenfolge konnte nicht gespeichert werden.'));
   return res.json();
 }
 
@@ -187,7 +204,9 @@ export async function deleteCourse(id: string, adminToken?: string) {
   const res = await fetch(`${API_URL}/api/courses/${id}`, {
     method: 'DELETE',
     headers: getHeaders(adminToken),
+    credentials: adminToken ? 'same-origin' : undefined,
   });
+  if (!res.ok) throw new Error(await readError(res, 'Kurs konnte nicht gelöscht werden.'));
   return res.json();
 }
 
@@ -246,7 +265,11 @@ export async function adminElevate(password: string) {
 }
 
 export async function adminFetchUsers(adminToken?: string) {
-  const res = await fetch(`${API_URL}/api/admin/users`, { headers: getHeaders(adminToken) });
+  const res = await fetch(`${API_URL}/api/admin/users`, {
+    headers: getHeaders(adminToken),
+    credentials: 'same-origin',
+  });
+  if (!res.ok) throw new Error(await readError(res, 'Benutzer konnten nicht geladen werden.'));
   return res.json();
 }
 
@@ -254,9 +277,10 @@ export async function adminUpdateUserStatus(username: string, status: 'ACTIVE' |
   const res = await fetch(`${API_URL}/api/admin/users/${username}/status`, {
     method: 'PUT',
     headers: getHeaders(adminToken),
+    credentials: 'same-origin',
     body: JSON.stringify({ status })
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await readError(res, 'Benutzerstatus konnte nicht geändert werden.'));
   return res.json();
 }
 
@@ -264,27 +288,30 @@ export async function adminAddUser(username: string, pin?: string, adminToken?: 
   const res = await fetch(`${API_URL}/api/admin/users`, {
     method: 'POST',
     headers: getHeaders(adminToken),
+    credentials: 'same-origin',
     body: JSON.stringify({ username, pin, vpOnly, className })
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await readError(res, 'Benutzer konnte nicht angelegt werden.'));
   return res.json();
 }
 
 export async function adminDeleteUser(username: string, adminToken?: string) {
   const res = await fetch(`${API_URL}/api/admin/users/${username}`, {
     method: 'DELETE',
-    headers: getHeaders(adminToken)
+    headers: getHeaders(adminToken),
+    credentials: 'same-origin',
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await readError(res, 'Benutzer konnte nicht gelöscht werden.'));
   return res.json();
 }
 
 export async function adminResetUserPin(username: string, adminToken?: string) {
   const res = await fetch(`${API_URL}/api/admin/users/${username}/reset-pin`, {
     method: 'PUT',
-    headers: getHeaders(adminToken)
+    headers: getHeaders(adminToken),
+    credentials: 'same-origin',
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await readError(res, 'PIN konnte nicht zurückgesetzt werden.'));
   return res.json();
 }
 
@@ -292,12 +319,10 @@ export async function adminSetUserPin(username: string, pin: string, adminToken?
   const res = await fetch(`${API_URL}/api/admin/users/${username}/pin`, {
     method: 'PUT',
     headers: getHeaders(adminToken),
+    credentials: 'same-origin',
     body: JSON.stringify({ pin })
   });
-  if (!res.ok) {
-    const error = await res.json().catch(async () => ({ error: await res.text() }));
-    throw new Error(error.error || 'PIN konnte nicht gesetzt werden.');
-  }
+  if (!res.ok) throw new Error(await readError(res, 'PIN konnte nicht gesetzt werden.'));
   return res.json();
 }
 
@@ -329,15 +354,19 @@ export async function saveCategory(category: { id?: string; name: string; color:
     const res = await fetch(`${API_URL}/api/categories/${category.id}`, {
       method: 'PUT',
       headers: getHeaders(adminToken),
+      credentials: adminToken ? 'same-origin' : undefined,
       body: JSON.stringify(category),
     });
+    if (!res.ok) throw new Error(await readError(res, 'Kategorie konnte nicht gespeichert werden.'));
     return res.json();
   }
   const res = await fetch(`${API_URL}/api/categories`, {
     method: 'POST',
     headers: getHeaders(adminToken),
+    credentials: adminToken ? 'same-origin' : undefined,
     body: JSON.stringify(category),
   });
+  if (!res.ok) throw new Error(await readError(res, 'Kategorie konnte nicht gespeichert werden.'));
   return res.json();
 }
 
@@ -345,7 +374,9 @@ export async function deleteCategory(id: string, adminToken?: string) {
   const res = await fetch(`${API_URL}/api/categories/${id}`, {
     method: 'DELETE',
     headers: getHeaders(adminToken),
+    credentials: adminToken ? 'same-origin' : undefined,
   });
+  if (!res.ok) throw new Error(await readError(res, 'Kategorie konnte nicht gelöscht werden.'));
   return res.json();
 }
 
@@ -353,7 +384,9 @@ export async function reorderCategories(categoryIds: string[], adminToken?: stri
   const res = await fetch(`${API_URL}/api/categories/reorder`, {
     method: 'PUT',
     headers: getHeaders(adminToken),
+    credentials: adminToken ? 'same-origin' : undefined,
     body: JSON.stringify({ categoryIds }),
   });
+  if (!res.ok) throw new Error(await readError(res, 'Kategorie-Reihenfolge konnte nicht gespeichert werden.'));
   return res.json();
 }

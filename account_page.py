@@ -190,19 +190,10 @@ def render_subscriptions(
     saved: bool = False,
     error: str | None = None,
     test_sent: bool = False,
-    is_admin: bool = False,
-    admin_authenticated: bool = False,
-    admin_users: list[dict[str, object]] | None = None,
-    admin_categories: list[dict[str, object]] | None = None,
-    admin_courses: list[dict[str, object]] | None = None,
-    admin_modal_error: str | None = None,
-    admin_modal_success: str | None = None,
     can_change_pin: bool = False,
     force_pin_change: bool = False,
     pin_modal_error: str | None = None,
     pin_modal_changed: bool = False,
-    vp_user_modal_error: str | None = None,
-    vp_user_modal_created: bool = False,
     session_username: str | None = None,
 ) -> str:
     message = '<p class="notice success">Deine Auswahl wurde gespeichert.</p>' if saved else ""
@@ -266,7 +257,7 @@ def render_subscriptions(
     """
     return _layout("Ankündigungen · VpMobil", f"""
     <header class=\"topbar\"><div class=\"brand\"><h1>Meine Ankündigungen</h1><p>{escape(user.username)} · Klasse {escape(user.class_name)}</p></div>
-      {render_vp_navigation("notifications", csrf_token, is_admin=is_admin, admin_authenticated=admin_authenticated, admin_users=admin_users, admin_categories=admin_categories, admin_courses=admin_courses, admin_modal_error=admin_modal_error, admin_modal_success=admin_modal_success, can_change_pin=can_change_pin, force_pin_change=force_pin_change, pin_modal_error=pin_modal_error, pin_modal_changed=pin_modal_changed, vp_user_modal_error=vp_user_modal_error, vp_user_modal_created=vp_user_modal_created, session_username=session_username)}</header>
+      {render_vp_navigation("notifications", csrf_token, can_change_pin=can_change_pin, force_pin_change=force_pin_change, pin_modal_error=pin_modal_error, pin_modal_changed=pin_modal_changed, session_username=session_username)}</header>
     {message}<section class=\"panel\"><form class=\"stack\" method=\"post\" action=\"/abos\">
       <input type=\"hidden\" name=\"csrf_token\" value=\"{escape(csrf_token)}\">
       {class_inputs}

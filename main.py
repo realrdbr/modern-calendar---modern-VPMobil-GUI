@@ -4,11 +4,9 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
-import hmac
 import json
 import os
 from pathlib import Path
-import secrets
 import sqlite3
 from types import SimpleNamespace
 from threading import Event, Thread
@@ -56,12 +54,6 @@ def resolve_cookie_domain() -> str | None:
 
 
 COOKIE_DOMAIN = resolve_cookie_domain()
-ADMIN_ELEVATIONS: dict[str, float] = {}
-ADMIN_ATTEMPTS: dict[str, dict[str, float | int]] = {}
-ADMIN_ELEVATION_SECONDS = 15 * 60
-ADMIN_LOGIN_WINDOW_SECONDS = 15 * 60
-ADMIN_LOGIN_LOCK_SECONDS = 30 * 60
-ADMIN_LOGIN_MAX_FAILURES = 5
 
 
 def session_cookie_headers(token: str, max_age: int) -> list[str]:
@@ -206,86 +198,11 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             redirect(self, "/login")
         return session
 
-    def _is_admin_session(self, session: Session) -> bool:
-        return (not session.user.vp_only) and self.store.is_admin(session.user.username)
-
-    def _admin_elevation_key(self, session: Session) -> str:
-        return f"{session.user.username.lower()}::{self._client_ip()}"
-
-    def _has_admin_elevation(self, session: Session) -> bool:
-        key = self._admin_elevation_key(session)
-        expires_at = ADMIN_ELEVATIONS.get(key, 0)
-        if expires_at > time.time():
-            return True
-        ADMIN_ELEVATIONS.pop(key, None)
-        return False
-
-    def _clear_admin_elevation(self, session: Session) -> None:
-        ADMIN_ELEVATIONS.pop(self._admin_elevation_key(session), None)
-
-    def _check_admin_password_rate_limit(self, session: Session) -> tuple[bool, int]:
-        key = self._admin_elevation_key(session)
-        now = time.time()
-        attempt = ADMIN_ATTEMPTS.get(key)
-        if not attempt:
-            return True, 0
-        if now - float(attempt.get("last_failed_at", 0)) > ADMIN_LOGIN_WINDOW_SECONDS:
-            ADMIN_ATTEMPTS.pop(key, None)
-            return True, 0
-        lock_until = float(attempt.get("lock_until", 0))
-        if lock_until > now:
-            return False, max(1, int(lock_until - now))
-        return True, 0
-
-    def _record_admin_password_failure(self, session: Session) -> None:
-        key = self._admin_elevation_key(session)
-        now = time.time()
-        attempt = ADMIN_ATTEMPTS.get(key, {"count": 0, "last_failed_at": now, "lock_until": 0})
-        if now - float(attempt.get("last_failed_at", 0)) > ADMIN_LOGIN_WINDOW_SECONDS:
-            attempt = {"count": 0, "last_failed_at": now, "lock_until": 0}
-        attempt["count"] = int(attempt.get("count", 0)) + 1
-        attempt["last_failed_at"] = now
-        if int(attempt["count"]) >= ADMIN_LOGIN_MAX_FAILURES:
-            attempt["lock_until"] = now + ADMIN_LOGIN_LOCK_SECONDS
-        ADMIN_ATTEMPTS[key] = attempt
-
-    def _verify_admin_password(self, candidate: str) -> tuple[bool, str | None]:
-        configured = os.getenv("ADMIN_PANEL_PASSWORD", "")
-        if len(configured) < 12:
-            return False, "ADMIN_PANEL_PASSWORD ist nicht sicher konfiguriert (mindestens 12 Zeichen)."
-        if not candidate or len(candidate) > 256:
-            return False, "Admin-Passwort ungültig."
-        return hmac.compare_digest(candidate.encode("utf-8"), configured.encode("utf-8")), None
-
-    def _require_admin_elevation(self, session: Session) -> bool:
-        if not self._is_admin_session(session):
-            self.send_error(403, "Nur Administratoren haben Zugriff auf diese Funktion.")
-            return False
-        if not self._has_admin_elevation(session):
-            self.handle_plan_page({}, admin_modal_error="Bitte entsperre den Adminbereich zuerst.")
-            return False
-        return True
-
     def _nav_flags(self, session: Session) -> dict[str, bool]:
-        is_admin = self._is_admin_session(session)
-        admin_authenticated = is_admin and self._has_admin_elevation(session)
-        admin_payload = {}
-        if admin_authenticated:
-            try:
-                admin_payload = {
-                    "admin_users": self.store.list_admin_panel_users(),
-                    "admin_categories": self.store.get_global_calendar_categories(),
-                    "admin_courses": self.store.get_global_courses(),
-                }
-            except Exception as error:
-                log(f"Admin-Daten konnten nicht geladen werden: {error}")
         return {
-            "is_admin": is_admin,
-            "admin_authenticated": admin_authenticated,
             "can_change_pin": session.user.vp_only,
             "force_pin_change": session.user.vp_only and session.user.must_change_pin,
             "session_username": session.user.username,
-            **admin_payload,
         }
 
     def _validate_csrf(self, session: Session, data: dict[str, list[str]]) -> bool:
@@ -330,10 +247,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/pin-aendern":
             redirect(self, "/")
             return
-        if parsed.path == "/vp-nutzer":
-            if not self._is_admin_session(session):
-                self.send_error(403, "Nur Administratoren haben Zugriff auf diese Funktion.")
-                return
+        if parsed.path == "/vp-nutzer" or parsed.path == "/admin" or parsed.path.startswith("/admin/"):
             redirect(self, "/")
             return
         if parsed.path == "/abos":
@@ -364,7 +278,8 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             self.send_error(400, "Ungültige Anfrage")
             return
         if path == "/login":
-            stage = self._field(data, "stage")
+            stages = data.get("stage", [])
+            stage = "restart" if "restart" in stages else self._field(data, "stage")
             username = self._field(data, "username").strip()
             if stage == "restart":
                 send_html(self, render_login())
@@ -422,134 +337,8 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             except Exception as error:
                 self.handle_plan_page({}, pin_modal_error=str(error))
             return
-        if path == "/admin/auth":
-            if not self._is_admin_session(session):
-                self.send_error(403, "Nur Administratoren haben Zugriff auf diese Funktion.")
-                return
-            allowed, remaining = self._check_admin_password_rate_limit(session)
-            if not allowed:
-                self.handle_plan_page({}, admin_modal_error=f"Zu viele Admin-Passwortversuche. Bitte warte {remaining} Sekunden.")
-                return
-            valid, config_error = self._verify_admin_password(self._field(data, "admin_password"))
-            if not valid:
-                self._record_admin_password_failure(session)
-                self.handle_plan_page({}, admin_modal_error=config_error or "Admin-Passwort falsch.")
-                return
-            ADMIN_ATTEMPTS.pop(self._admin_elevation_key(session), None)
-            ADMIN_ELEVATIONS[self._admin_elevation_key(session)] = time.time() + ADMIN_ELEVATION_SECONDS
-            self.handle_plan_page({}, admin_modal_success="__open__")
-            return
-        if path == "/admin/lock":
-            self._clear_admin_elevation(session)
-            self.send_response(204)
-            self.end_headers()
-            return
-        if path.startswith("/admin/"):
-            if not self._require_admin_elevation(session):
-                return
-            try:
-                if path == "/admin/users/create":
-                    username = self._field(data, "username")
-                    pin = self._field(data, "pin").strip()
-                    class_name = (self._field(data, "class_name") or os.getenv("VP_DEFAULT_CLASS", "11")).strip() or "11"
-                    if pin and (len(pin) != 4 or not pin.isascii() or not pin.isdigit()):
-                        raise ValueError("Die PIN muss aus genau vier Ziffern bestehen.")
-                    if self.store.username_exists(username):
-                        raise ValueError("Name bereits vergeben.")
-                    topic, ntfy_username, ntfy_password = NtfyService(ROOT).create_reader()
-                    if self._field(data, "vp_only") == "1":
-                        if not pin:
-                            raise ValueError("VP-only-Nutzer brauchen eine vierstellige Start-PIN.")
-                        user = self.store.create_vp_only_user(
-                            username, pin, class_name, created_by=session.user.username,
-                            ntfy_topic=topic, ntfy_username=ntfy_username, ntfy_password=ntfy_password,
-                        )
-                    else:
-                        user = self.store.create_user(
-                            username, pin, class_name,
-                            ntfy_topic=topic, ntfy_username=ntfy_username, ntfy_password=ntfy_password,
-                        )
-                    NtfyService(ROOT).ensure_reader_credentials(user.ntfy_topic, user.ntfy_username, user.ntfy_password)
-                    self.handle_plan_page({}, admin_modal_success="Benutzer wurde angelegt.")
-                    return
-                if path == "/admin/users/delete":
-                    target = self._field(data, "username")
-                    if target.strip().lower() == session.user.username.lower():
-                        raise ValueError("Du kannst dein eigenes Admin-Konto hier nicht löschen.")
-                    if self.store.is_admin(target):
-                        raise ValueError("Admins können nur direkt in der Datenbank gelöscht/geändert werden.")
-                    self.store.delete_user(target)
-                    self.handle_plan_page({}, admin_modal_success="Benutzer wurde gelöscht.")
-                    return
-                if path == "/admin/users/status":
-                    target = self._field(data, "username")
-                    if self.store.is_admin(target):
-                        raise ValueError("Admins können nur direkt in der Datenbank geändert werden.")
-                    self.store.set_calendar_status(target, self._field(data, "status"))
-                    self.handle_plan_page({}, admin_modal_success="Benutzerstatus wurde aktualisiert.")
-                    return
-                if path == "/admin/users/pin":
-                    target = self._field(data, "username")
-                    if target.strip().lower() == session.user.username.lower():
-                        raise ValueError("Deine eigene Admin-PIN kannst du hier nicht ändern.")
-                    if self.store.is_admin(target):
-                        raise ValueError("Admin-PINs können nur direkt durch den Benutzer geändert werden.")
-                    self.store.admin_set_user_pin(target, self._field(data, "pin"))
-                    self.handle_plan_page({}, admin_modal_success="Neue Start-PIN wurde gesetzt. Der Benutzer muss sie beim nächsten Login ändern.")
-                    return
-                if path == "/admin/categories/save":
-                    raw_name = self._field(data, "name")
-                    raw_id = self._field(data, "id").strip() or raw_name
-                    self.store.save_global_calendar_category(raw_id, raw_name, self._field(data, "color"))
-                    self.handle_plan_page({}, admin_modal_success="Kategorie wurde gespeichert.")
-                    return
-                if path == "/admin/categories/delete":
-                    self.store.delete_global_calendar_category(self._field(data, "id"))
-                    self.handle_plan_page({}, admin_modal_success="Kategorie wurde gelöscht.")
-                    return
-                if path == "/admin/courses/save":
-                    raw_name = self._field(data, "name")
-                    raw_id = self._field(data, "id").strip() or raw_name
-                    self.store.save_global_course(raw_id, raw_name, self._field(data, "teacher"), self._field(data, "type"))
-                    self.handle_plan_page({}, admin_modal_success="Kurs wurde gespeichert.")
-                    return
-                if path == "/admin/courses/delete":
-                    self.store.delete_global_course(self._field(data, "id"))
-                    self.handle_plan_page({}, admin_modal_success="Kurs wurde gelöscht.")
-                    return
-                if path == "/admin/courses/reorder":
-                    self.store.reorder_global_courses(data.get("course_id", []), data.get("course_type", []))
-                    self.send_response(204)
-                    self.end_headers()
-                    return
-            except Exception as error:
-                self.handle_plan_page({}, admin_modal_error=str(error))
-                return
-            self.send_error(404, "Unbekannte Admin-Aktion.")
-            return
         if session.user.must_change_pin:
             redirect(self, "/")
-            return
-        if path == "/vp-nutzer":
-            if not self._require_admin_elevation(session):
-                return
-            try:
-                if self.store.username_exists(self._field(data, "username")):
-                    raise ValueError("Name bereits vergeben.")
-                topic, ntfy_username, ntfy_password = NtfyService(ROOT).create_reader()
-                user = self.store.create_vp_only_user(
-                    self._field(data, "username"),
-                    self._field(data, "pin"),
-                    self._field(data, "class_name"),
-                    created_by=session.user.username,
-                    ntfy_topic=topic,
-                    ntfy_username=ntfy_username,
-                    ntfy_password=ntfy_password,
-                )
-                NtfyService(ROOT).ensure_reader_credentials(user.ntfy_topic, user.ntfy_username, user.ntfy_password)
-                self.handle_plan_page({}, vp_user_modal_created=True)
-            except Exception as error:
-                self.handle_plan_page({}, vp_user_modal_error=str(error))
             return
         if path == "/abos/test":
             try:
@@ -724,10 +513,6 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         *,
         pin_modal_error: str | None = None,
         pin_modal_changed: bool = False,
-        vp_user_modal_error: str | None = None,
-        vp_user_modal_created: bool = False,
-        admin_modal_error: str | None = None,
-        admin_modal_success: str | None = None,
     ) -> None:
         selected_date = parse_week(query_value(query, "woche"))
         cookies = self._cookies()
@@ -794,10 +579,6 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 logout_csrf_token=session.csrf_token if session else None,
                 pin_modal_error=pin_modal_error,
                 pin_modal_changed=pin_modal_changed,
-                vp_user_modal_error=vp_user_modal_error,
-                vp_user_modal_created=vp_user_modal_created,
-                admin_modal_error=admin_modal_error,
-                admin_modal_success=admin_modal_success,
                 **flags,
             )
         except ResourceNotFound:
@@ -809,10 +590,6 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 logout_csrf_token=session.csrf_token if session else None,
                 pin_modal_error=pin_modal_error,
                 pin_modal_changed=pin_modal_changed,
-                vp_user_modal_error=vp_user_modal_error,
-                vp_user_modal_created=vp_user_modal_created,
-                admin_modal_error=admin_modal_error,
-                admin_modal_success=admin_modal_success,
                 **flags,
             )
         except Unauthorized:
@@ -824,10 +601,6 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 logout_csrf_token=session.csrf_token if session else None,
                 pin_modal_error=pin_modal_error,
                 pin_modal_changed=pin_modal_changed,
-                vp_user_modal_error=vp_user_modal_error,
-                vp_user_modal_created=vp_user_modal_created,
-                admin_modal_error=admin_modal_error,
-                admin_modal_success=admin_modal_success,
                 **flags,
             )
         except Exception as error:
@@ -839,10 +612,6 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 logout_csrf_token=session.csrf_token if session else None,
                 pin_modal_error=pin_modal_error,
                 pin_modal_changed=pin_modal_changed,
-                vp_user_modal_error=vp_user_modal_error,
-                vp_user_modal_created=vp_user_modal_created,
-                admin_modal_error=admin_modal_error,
-                admin_modal_success=admin_modal_success,
                 **flags,
             )
         send_html(self, html, headers)

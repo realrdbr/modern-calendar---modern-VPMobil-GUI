@@ -440,19 +440,10 @@ def render_plan_page(
     error_message: str | None = None,
     filters_active: bool = True,
     logout_csrf_token: str | None = None,
-    is_admin: bool = False,
-    admin_authenticated: bool = False,
-    admin_users: list[dict[str, object]] | None = None,
-    admin_categories: list[dict[str, object]] | None = None,
-    admin_courses: list[dict[str, object]] | None = None,
-    admin_modal_error: str | None = None,
-    admin_modal_success: str | None = None,
     can_change_pin: bool = False,
     force_pin_change: bool = False,
     pin_modal_error: str | None = None,
     pin_modal_changed: bool = False,
-    vp_user_modal_error: str | None = None,
-    vp_user_modal_created: bool = False,
     session_username: str | None = None,
 ) -> str:
     """Erzeugt die komplette Wochenplan-Seite."""
@@ -973,7 +964,7 @@ def render_plan_page(
                 <p>Woche {escape(week_title)}</p>
             </div>
 
-            {render_vp_navigation("classes", logout_csrf_token, is_admin=is_admin, admin_authenticated=admin_authenticated, admin_users=admin_users, admin_categories=admin_categories, admin_courses=admin_courses, admin_modal_error=admin_modal_error, admin_modal_success=admin_modal_success, can_change_pin=can_change_pin, force_pin_change=force_pin_change, pin_modal_error=pin_modal_error, pin_modal_changed=pin_modal_changed, vp_user_modal_error=vp_user_modal_error, vp_user_modal_created=vp_user_modal_created, session_username=session_username)}
+            {render_vp_navigation("classes", logout_csrf_token, can_change_pin=can_change_pin, force_pin_change=force_pin_change, pin_modal_error=pin_modal_error, pin_modal_changed=pin_modal_changed, session_username=session_username)}
         </header>
 
         <section class="panel">
