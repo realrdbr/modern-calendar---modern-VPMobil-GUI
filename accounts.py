@@ -35,6 +35,7 @@ SESSION_LIFETIME = timedelta(days=14)
 DEFAULT_LESSON_NOTIFICATION_TIMES = ("07:00", "09:10", "11:00", "13:15")
 DEFAULT_CALENDAR_NOTIFICATION_TIME = "16:00"
 DEFAULT_CALENDAR_NOTIFICATION_DAYS_BEFORE = 1
+MAX_CALENDAR_NOTIFICATION_DAYS_BEFORE = 30
 
 
 def utcnow() -> datetime:
@@ -697,7 +698,10 @@ class AccountStore:
             for event_type in data.get("calendar_notification_types", ())
             if isinstance(event_type, str) and event_type.strip()
         )
-        days_before = int(data.get("calendar_notification_days_before", DEFAULT_CALENDAR_NOTIFICATION_DAYS_BEFORE))
+        days_before = min(
+            MAX_CALENDAR_NOTIFICATION_DAYS_BEFORE,
+            int(data.get("calendar_notification_days_before", DEFAULT_CALENDAR_NOTIFICATION_DAYS_BEFORE)),
+        )
         if days_before < 0:
             raise ValueError("Kalender-Erinnerungen dürfen nicht in der Vergangenheit liegen.")
         raw_category_times = data.get("calendar_notification_times", {})
@@ -708,7 +712,7 @@ class AccountStore:
         } if isinstance(raw_category_times, dict) else {}
         raw_category_days = data.get("calendar_notification_days_before_by_type", {})
         category_days = {
-            str(event_type).strip(): max(0, min(365, int(value)))
+            str(event_type).strip(): max(0, min(MAX_CALENDAR_NOTIFICATION_DAYS_BEFORE, int(value)))
             for event_type, value in raw_category_days.items()
             if str(event_type).strip()
         } if isinstance(raw_category_days, dict) else {}
@@ -1693,9 +1697,12 @@ class AccountStore:
                 for event_type, value in (settings.calendar_notification_times or {}).items()
                 if event_type.strip()
             },
-            calendar_notification_days_before=max(0, int(settings.calendar_notification_days_before)),
+            calendar_notification_days_before=max(
+                0,
+                min(MAX_CALENDAR_NOTIFICATION_DAYS_BEFORE, int(settings.calendar_notification_days_before)),
+            ),
             calendar_notification_days_before_by_type={
-                event_type.strip(): max(0, min(365, int(value)))
+                event_type.strip(): max(0, min(MAX_CALENDAR_NOTIFICATION_DAYS_BEFORE, int(value)))
                 for event_type, value in (settings.calendar_notification_days_before_by_type or {}).items()
                 if event_type.strip()
             },

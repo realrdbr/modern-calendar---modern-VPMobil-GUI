@@ -228,7 +228,7 @@ def render_subscriptions(
         + _choice_checkbox("calendar_event_type", option.id, option.label, checked=option.id in notify_settings.calendar_notification_types)
         + f'<div class="category-schedule"><label>Uhrzeit<input type="time" name="calendar_notification_time__{quote(option.id, safe="")}" '
           f'value="{escape((notify_settings.calendar_notification_times or {}).get(option.id, notify_settings.calendar_notification_time))}" required step="60"></label>'
-        + f'<label>Tage vorher<input type="number" min="0" max="365" inputmode="numeric" '
+        + f'<label>Tage vorher<input type="number" min="0" max="30" inputmode="numeric" '
           f'name="calendar_notification_days_before__{quote(option.id, safe="")}" value="{(notify_settings.calendar_notification_days_before_by_type or {}).get(option.id, notify_settings.calendar_notification_days_before)}" required></label></div></div>'
         for option in calendar_event_types
     ) or "<p class=\"muted\">Im Kalender sind aktuell keine Kategorien verfügbar.</p>"

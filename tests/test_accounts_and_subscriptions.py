@@ -12,7 +12,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from accounts import AccountStore, CalendarEventTypeOption, NotifySettings, _hash_shared_pin
+from accounts import AccountStore, CalendarEventTypeOption, MAX_CALENDAR_NOTIFICATION_DAYS_BEFORE, NotifySettings, _hash_shared_pin
 from account_page import render_login, render_subscriptions
 from main import AppRequestHandler, resolve_cookie_domain
 from main import cleanup_ntfy_history_once_per_day
@@ -417,6 +417,19 @@ class AccountAndSubscriptionTests(unittest.TestCase):
             datetime(2026, 8, 20, 7, 30),
         )
 
+    def test_calendar_notification_days_before_is_capped_to_thirty(self):
+        settings = NotifySettings(
+            calendar_notifications_enabled=True,
+            calendar_notification_days_before=99,
+            calendar_notification_days_before_by_type={"KLAUSUR": 365},
+            calendar_notification_types=("KLAUSUR",),
+        )
+        self.store.save_notify_settings(self.alice.id, settings)
+
+        loaded, _ = self.store.load_notify_settings(self.alice.id)
+        self.assertEqual(loaded.calendar_notification_days_before, MAX_CALENDAR_NOTIFICATION_DAYS_BEFORE)
+        self.assertEqual(loaded.calendar_notification_days_before_by_type["KLAUSUR"], MAX_CALENDAR_NOTIFICATION_DAYS_BEFORE)
+
     def test_automatic_publish_uses_personal_topic_credentials(self):
         notifier = SubscriptionNotifier(self.store, "https://ntfy.invalid")
         with patch("subscriptions.requests.post") as post:
@@ -645,6 +658,49 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         self.assertEqual(published[0][0], "(VPrintfy) Kalender: Blatt 5")
         self.assertIn("Typ: HAUSAUFGABE", published[0][1])
         self.assertIn("Kurs: MA1", published[0][1])
+
+    def test_calendar_notifications_do_not_backfill_past_events_but_send_current_window(self):
+        with self.store._connection() as connection:
+            connection.execute(
+                "INSERT INTO calendar_event_categories(id, name, color, sort_order) VALUES (?, ?, ?, ?)",
+                ("HAUSAUFGABE", "Hausaufgabe", "#59b3cb", 0),
+            )
+            for event_id, title, event_date in (
+                ("evt-past", "Alte Aufgabe", "2026-08-19"),
+                ("evt-today", "Heute fällig", "2026-08-20"),
+                ("evt-tomorrow", "Morgen fällig", "2026-08-21"),
+                ("evt-window-end", "Übermorgen fällig", "2026-08-22"),
+                ("evt-too-far", "Zu weit weg", "2026-08-23"),
+            ):
+                connection.execute(
+                    """
+                    INSERT INTO calendar_events(id, title, date, end_date, start_time, end_time, course_id, type, description, author)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (event_id, title, event_date, event_date, None, None, "ALLGEMEIN", "HAUSAUFGABE", "", "lehrer"),
+                )
+        self.store.save_notify_settings(
+            self.alice.id,
+            NotifySettings(
+                calendar_notifications_enabled=True,
+                calendar_notification_time="16:00",
+                calendar_notification_days_before_by_type={"HAUSAUFGABE": 2},
+                calendar_notification_types=("HAUSAUFGABE",),
+            ),
+        )
+        notifier = SubscriptionNotifier(self.store, "https://ntfy.invalid")
+        published = []
+        notifier._publish = lambda user, message, title, priority="default": published.append((title, message))
+        empty_plan = SimpleNamespace(datum=date(2026, 8, 20), zeitstempel=None, zeitplan={}, klassen={})
+
+        self.assertEqual(notifier.poll_once(empty_plan, datetime(2026, 8, 20, 15, 59)), 0)
+        self.assertEqual(notifier.poll_once(empty_plan, datetime(2026, 8, 20, 16, 0)), 3)
+        messages = "\n".join(message for _title, message in published)
+        self.assertNotIn("Alte Aufgabe", messages)
+        self.assertIn("Heute fällig", messages)
+        self.assertIn("Morgen fällig", messages)
+        self.assertIn("Übermorgen fällig", messages)
+        self.assertNotIn("Zu weit weg", messages)
 
     def test_calendar_notifications_ignore_courses_the_user_does_not_have(self):
         with self.store._connection() as connection:

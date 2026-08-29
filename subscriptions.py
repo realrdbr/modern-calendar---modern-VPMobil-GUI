@@ -11,7 +11,7 @@ from typing import Iterable
 
 import requests
 
-from accounts import AccountStore, CalendarEvent, NotifySettings, NotificationRecipient, User
+from accounts import AccountStore, CalendarEvent, MAX_CALENDAR_NOTIFICATION_DAYS_BEFORE, NotifySettings, NotificationRecipient, User
 from ntfy.notifications import DEFAULT_BLOCKS, Block
 from ntfy.service import resolve_ntfy_publisher_auth
 
@@ -376,18 +376,41 @@ class SubscriptionNotifier:
         return event.course_id in recipient.calendar_courses
 
     @staticmethod
-    def _calendar_notification_at(event: CalendarEvent, settings: NotifySettings) -> datetime:
-        event_date = date.fromisoformat(event.date)
-        notification_time = (settings.calendar_notification_times or {}).get(
-            event.event_type, settings.calendar_notification_time
-        )
+    def _calendar_days_before(event: CalendarEvent, settings: NotifySettings) -> int:
         days_before = (settings.calendar_notification_days_before_by_type or {}).get(
             event.event_type, settings.calendar_notification_days_before
         )
+        return max(0, min(MAX_CALENDAR_NOTIFICATION_DAYS_BEFORE, int(days_before)))
+
+    @staticmethod
+    def _calendar_notification_time(event: CalendarEvent, settings: NotifySettings) -> time:
+        notification_time = (settings.calendar_notification_times or {}).get(
+            event.event_type, settings.calendar_notification_time
+        )
+        return datetime.strptime(notification_time, "%H:%M").time()
+
+    @classmethod
+    def _calendar_notification_at(cls, event: CalendarEvent, settings: NotifySettings) -> datetime:
+        event_date = date.fromisoformat(event.date)
+        days_before = cls._calendar_days_before(event, settings)
         return datetime.combine(
             event_date - timedelta(days=days_before),
-            datetime.strptime(notification_time, "%H:%M").time(),
+            cls._calendar_notification_time(event, settings),
         )
+
+    @classmethod
+    def _calendar_notification_is_due(cls, event: CalendarEvent, settings: NotifySettings, now: datetime) -> bool:
+        event_date = date.fromisoformat(event.date)
+        today = now.date()
+        days_before = cls._calendar_days_before(event, settings)
+        if event_date < today:
+            return False
+        if event_date > today + timedelta(days=days_before):
+            return False
+        notify_at = cls._calendar_notification_at(event, settings)
+        if notify_at.date() >= today:
+            return now >= notify_at
+        return now.time() >= cls._calendar_notification_time(event, settings)
 
     @staticmethod
     def _calendar_message(event: CalendarEvent) -> tuple[str, str]:
@@ -487,14 +510,14 @@ class SubscriptionNotifier:
                 for event in calendar_events:
                     if not self._event_matches_recipient(recipient, event, selected_types):
                         continue
-                    notify_at = self._calendar_notification_at(event, settings)
-                    if now < notify_at:
+                    if not self._calendar_notification_is_due(event, settings, now):
                         continue
                     title, message = self._calendar_message(event)
+                    days_before = self._calendar_days_before(event, settings)
+                    notification_time = self._calendar_notification_time(event, settings).strftime("%H:%M")
                     sent += self._deliver(
                         user,
-                        f"calendar:{event.id}:{(settings.calendar_notification_days_before_by_type or {}).get(event.event_type, settings.calendar_notification_days_before)}:"
-                        f"{(settings.calendar_notification_times or {}).get(event.event_type, settings.calendar_notification_time)}",
+                        f"calendar:{event.id}:{days_before}:{notification_time}",
                         message,
                         title,
                         "high",
