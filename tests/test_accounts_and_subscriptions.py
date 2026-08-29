@@ -15,7 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from accounts import AccountStore, CalendarEventTypeOption, MAX_CALENDAR_NOTIFICATION_DAYS_BEFORE, NotifySettings, _hash_shared_pin
 from account_page import render_login, render_subscriptions
 from main import AppRequestHandler, resolve_cookie_domain
-from main import cleanup_ntfy_history_once_per_day
 from ntfy.service import NtfyService, resolve_ntfy_internal_url
 from subscriptions import SubscriptionNotifier, subject_key, subject_options
 from vp_data import get_future_week_dates, get_future_week_plans, get_subject_catalog_plans
@@ -253,20 +252,12 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         self.assertIn("[hashPin(pin), vpOnlyRows[0].user_id]", db_module)
         self.assertIn("UPDATE vp_users SET pin_hash = ?", db_module)
 
-    def test_ntfy_history_is_cleared_only_once_per_calendar_day(self):
-        cache = Path(self.temp.name) / "cache.db"
-        marker = Path(self.temp.name) / "cleanup-date"
-        import sqlite3
-        with sqlite3.connect(cache) as connection:
-            connection.execute("CREATE TABLE messages(id INTEGER PRIMARY KEY, message TEXT)")
-            connection.execute("INSERT INTO messages(message) VALUES ('secret')")
-        with patch.dict("os.environ", {"NTFY_CACHE_FILE": str(cache), "NTFY_HISTORY_CLEANUP_MARKER": str(marker)}):
-            self.assertTrue(cleanup_ntfy_history_once_per_day(datetime(2026, 8, 27, 0, 0)))
-            with sqlite3.connect(cache) as connection:
-                self.assertEqual(connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 0)
-                connection.execute("INSERT INTO messages(message) VALUES ('new')")
-            self.assertFalse(cleanup_ntfy_history_once_per_day(datetime(2026, 8, 27, 12, 0)))
-            self.assertTrue(cleanup_ntfy_history_once_per_day(datetime(2026, 8, 28, 0, 0)))
+    def test_ntfy_history_is_limited_by_server_cache_duration(self):
+        ntfy_config = (Path(__file__).resolve().parent.parent / "ntfy/server.yml").read_text(encoding="utf-8")
+        main_module = (Path(__file__).resolve().parent.parent / "main.py").read_text(encoding="utf-8")
+        self.assertIn('cache-duration: "23h"', ntfy_config)
+        self.assertNotIn("cleanup_ntfy_history_once_per_day", main_module)
+        self.assertNotIn("DELETE FROM messages", main_module)
 
     def test_login_is_two_step_and_pin_is_restricted_to_four_digits(self):
         username_page = render_login()
@@ -436,6 +427,35 @@ class AccountAndSubscriptionTests(unittest.TestCase):
             post.return_value.raise_for_status.return_value = None
             notifier._publish(self.alice, "Nachricht", "Titel")
         self.assertEqual(post.call_args.kwargs["auth"], (self.alice.ntfy_username, self.alice.ntfy_password))
+
+    def test_deliveries_get_sequence_ids_and_expire_from_clients_after_23_hours(self):
+        notifier = SubscriptionNotifier(self.store, "https://ntfy.invalid")
+        with patch("subscriptions.requests.post") as post:
+            post.return_value.raise_for_status.return_value = None
+            self.assertTrue(notifier._deliver(self.alice, "calendar:event-1:1:16:00", "Nachricht", "Titel"))
+        sequence_id = post.call_args.kwargs["headers"]["X-Sequence-ID"]
+        self.assertTrue(sequence_id.startswith("vprintfy-"))
+
+        import sqlite3
+        with sqlite3.connect(Path(self.temp.name) / "accounts.sqlite") as connection:
+            connection.execute(
+                "UPDATE notification_deliveries SET delivered_at = ? WHERE user_id = ? AND event_key = ?",
+                ("2026-08-20T00:00:00+00:00", self.alice.id, "calendar:event-1:1:16:00"),
+            )
+
+        with patch("subscriptions.requests.delete") as delete:
+            delete.return_value.status_code = 204
+            delete.return_value.raise_for_status.return_value = None
+            self.assertEqual(notifier.delete_expired_client_notifications(datetime(2026, 8, 21, 2, 1)), 1)
+        self.assertIn(sequence_id, delete.call_args.args[0])
+        self.assertEqual(delete.call_args.kwargs["auth"], (self.alice.ntfy_username, self.alice.ntfy_password))
+
+        with sqlite3.connect(Path(self.temp.name) / "accounts.sqlite") as connection:
+            deleted_at = connection.execute(
+                "SELECT deleted_at FROM notification_deliveries WHERE user_id = ? AND event_key = ?",
+                (self.alice.id, "calendar:event-1:1:16:00"),
+            ).fetchone()[0]
+        self.assertIsNotNone(deleted_at)
 
     def test_failed_ntfy_recipient_does_not_abort_later_deliveries(self):
         notifier = SubscriptionNotifier(self.store, "https://ntfy.invalid")

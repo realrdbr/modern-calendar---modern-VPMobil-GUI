@@ -386,6 +386,7 @@ class AccountStore:
                         user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                         event_key TEXT NOT NULL,
                         delivered_at TEXT NOT NULL,
+                        deleted_at TEXT DEFAULT NULL,
                         PRIMARY KEY (user_id, event_key)
                     );
                     CREATE TABLE IF NOT EXISTS calendar_users (
@@ -433,6 +434,7 @@ class AccountStore:
                 self._sqlite_add_column_if_missing(connection, "calendar_events", "description", "TEXT DEFAULT ''")
                 self._sqlite_add_column_if_missing(connection, "calendar_events", "author", "TEXT DEFAULT ''")
                 self._sqlite_add_column_if_missing(connection, "vp_only_users", "must_change_pin", "INTEGER NOT NULL DEFAULT 1 CHECK (must_change_pin IN (0, 1))")
+                self._sqlite_add_column_if_missing(connection, "notification_deliveries", "deleted_at", "TEXT DEFAULT NULL")
                 legacy_subjects_exists = self._fetchone(
                     connection,
                     "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'user_subjects'",
@@ -546,6 +548,7 @@ class AccountStore:
                     user_id BIGINT NOT NULL,
                     event_key VARCHAR(255) NOT NULL,
                     delivered_at VARCHAR(40) NOT NULL,
+                    deleted_at VARCHAR(40) DEFAULT NULL,
                     PRIMARY KEY (user_id, event_key),
                     CONSTRAINT fk_vp_notification_user
                         FOREIGN KEY (user_id) REFERENCES vp_users(id)
@@ -565,6 +568,10 @@ class AccountStore:
                 pass
             try:
                 self._run(connection, "ALTER TABLE vp_only_users ADD COLUMN must_change_pin TINYINT(1) NOT NULL DEFAULT 1")
+            except Exception:
+                pass
+            try:
+                self._run(connection, "ALTER TABLE vp_notification_deliveries ADD COLUMN deleted_at VARCHAR(40) DEFAULT NULL")
             except Exception:
                 pass
             try:
@@ -2054,3 +2061,45 @@ class AccountStore:
         table = "notification_deliveries" if self._backend == "sqlite" else "vp_notification_deliveries"
         with self._connection() as connection:
             self._run(connection, f"DELETE FROM {table} WHERE user_id = ? AND event_key = ?", (user_id, event_key))
+
+    def delivery_deletion_candidates(self, cutoff: datetime, limit: int = 200) -> list[tuple[User, str]]:
+        cutoff_text = to_db_time(cutoff)
+        with self._connection() as connection:
+            if self._backend == "sqlite":
+                rows = self._fetchall(
+                    connection,
+                    """SELECT users.*, deliveries.event_key,
+                              CASE WHEN only_users.username IS NULL THEN 0 ELSE 1 END AS vp_only,
+                              COALESCE(only_users.must_change_pin, 0) AS must_change_pin
+                    FROM notification_deliveries deliveries
+                    JOIN users ON users.id = deliveries.user_id
+                    LEFT JOIN vp_only_users only_users ON only_users.user_id = users.id
+                    WHERE deliveries.deleted_at IS NULL AND deliveries.delivered_at <= ?
+                    ORDER BY deliveries.delivered_at ASC
+                    LIMIT ?""",
+                    (cutoff_text, limit),
+                )
+            else:
+                rows = self._fetchall(
+                    connection,
+                    """SELECT vp_users.*, deliveries.event_key,
+                              IF(only_users.username IS NULL, 0, 1) AS vp_only,
+                              COALESCE(only_users.must_change_pin, 0) AS must_change_pin
+                    FROM vp_notification_deliveries deliveries
+                    JOIN vp_users ON vp_users.id = deliveries.user_id
+                    LEFT JOIN vp_only_users only_users ON only_users.user_id = vp_users.id
+                    WHERE deliveries.deleted_at IS NULL AND deliveries.delivered_at <= ?
+                    ORDER BY deliveries.delivered_at ASC
+                    LIMIT ?""",
+                    (cutoff_text, limit),
+                )
+        return [(self._user_from_row(row), str(row["event_key"])) for row in rows]
+
+    def mark_delivery_deleted(self, user_id: int, event_key: str) -> None:
+        table = "notification_deliveries" if self._backend == "sqlite" else "vp_notification_deliveries"
+        with self._connection() as connection:
+            self._run(
+                connection,
+                f"UPDATE {table} SET deleted_at = ? WHERE user_id = ? AND event_key = ?",
+                (to_db_time(utcnow()), user_id, event_key),
+            )

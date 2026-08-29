@@ -8,12 +8,15 @@ from email.header import Header
 import hashlib
 import re
 from typing import Iterable
+from urllib.parse import quote
 
 import requests
 
 from accounts import AccountStore, CalendarEvent, MAX_CALENDAR_NOTIFICATION_DAYS_BEFORE, NotifySettings, NotificationRecipient, User
 from ntfy.notifications import DEFAULT_BLOCKS, Block
 from ntfy.service import resolve_ntfy_publisher_auth
+
+CLIENT_NOTIFICATION_RETENTION = timedelta(hours=23)
 
 
 def subject_key(subject: str | None) -> str | None:
@@ -276,10 +279,19 @@ class SubscriptionNotifier:
             )
         return None
 
+    @staticmethod
+    def _sequence_id(user: User, event_key: str) -> str:
+        digest = hashlib.sha256(f"{user.id}:{event_key}".encode("utf-8")).hexdigest()[:32]
+        return f"vprintfy-{digest}"
+
     def _publish(self, user: User, message: str, title: str, priority: str = "default") -> None:
+        headers = {"Title": Header(title, "utf-8").encode(), "Priority": priority, "Tags": "calendar"}
+        sequence_id = getattr(self, "_pending_sequence_id", None)
+        if sequence_id:
+            headers["X-Sequence-ID"] = sequence_id
         response = requests.post(
             f"{self.ntfy_url}/{user.ntfy_topic}", data=message.encode("utf-8"),
-            headers={"Title": Header(title, "utf-8").encode(), "Priority": priority, "Tags": "calendar"},
+            headers=headers,
             timeout=self.timeout,
             # Persönliche Zugangsdaten garantieren die Topic-Isolation und
             # funktionieren unabhängig von einem globalen Publisher-Konto.
@@ -290,13 +302,37 @@ class SubscriptionNotifier:
     def _deliver(self, user: User, event_key: str, message: str, title: str, priority: str = "default") -> bool:
         if not self.store.mark_delivery_once(user.id, event_key):
             return False
+        self._pending_sequence_id = self._sequence_id(user, event_key)
         try:
             self._publish(user, message, title, priority)
         except requests.RequestException as error:
             self.store.forget_delivery(user.id, event_key)
             self.delivery_errors.append(f"{user.username} ({event_key}): {error}")
             return False
+        finally:
+            self._pending_sequence_id = None
         return True
+
+    def delete_expired_client_notifications(self, now: datetime | None = None) -> int:
+        now = now or datetime.now()
+        cutoff = now - CLIENT_NOTIFICATION_RETENTION
+        deleted = 0
+        for user, event_key in self.store.delivery_deletion_candidates(cutoff):
+            sequence_id = self._sequence_id(user, event_key)
+            try:
+                response = requests.delete(
+                    f"{self.ntfy_url}/{user.ntfy_topic}/{quote(sequence_id, safe='')}",
+                    timeout=self.timeout,
+                    auth=(user.ntfy_username, user.ntfy_password),
+                )
+                if response.status_code not in {200, 202, 204, 404}:
+                    response.raise_for_status()
+            except requests.RequestException as error:
+                self.delivery_errors.append(f"{user.username} ({event_key}:delete): {error}")
+                continue
+            self.store.mark_delivery_deleted(user.id, event_key)
+            deleted += 1
+        return deleted
 
     def send_user_test(self, user: User) -> None:
         """Sendet auf Wunsch eine nicht deduplizierte Probe an das persönliche Topic."""

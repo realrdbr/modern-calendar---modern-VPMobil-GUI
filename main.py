@@ -7,7 +7,6 @@ from zoneinfo import ZoneInfo
 import json
 import os
 from pathlib import Path
-import sqlite3
 from types import SimpleNamespace
 from threading import Event, Thread
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -106,26 +105,6 @@ def build_store() -> AccountStore:
     return AccountStore(path, os.getenv("APP_ENCRYPTION_KEY", ""))
 
 
-def cleanup_ntfy_history_once_per_day(now: datetime) -> bool:
-    cache_path = Path(os.getenv("NTFY_CACHE_FILE", "/var/lib/ntfy/cache.db"))
-    marker_path = Path(os.getenv("NTFY_HISTORY_CLEANUP_MARKER", "/var/lib/ntfy/.history-cleanup-date"))
-    today = now.date().isoformat()
-    try:
-        if marker_path.read_text(encoding="utf-8").strip() == today:
-            return False
-    except FileNotFoundError:
-        pass
-    if not cache_path.exists():
-        return False
-    with sqlite3.connect(cache_path, timeout=10) as connection:
-        table = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'").fetchone()
-        if not table:
-            raise RuntimeError("ntfy-Cache enthält keine messages-Tabelle")
-        connection.execute("DELETE FROM messages")
-    marker_path.write_text(today, encoding="utf-8")
-    return True
-
-
 class NotificationWorker(Thread):
     def __init__(self, store: AccountStore, stop_event: Event):
         super().__init__(name="vpmobil-notifications", daemon=True)
@@ -138,8 +117,9 @@ class NotificationWorker(Thread):
         while not self.stop_event.is_set():
             try:
                 local_now = datetime.now(ZoneInfo(os.getenv("APP_TIMEZONE", "Europe/Berlin"))).replace(tzinfo=None)
-                if cleanup_ntfy_history_once_per_day(local_now):
-                    log("ntfy-Verlauf für den neuen Kalendertag geleert.")
+                deleted = self.notifier.delete_expired_client_notifications(local_now)
+                if deleted:
+                    log(f"{deleted} alte ntfy-Benachrichtigung(en) aus Clients/Web gelöscht.")
                 try:
                     plan = fetch_plan(local_now.date())
                 except Exception as error:
