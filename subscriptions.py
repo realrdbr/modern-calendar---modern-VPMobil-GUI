@@ -553,7 +553,7 @@ class SubscriptionNotifier:
                     notification_time = self._calendar_notification_time(event, settings).strftime("%H:%M")
                     sent += self._deliver(
                         user,
-                        f"calendar:{event.id}:{days_before}:{notification_time}",
+                        f"calendar:{event.id}:{event.date}:{days_before}:{notification_time}",
                         message,
                         title,
                         "high",

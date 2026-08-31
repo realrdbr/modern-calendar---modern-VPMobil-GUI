@@ -713,6 +713,41 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         self.assertIn("Typ: HAUSAUFGABE", published[0][1])
         self.assertIn("Kurs: MA1", published[0][1])
 
+    def test_calendar_notification_key_includes_event_date_after_rescheduling(self):
+        with self.store._connection() as connection:
+            connection.execute(
+                "INSERT INTO calendar_event_categories(id, name, color, sort_order) VALUES (?, ?, ?, ?)",
+                ("HAUSAUFGABE", "Hausaufgabe", "#59b3cb", 0),
+            )
+            connection.execute(
+                """
+                INSERT INTO calendar_events(id, title, date, end_date, start_time, end_time, course_id, type, description, author)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("evt-move", "Verschobene Aufgabe", "2026-08-21", "2026-08-21", None, None, "ALLGEMEIN", "HAUSAUFGABE", "", "lehrer"),
+            )
+        self.store.save_notify_settings(
+            self.alice.id,
+            NotifySettings(
+                calendar_notifications_enabled=True,
+                calendar_notification_time="16:00",
+                calendar_notification_days_before=1,
+                calendar_notification_types=("HAUSAUFGABE",),
+            ),
+        )
+        notifier = SubscriptionNotifier(self.store, "https://ntfy.invalid")
+        notifier._publish = Mock()
+        empty_plan = SimpleNamespace(datum=date(2026, 8, 20), zeitstempel=None, zeitplan={}, klassen={})
+
+        self.assertEqual(notifier.poll_once(empty_plan, datetime(2026, 8, 20, 16, 0)), 1)
+        with self.store._connection() as connection:
+            connection.execute(
+                "UPDATE calendar_events SET date = ?, end_date = ? WHERE id = ?",
+                ("2026-08-22", "2026-08-22", "evt-move"),
+            )
+        self.assertEqual(notifier.poll_once(empty_plan, datetime(2026, 8, 21, 16, 0)), 1)
+        self.assertEqual(notifier._publish.call_count, 2)
+
     def test_calendar_notifications_do_not_backfill_past_events_but_send_current_window(self):
         with self.store._connection() as connection:
             connection.execute(
