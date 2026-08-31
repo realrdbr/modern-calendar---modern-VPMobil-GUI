@@ -18,7 +18,7 @@ from main import AppRequestHandler, resolve_cookie_domain
 from ntfy.service import NtfyService, resolve_ntfy_internal_url
 from subscriptions import SubscriptionNotifier, subject_key, subject_options
 from vp_data import get_future_week_dates, get_future_week_plans, get_subject_catalog_plans
-from web_utils import CALENDAR_PUBLIC_URL, COMMON_CSS, SESSION_WATCH_SCRIPT, cookie_values
+from web_utils import CALENDAR_PUBLIC_URL, COMMON_CSS, SESSION_WATCH_SCRIPT, cookie_values, default_school_date, default_school_week_start
 
 
 def lesson(subject, room, period, *, changed=False, course_number=None):
@@ -233,6 +233,40 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         index_css = (Path(__file__).resolve().parent.parent / "src/index.css").read_text(encoding="utf-8")
         self.assertIn("#root", index_css)
         self.assertIn("overflow: hidden", index_css)
+
+    def test_calendar_past_events_are_grey_and_end_date_can_be_cleared(self):
+        calendar_view = (Path(__file__).resolve().parent.parent / "src/components/CalendarView.tsx").read_text(encoding="utf-8")
+        event_modal = (Path(__file__).resolve().parent.parent / "src/components/EventModal.tsx").read_text(encoding="utf-8")
+        server_module = (Path(__file__).resolve().parent.parent / "server.ts").read_text(encoding="utf-8")
+        self.assertIn("const getEventCardStyle", calendar_view)
+        self.assertIn("isEventPast(event)", calendar_view)
+        self.assertIn("categories.some(category => category.id === e.type && category.isPrivate)", calendar_view)
+        self.assertIn("const normalizedEndDate", event_modal)
+        self.assertIn(": null", event_modal)
+        self.assertIn("isOptionalCalendarDate", server_module)
+
+    def test_vp_defaults_jump_to_next_school_week_on_weekends(self):
+        self.assertEqual(default_school_date(date(2026, 9, 5)), date(2026, 9, 7))
+        self.assertEqual(default_school_date(date(2026, 9, 6)), date(2026, 9, 7))
+        self.assertEqual(default_school_week_start(date(2026, 9, 5)), date(2026, 9, 7))
+        self.assertEqual(default_school_week_start(date(2026, 9, 2)), date(2026, 8, 31))
+        self.assertIn("render_today_marker_script", (Path(__file__).resolve().parent.parent / "plan_page.py").read_text(encoding="utf-8"))
+        self.assertIn("render_today_marker_script", (Path(__file__).resolve().parent.parent / "teacher_page.py").read_text(encoding="utf-8"))
+        plan_page = (Path(__file__).resolve().parent.parent / "plan_page.py").read_text(encoding="utf-8")
+        teacher_page = (Path(__file__).resolve().parent.parent / "teacher_page.py").read_text(encoding="utf-8")
+        self.assertIn("day-head-marker::before", plan_page)
+        self.assertIn("border-radius: 0.55rem", plan_page)
+        self.assertNotIn("transform: rotate", plan_page)
+        self.assertIn("today.weekday() < 5", plan_page)
+        self.assertIn("overflow-wrap: anywhere", plan_page)
+        self.assertIn("border-width: 1px", plan_page)
+        self.assertIn("data-plan-date", teacher_page)
+        self.assertIn("width: 100%", teacher_page)
+        self.assertIn("border-radius: 0.55rem", teacher_page)
+        self.assertNotIn("transform: rotate", teacher_page)
+        web_utils = (Path(__file__).resolve().parent.parent / "web_utils.py").read_text(encoding="utf-8")
+        self.assertIn("Europe/Berlin", web_utils)
+        self.assertIn("berlinWeekday !== 'Sat' && berlinWeekday !== 'Sun'", web_utils)
 
     def test_calendar_admin_modal_mobile_tabs_are_top_compact_and_reauths_every_open(self):
         admin_modal = (Path(__file__).resolve().parent.parent / "src/components/AdminModal.tsx").read_text(encoding="utf-8")

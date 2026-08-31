@@ -24,6 +24,7 @@ from web_utils import (
     send_html,
     start_server, DEFAULT_PORT,
     render_theme_script,
+    render_today_marker_script,
     render_vp_navigation,
 )
 
@@ -240,6 +241,8 @@ def render_teacher_week_table(
 
     for plan_date in dates:
         day_name = DAY_NAMES.get(plan_date.weekday(), plan_date.strftime("%a"))
+        today = date.today()
+        head_class = ' class="day-head--today"' if today.weekday() < 5 and plan_date == today else ""
         day_plan = week_plans[plan_date]
         if day_plan is None:
             day_plan_info = "<small>Keine Plandaten vorhanden</small>"
@@ -253,10 +256,12 @@ def render_teacher_week_table(
                 day_plan_info = "<small>Plan nicht verfügbar</small>"
 
         header_cells.append(f"""
-            <th>
-                <span>{escape(day_name)}</span>
-                <small>{plan_date.strftime("%d.%m.")}</small>
-                {day_plan_info}
+            <th{head_class} data-plan-date="{plan_date.isoformat()}">
+                <div class="day-head-marker">
+                    <span>{escape(day_name)}</span>
+                    <small>{plan_date.strftime("%d.%m.")}</small>
+                    {day_plan_info}
+                </div>
             </th>
         """)
 
@@ -525,6 +530,44 @@ def render_teacher_page(
         .week-table thead th {{
             background: var(--surface-muted);
             font-size: 0.9rem;
+            position: relative;
+            overflow: hidden;
+        }}
+
+        .week-table thead th[data-plan-date] > * {{
+            position: relative;
+            z-index: 1;
+        }}
+
+        .day-head-marker {{
+            position: relative;
+            display: inline-flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            width: fit-content;
+            max-width: calc(100% - 4px);
+            margin: 0 auto;
+            padding: 0.22rem 0.88rem 0.26rem;
+            box-sizing: border-box;
+            line-height: 1.15;
+            overflow-wrap: anywhere;
+        }}
+
+        .day-head-marker > * {{
+            position: relative;
+            z-index: 1;
+        }}
+
+        .week-table thead th.day-head--today .day-head-marker::before {{
+            content: "";
+            position: absolute;
+            inset: -0.03rem -0.08rem;
+            border-radius: 0.55rem;
+            background: rgba(220, 38, 38, 0.17);
+            border: 2px solid rgba(220, 38, 38, 0.82);
+            pointer-events: none;
+            z-index: 0;
         }}
 
         .week-table thead span,
@@ -535,6 +578,8 @@ def render_teacher_page(
         .week-table thead small {{
             color: var(--muted);
             font-weight: 700;
+            max-width: 100%;
+            overflow-wrap: anywhere;
         }}
 
         .period-head {{
@@ -678,6 +723,16 @@ def render_teacher_page(
                 font-size: 0.74rem;
             }}
 
+            .day-head-marker {{
+                max-width: calc(100% - 2px);
+                padding: 0.16rem 0.44rem 0.18rem;
+            }}
+
+            .week-table thead th.day-head--today .day-head-marker::before {{
+                inset: -0.03rem -0.04rem;
+                border-width: 1.5px;
+            }}
+
             .week-table thead small {{
                 font-size: 0.66rem;
             }}
@@ -763,6 +818,18 @@ def render_teacher_page(
                 font-size: 0.66rem;
             }}
 
+            .day-head-marker {{
+                display: flex;
+                width: 100%;
+                max-width: 100%;
+                padding: 0.1rem 0.08rem 0.12rem;
+            }}
+
+            .week-table thead th.day-head--today .day-head-marker::before {{
+                inset: -0.01rem 0;
+                border-width: 1px;
+            }}
+
             .week-table thead small {{
                 font-size: 0.58rem;
             }}
@@ -811,7 +878,7 @@ def render_teacher_page(
         </section>
 
         {content}
-    </main>{render_theme_script()}
+    </main>{render_theme_script()}{render_today_marker_script()}
     {f'''<script>
         (() => {{
             const initialVersion = {json.dumps(week_version)};

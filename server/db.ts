@@ -853,7 +853,7 @@ export async function dbCreatePrivateEvent(username: string, event: any) {
   return withPrivateMutation(username, async () => {
     const data = await dbLoadPrivateCalendar(username);
     if (!data.categories.some(c => c.id === event.type)) return null;
-    data.events.push({ ...event, courseId: 'ALLGEMEIN', author: username.toLowerCase() });
+    data.events.push({ ...event, endDate: event.endDate || event.date, courseId: 'ALLGEMEIN', author: username.toLowerCase() });
     await dbStorePrivateCalendar(username, data);
     return data.events.at(-1);
   });
@@ -866,7 +866,9 @@ export async function dbUpdatePrivateEvent(username: string, id: string, update:
     if (index < 0) return null;
     const nextType = update.type ?? data.events[index].type;
     if (!data.categories.some(c => c.id === nextType)) throw new Error('PRIVATE_CATEGORY_FORBIDDEN');
-    data.events[index] = { ...data.events[index], ...update, id, courseId: 'ALLGEMEIN', author: username.toLowerCase() };
+    const nextEvent = { ...data.events[index], ...update, id, courseId: 'ALLGEMEIN', author: username.toLowerCase() };
+    if (!nextEvent.endDate || nextEvent.endDate < nextEvent.date) nextEvent.endDate = nextEvent.date;
+    data.events[index] = nextEvent;
     await dbStorePrivateCalendar(username, data);
     return data.events[index];
   });
@@ -1005,13 +1007,15 @@ export async function dbUpdateEvent(id: string, data: any) {
 
     const title = data.title !== undefined ? data.title : current.title;
     const date = data.date !== undefined ? data.date : current.date;
-    const endDate = data.endDate !== undefined ? data.endDate : current.end_date;
+    let endDate = data.endDate !== undefined ? data.endDate : current.end_date;
     const startTime = data.startTime !== undefined ? data.startTime : current.start_time;
     const endTime = data.endTime !== undefined ? data.endTime : current.end_time;
     const courseId = data.courseId !== undefined ? data.courseId : current.course_id;
     const type = data.type !== undefined ? data.type : current.type;
     const description = data.description !== undefined ? data.description : current.description;
     const attachments = data.attachments !== undefined ? JSON.stringify(data.attachments) : current.attachments;
+
+    if (!endDate || endDate < date) endDate = date;
 
     await pool.query(
       `UPDATE events 
@@ -1037,7 +1041,9 @@ export async function dbUpdateEvent(id: string, data: any) {
 
   const idx = memoryStore.events.findIndex(e => e.id === id);
   if (idx !== -1) {
-    memoryStore.events[idx] = { ...memoryStore.events[idx], ...data };
+    const nextEvent = { ...memoryStore.events[idx], ...data };
+    if (!nextEvent.endDate || nextEvent.endDate < nextEvent.date) nextEvent.endDate = nextEvent.date;
+    memoryStore.events[idx] = nextEvent;
     return memoryStore.events[idx];
   }
   return null;

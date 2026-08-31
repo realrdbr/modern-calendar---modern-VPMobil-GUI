@@ -82,13 +82,15 @@ export default function EventModal({ isOpen, onClose, onSave, onDelete, initialD
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     if (isReadOnly) return;
+    const normalizedEndDate = endDate && endDate >= date && endDate !== date ? endDate : null;
+    const normalizedCourseId = categories.find(category => category.id === type)?.isPrivate ? 'ALLGEMEIN' : courseId;
     onSave({
       title,
       date,
-      endDate: (endDate && endDate !== date) ? endDate : undefined,
+      endDate: normalizedEndDate,
       startTime: showTime && startTime ? startTime : undefined,
       endTime: showTime && endTime ? endTime : undefined,
-      courseId,
+      courseId: normalizedCourseId,
       type,
       description,
       attachments

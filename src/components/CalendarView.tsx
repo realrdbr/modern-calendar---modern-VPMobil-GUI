@@ -74,6 +74,9 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
     const hasCho = userCourses.includes('CHO') || userCourses.includes('Chor');
 
     return rawEvents.filter(e => {
+      if (categories.some(category => category.id === e.type && category.isPrivate)) {
+        return true;
+      }
       // 1. Allgemein events are visible to every student
       if (!e.courseId || e.courseId === 'ALLGEMEIN') {
         return true;
@@ -85,7 +88,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
       // 3. Exact course match (preserves LK uppercase vs GK lowercase, e.g. DE1 vs de1)
       return userCourses.includes(e.courseId);
     });
-  }, [rawEvents, user.courses]);
+  }, [rawEvents, user.courses, categories]);
   
   // Theming variables
   const theme = {
@@ -179,10 +182,11 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
 
   const handleSaveEvent = async (eventData: Partial<AppEvent>) => {
     try {
-      if (editingEvent) {
-        await updateEvent(editingEvent.id, eventData);
-      } else {
-        await createEvent({ ...eventData, author: user.username });
+      const savedEvent = editingEvent
+        ? await updateEvent(editingEvent.id, eventData)
+        : await createEvent({ ...eventData, author: user.username });
+      if (savedEvent?.date || eventData.date) {
+        setCurrentDate(new Date(`${savedEvent?.date || eventData.date}T12:00:00`));
       }
       await loadEvents();
       setIsModalOpen(false);
@@ -396,6 +400,19 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
     const b = parseInt(hex.substring(4, 6), 16) || 0;
     const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
     return { backgroundColor: color, color: luminance > 0.5 ? '#000' : '#fff' };
+  };
+
+  const isEventPast = (event: AppEvent) => {
+    const now = new Date();
+    const eventEnd = new Date(`${event.endDate || event.date}T${event.endTime || event.startTime || '23:59'}:59`);
+    return eventEnd.getTime() < now.getTime();
+  };
+
+  const getEventCardStyle = (event: AppEvent) => {
+    if (!isEventPast(event)) return getEventTypeStyle(event.type);
+    return isDark
+      ? { backgroundColor: '#27272a', color: '#a1a1aa', borderColor: '#3f3f46' }
+      : { backgroundColor: '#e4e4e7', color: '#52525b', borderColor: '#d4d4d8' };
   };
 
   // Group days by week
@@ -660,7 +677,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
                           key={e.id}
                           onClick={(ev) => openEditEventModal(e, ev)}
                           className="rounded-sm border border-black/10 px-1.5 py-1 text-xs cursor-pointer flex flex-col justify-center leading-tight"
-                          style={getEventTypeStyle(e.type)}
+                          style={getEventCardStyle(e)}
                           title={`${e.title} (${getCourseName(e.courseId)})`}
                         >
                           <span className="font-bold truncate">{e.title}</span>
@@ -702,7 +719,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
                                 key={e.id}
                                 onClick={(ev) => openEditEventModal(e, ev)}
                                 className="rounded-sm p-1.5 text-xs cursor-pointer flex flex-col justify-center leading-tight border border-black/10"
-                                style={getEventTypeStyle(e.type)}
+                                style={getEventCardStyle(e)}
                                 title={`${e.title} (${getCourseName(e.courseId)}) - ${e.startTime}${e.endTime ? ` bis ${e.endTime}` : ''}`}
                               >
                                 <div className="flex items-center justify-between text-xs font-semibold opacity-95 mb-0.5">
@@ -853,7 +870,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
                             key={se.event.id}
                             className="pointer-events-auto mx-1 rounded-sm border border-black/10 px-1.5 py-1 text-xs cursor-pointer flex flex-col justify-center leading-tight overflow-hidden"
                             style={{
-                              ...getEventTypeStyle(se.event.type),
+                              ...getEventCardStyle(se.event),
                               gridColumnStart: se.colStart,
                               gridColumnEnd: `span ${se.colSpan}`,
                               gridRowStart: se.rowStart

@@ -114,6 +114,47 @@ def render_pin_change_modal(csrf_token: str | None, *, force: bool = False, erro
     """
 
 
+def render_today_marker_script() -> str:
+    """Aktualisiert Tagesmarkierungen ohne Seitenreload, sobald lokal ein neuer Tag beginnt."""
+
+    return """<script>
+    (() => {
+      const berlinIsoDate = () => {
+        const parts = new Intl.DateTimeFormat('de-DE', {
+          timeZone: 'Europe/Berlin',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit'
+        }).formatToParts(new Date()).reduce((acc, part) => {
+          acc[part.type] = part.value;
+          return acc;
+        }, {});
+        const year = parts.year;
+        const month = parts.month;
+        const day = parts.day;
+        return `${year}-${month}-${day}`;
+      };
+      const updateTodayMarker = () => {
+        const berlinWeekday = new Intl.DateTimeFormat('en-US', {
+          timeZone: 'Europe/Berlin',
+          weekday: 'short'
+        }).format(new Date());
+        const isSchoolDay = berlinWeekday !== 'Sat' && berlinWeekday !== 'Sun';
+        const today = berlinIsoDate();
+        document.querySelectorAll('[data-plan-date]').forEach(cell => {
+          cell.classList.toggle('day-head--today', isSchoolDay && cell.dataset.planDate === today);
+        });
+      };
+      updateTodayMarker();
+      window.setInterval(updateTodayMarker, 60000);
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') updateTodayMarker();
+      });
+      window.addEventListener('focus', updateTodayMarker);
+    })();
+    </script>"""
+
+
 SESSION_WATCH_SCRIPT = """<script>
 (() => {
   let checking = false;
@@ -152,31 +193,45 @@ SESSION_WATCH_SCRIPT = """<script>
 </script>"""
 
 
+def default_school_date(today: date | None = None) -> date:
+    """Gibt den sinnvollen Standardtag für schulische Tagesansichten zurück."""
+
+    current = today or date.today()
+    if current.weekday() >= 5:
+        return current + timedelta(days=7 - current.weekday())
+    return current
+
+
+def default_school_week_start(today: date | None = None) -> date:
+    """Gibt den Standard-Montag zurück; am Wochenende direkt die nächste Woche."""
+
+    current = default_school_date(today)
+    return current - timedelta(days=current.weekday())
+
+
 def parse_date(value: str | None) -> date:
     """Wandelt einen Formularwert in ein gültiges date-Objekt um."""
 
     if not value:
-        return date.today()
+        return default_school_date()
 
     try:
         return datetime.strptime(value, "%Y-%m-%d").date()
     except ValueError:
-        return date.today()
+        return default_school_date()
 
 
 def parse_week(value: str | None) -> date:
     """Wandelt einen HTML-Wochenwert wie '2026-W34' in den Montag dieser Woche um."""
 
     if not value:
-        today = date.today()
-        return today - timedelta(days=today.weekday())
+        return default_school_week_start()
 
     try:
         year_text, week_text = value.split("-W", 1)
         return date.fromisocalendar(int(year_text), int(week_text), 1)
     except (ValueError, TypeError):
-        today = date.today()
-        return today - timedelta(days=today.weekday())
+        return default_school_week_start()
 
 
 def format_week_value(selected_date: date) -> str:

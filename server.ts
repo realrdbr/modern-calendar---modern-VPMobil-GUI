@@ -72,6 +72,10 @@ function safeEventUpdate(body: any) {
   return Object.fromEntries(allowed.filter(key => body[key] !== undefined).map(key => [key, body[key]]));
 }
 
+function isOptionalCalendarDate(value: unknown): value is string | null | '' {
+  return value === null || value === '' || validCalendarDate(value);
+}
+
 const adminElevations = new Map<string, { tokenHash: string; expiresAt: number }>();
 const adminPasswordAttempts = new Map<string, { count: number; lockUntil: number; lastFailedAt: number }>();
 const ADMIN_ELEVATION_MS = 15 * 60 * 1000;
@@ -532,7 +536,7 @@ async function startServer() {
     const id = req.params.id as string;
     const currentUser = (req as any).authenticatedUser;
     const update = safeEventUpdate(req.body);
-    if ((update.date !== undefined && !validCalendarDate(update.date)) || (update.endDate !== undefined && !validCalendarDate(update.endDate))
+    if ((update.date !== undefined && !validCalendarDate(update.date)) || (update.endDate !== undefined && !isOptionalCalendarDate(update.endDate))
       || String(update.description || '').length > 10000 || String(update.title || '').length > 255) {
       return res.status(400).json({ error: 'Ungültige Termindaten.' });
     }
