@@ -293,9 +293,10 @@ class SubscriptionNotifier:
             f"{self.ntfy_url}/{user.ntfy_topic}", data=message.encode("utf-8"),
             headers=headers,
             timeout=self.timeout,
-            # Persönliche Zugangsdaten garantieren die Topic-Isolation und
-            # funktionieren unabhängig von einem globalen Publisher-Konto.
-            auth=(user.ntfy_username, user.ntfy_password),
+            # Der dedizierte Server-Publisher besitzt ausschließlich
+            # Schreibrechte. Dadurch bleiben persönliche Topics lesegeschützt,
+            # während ältere Nutzer-ACLs den Hintergrundversand nicht brechen.
+            auth=self._publisher_auth,
         )
         response.raise_for_status()
 

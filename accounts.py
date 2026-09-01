@@ -566,6 +566,14 @@ class AccountStore:
                 self._run(connection, "ALTER TABLE vp_users ADD COLUMN pin_hash VARCHAR(255) NOT NULL DEFAULT ''")
             except Exception:
                 pass
+            # The shared calendar service owns `users`, but VP may start first
+            # during a rolling deployment. Add the class column here as well so
+            # a first VP login cannot fail before the calendar service performs
+            # its own migration.
+            try:
+                self._run(connection, "ALTER TABLE users ADD COLUMN class_name VARCHAR(64) NOT NULL DEFAULT '11'")
+            except Exception:
+                pass
             try:
                 self._run(connection, "ALTER TABLE vp_only_users ADD COLUMN must_change_pin TINYINT(1) NOT NULL DEFAULT 1")
             except Exception:
@@ -807,11 +815,21 @@ class AccountStore:
     ) -> Any | None:
         if self._backend != "mysql":
             return None
-        calendar_row = self._fetchone(
-            connection,
-            "SELECT username, pin, status FROM users WHERE LOWER(username) = LOWER(?)",
-            (username,),
-        )
+        try:
+            calendar_row = self._fetchone(
+                connection,
+                "SELECT username, pin, status, class_name FROM users WHERE LOWER(username) = LOWER(?)",
+                (username,),
+            )
+        except Exception:
+            # Compatibility with a calendar service that has not yet run the
+            # migration. It still authenticates safely; only the documented
+            # default class is available until that service is updated.
+            calendar_row = self._fetchone(
+                connection,
+                "SELECT username, pin, status FROM users WHERE LOWER(username) = LOWER(?)",
+                (username,),
+            )
         if not calendar_row:
             return None
         if (calendar_row.get("status") or "ACTIVE") == "BLOCKED":
@@ -821,7 +839,7 @@ class AccountStore:
             return None
 
         resolved_username = calendar_row["username"]
-        class_name = (os.getenv("VP_DEFAULT_CLASS", "11") or "11").strip()
+        class_name = (calendar_row.get("class_name") or os.getenv("VP_DEFAULT_CLASS", "11") or "11").strip()
         if not class_name:
             class_name = "11"
         ntfy_topic = f"vp-{resolved_username.lower()}"

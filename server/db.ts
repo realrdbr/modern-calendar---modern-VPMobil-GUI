@@ -220,7 +220,7 @@ const memoryStore: {
     { id: 'KLAUSUR', name: 'Klausur', color: '#e65176', sort_order: 0 },
     { id: 'HAUSAUFGABE', name: 'Hausaufgabe', color: '#59b3cb', sort_order: 1 },
     { id: 'SONSTIGES', name: 'Sonstiges', color: '#3d60c7', sort_order: 2 },
-    { id: 'FERIEN', name: 'Ferien', color: '#f1c40f', sort_order: 3 }
+    { id: 'FERIEN', name: 'Ferien', color: '#f1c40f', sort_order: 3, locked: true }
   ]
 };
 
@@ -279,7 +279,8 @@ export async function initDatabase() {
           pin VARCHAR(255) DEFAULT NULL,
           preferences LONGTEXT NOT NULL,
           status VARCHAR(20) DEFAULT 'ACTIVE',
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+          class_name VARCHAR(64) NOT NULL DEFAULT '11',
+          updated_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
 
@@ -337,6 +338,13 @@ export async function initDatabase() {
         await conn.query("ALTER TABLE users ADD COLUMN status VARCHAR(20) DEFAULT 'ACTIVE';");
       } catch (e) {}
 
+      // The initial VP class belongs to the shared calendar account as well.
+      // Keeping it here lets the VP service bootstrap a matching account on a
+      // fresh browser/device instead of falling back to VP_DEFAULT_CLASS.
+      try {
+        await conn.query("ALTER TABLE users ADD COLUMN class_name VARCHAR(64) NOT NULL DEFAULT '11';");
+      } catch (e) {}
+
       // Migrate the former standalone admin list into the authoritative user
       // status before removing the redundant table.
       const [legacyAdminTables]: any = await conn.query("SHOW TABLES LIKE 'admins'");
@@ -355,9 +363,18 @@ export async function initDatabase() {
           id VARCHAR(64) PRIMARY KEY,
           name VARCHAR(64) NOT NULL,
           color VARCHAR(16) NOT NULL,
-          sort_order INT NOT NULL DEFAULT 0
+          sort_order INT NOT NULL DEFAULT 0,
+          locked TINYINT(1) NOT NULL DEFAULT 0
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
+      // Bei alten Datenbanken wird die neue Sperrspalte einmalig ergänzt und
+      // Ferien als sichere Voreinstellung gesperrt. Sobald die Spalte bereits
+      // existiert, bleibt eine spätere Admin-Entscheidung (auch Entsperren)
+      // unverändert erhalten.
+      try {
+        await conn.query('ALTER TABLE event_categories ADD COLUMN locked TINYINT(1) NOT NULL DEFAULT 0;');
+        await conn.query("UPDATE event_categories SET locked = 1 WHERE LOWER(id) = 'ferien'");
+      } catch (e) {}
 
       // Create events table
       await conn.query(`
@@ -375,7 +392,8 @@ export async function initDatabase() {
           attachments LONGTEXT,
           deleted_at DATETIME NULL,
           deleted_by VARCHAR(64) DEFAULT NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
 
@@ -388,6 +406,8 @@ export async function initDatabase() {
       try {
         await conn.query('ALTER TABLE events ADD COLUMN deleted_by VARCHAR(64) DEFAULT NULL;');
       } catch (e) {}
+      try { await conn.query('ALTER TABLE events ADD COLUMN updated_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6);'); } catch (e) {}
+      try { await conn.query('ALTER TABLE events MODIFY COLUMN updated_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6);'); } catch (e) {}
 
       await conn.query(`
         DELETE FROM events
@@ -448,13 +468,13 @@ export async function initDatabase() {
           { id: 'KLAUSUR', name: 'Klausur', color: '#e65176' },
           { id: 'HAUSAUFGABE', name: 'Hausaufgabe', color: '#59b3cb' },
           { id: 'SONSTIGES', name: 'Sonstiges', color: '#3d60c7' },
-          { id: 'FERIEN', name: 'Ferien', color: '#f1c40f' }
+          { id: 'FERIEN', name: 'Ferien', color: '#f1c40f', locked: 1 }
         ];
         for (let i = 0; i < defCats.length; i++) {
           const c = defCats[i];
           await conn.query(
-            'INSERT INTO event_categories (id, name, color, sort_order) VALUES (?, ?, ?, ?)',
-            [c.id, c.name, c.color, i]
+            'INSERT INTO event_categories (id, name, color, sort_order, locked) VALUES (?, ?, ?, ?, ?)',
+            [c.id, c.name, c.color, i, c.locked ? 1 : 0]
           );
         }
       }
@@ -503,6 +523,7 @@ export async function dbGetUser(username: string) {
       courses: normalizedCourses,
       pin: row.pin || undefined,
       status: row.status || 'ACTIVE',
+      className: String(row.class_name || '11'),
       preferences: { ...DEFAULT_PREFERENCES, ...parsedPreferences, themeMode }
     };
   }
@@ -513,6 +534,7 @@ export async function dbGetUser(username: string) {
     courses: memoryUser.courses || [],
     pin: memoryUser.pin || undefined,
     status: memoryUser.status || 'ACTIVE',
+    className: memoryUser.className || '11',
     preferences: { ...DEFAULT_PREFERENCES, ...(memoryUser.preferences || {}) }
   };
 }
@@ -543,7 +565,7 @@ export async function dbGetUsers() {
   }));
 }
 
-export async function dbSaveUser(username: string, data: { courses?: string[]; pin?: string | null; preferences?: any; status?: string }) {
+export async function dbSaveUser(username: string, data: { courses?: string[]; pin?: string | null; preferences?: any; status?: string; className?: string }) {
   const uname = username.toLowerCase();
   const existing = await dbGetUser(uname);
 
@@ -564,13 +586,19 @@ export async function dbSaveUser(username: string, data: { courses?: string[]; p
     : (existing ? existing.preferences : { ...DEFAULT_PREFERENCES });
 
   const status = data.status !== undefined ? data.status : (existing ? existing.status : 'ACTIVE');
+  const className = data.className !== undefined
+    ? String(data.className).trim()
+    : String(existing?.className || '11').trim();
+  if (!className || className.length > 64) {
+    throw new Error('Ungültige Klasse.');
+  }
 
   if (isConnected && pool) {
     await pool.query(
-      `INSERT INTO users (username, courses, pin, preferences, status) 
-       VALUES (?, ?, ?, ?, ?) 
-       ON DUPLICATE KEY UPDATE courses = VALUES(courses), pin = VALUES(pin), preferences = VALUES(preferences), status = VALUES(status)`,
-      [uname, JSON.stringify(courses), hashedPin, JSON.stringify(preferences), status]
+      `INSERT INTO users (username, courses, pin, preferences, status, class_name) 
+       VALUES (?, ?, ?, ?, ?, ?) 
+       ON DUPLICATE KEY UPDATE courses = VALUES(courses), pin = VALUES(pin), preferences = VALUES(preferences), status = VALUES(status), class_name = VALUES(class_name)`,
+      [uname, JSON.stringify(courses), hashedPin, JSON.stringify(preferences), status, className]
     );
     // Calendar `users.pin` is authoritative. Keep the legacy VP column only
     // for rolling compatibility and VP-only account migration.
@@ -608,14 +636,22 @@ export async function dbSaveUser(username: string, data: { courses?: string[]; p
         }
       }
     }
-    return { username: uname, courses, pin: hashedPin || undefined, preferences, status };
+    if (data.className !== undefined) {
+      try {
+        await pool.query('UPDATE vp_users SET class_name = ? WHERE LOWER(username) = LOWER(?)', [className, uname]);
+      } catch (error: any) {
+        if (error?.code !== 'ER_NO_SUCH_TABLE') throw error;
+      }
+    }
+    return { username: uname, courses, pin: hashedPin || undefined, preferences, status, className };
   }
 
   memoryStore.users[uname] = {
     courses,
     pin: hashedPin || undefined,
     preferences,
-    status
+    status,
+    className,
   };
   return { username: uname, ...memoryStore.users[uname] };
 }
@@ -853,7 +889,7 @@ export async function dbCreatePrivateEvent(username: string, event: any) {
   return withPrivateMutation(username, async () => {
     const data = await dbLoadPrivateCalendar(username);
     if (!data.categories.some(c => c.id === event.type)) return null;
-    data.events.push({ ...event, endDate: event.endDate || event.date, courseId: 'ALLGEMEIN', author: username.toLowerCase() });
+    data.events.push({ ...event, endDate: event.endDate || event.date, courseId: 'ALLGEMEIN', author: username.toLowerCase(), updatedAt: new Date().toISOString() });
     await dbStorePrivateCalendar(username, data);
     return data.events.at(-1);
   });
@@ -866,7 +902,7 @@ export async function dbUpdatePrivateEvent(username: string, id: string, update:
     if (index < 0) return null;
     const nextType = update.type ?? data.events[index].type;
     if (!data.categories.some(c => c.id === nextType)) throw new Error('PRIVATE_CATEGORY_FORBIDDEN');
-    const nextEvent = { ...data.events[index], ...update, id, courseId: 'ALLGEMEIN', author: username.toLowerCase() };
+    const nextEvent = { ...data.events[index], ...update, id, courseId: 'ALLGEMEIN', author: username.toLowerCase(), updatedAt: new Date().toISOString() };
     if (!nextEvent.endDate || nextEvent.endDate < nextEvent.date) nextEvent.endDate = nextEvent.date;
     data.events[index] = nextEvent;
     await dbStorePrivateCalendar(username, data);
@@ -918,9 +954,9 @@ export async function dbCleanupExpiredEvents(): Promise<number> {
 // Event Operations (with Soft Delete)
 export async function dbGetEvents(includeDeleted = false, visibleCourses?: string[]) {
   if (isConnected && pool) {
-    const query = includeDeleted 
-      ? 'SELECT * FROM events ORDER BY date ASC, start_time ASC' 
-      : 'SELECT * FROM events WHERE deleted_at IS NULL ORDER BY date ASC, start_time ASC';
+    const query = includeDeleted
+      ? "SELECT events.*, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS updated_at_version FROM events ORDER BY date ASC, start_time ASC"
+      : "SELECT events.*, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS updated_at_version FROM events WHERE deleted_at IS NULL ORDER BY date ASC, start_time ASC";
     const [rows]: any = await pool.query(query);
     const events = rows.map((r: any) => ({
       id: r.id,
@@ -934,6 +970,7 @@ export async function dbGetEvents(includeDeleted = false, visibleCourses?: strin
       description: r.description || '',
       author: r.author || '',
       attachments: typeof r.attachments === 'string' ? JSON.parse(r.attachments || '[]') : (r.attachments || []),
+      updatedAt: r.updated_at_version || (r.updated_at ? new Date(r.updated_at).toISOString() : undefined),
       deletedAt: r.deleted_at || undefined,
       deletedBy: r.deleted_by || undefined
     }));
@@ -951,7 +988,7 @@ export async function dbGetEvents(includeDeleted = false, visibleCourses?: strin
 
 export async function dbGetEventById(id: string) {
   if (isConnected && pool) {
-    const [rows]: any = await pool.query('SELECT * FROM events WHERE id = ?', [id]);
+    const [rows]: any = await pool.query("SELECT events.*, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS updated_at_version FROM events WHERE id = ?", [id]);
     if (rows.length === 0) return null;
     const r = rows[0];
     return {
@@ -966,6 +1003,7 @@ export async function dbGetEventById(id: string) {
       description: r.description || '',
       author: r.author || '',
       attachments: typeof r.attachments === 'string' ? JSON.parse(r.attachments || '[]') : (r.attachments || []),
+      updatedAt: r.updated_at_version || (r.updated_at ? new Date(r.updated_at).toISOString() : undefined),
       deletedAt: r.deleted_at || undefined,
       deletedBy: r.deleted_by || undefined
     };
@@ -975,6 +1013,7 @@ export async function dbGetEventById(id: string) {
 }
 
 export async function dbCreateEvent(event: any) {
+  event.updatedAt = new Date().toISOString();
   if (isConnected && pool) {
     await pool.query(
       `INSERT INTO events (id, title, date, end_date, start_time, end_time, course_id, type, description, author, attachments, deleted_at)
@@ -999,9 +1038,17 @@ export async function dbCreateEvent(event: any) {
   return event;
 }
 
-export async function dbUpdateEvent(id: string, data: any) {
+function mysqlTimestampFromIso(value: string): string | null {
+  const preciseMatch = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d{1,6})Z$/.exec(value);
+  if (preciseMatch) return `${preciseMatch[1].replace('T', ' ')}.${preciseMatch[2].padEnd(6, '0')}`;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return `${parsed.toISOString().slice(0, 23).replace('T', ' ')}000`;
+}
+
+export async function dbUpdateEvent(id: string, data: any, expectedUpdatedAt?: string) {
   if (isConnected && pool) {
-    const [existing]: any = await pool.query('SELECT * FROM events WHERE id = ?', [id]);
+    const [existing]: any = await pool.query("SELECT events.*, DATE_FORMAT(updated_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS updated_at_version FROM events WHERE id = ?", [id]);
     if (existing.length === 0) return null;
     const current = existing[0];
 
@@ -1017,12 +1064,17 @@ export async function dbUpdateEvent(id: string, data: any) {
 
     if (!endDate || endDate < date) endDate = date;
 
-    await pool.query(
+    const expectedTimestamp = expectedUpdatedAt ? mysqlTimestampFromIso(expectedUpdatedAt) : null;
+    if (expectedUpdatedAt && !expectedTimestamp) return null;
+    const [result]: any = await pool.query(
       `UPDATE events 
-       SET title = ?, date = ?, end_date = ?, start_time = ?, end_time = ?, course_id = ?, type = ?, description = ?, attachments = ? 
-       WHERE id = ?`,
-      [title, date, endDate, startTime, endTime, courseId, type, description, attachments, id]
+       SET title = ?, date = ?, end_date = ?, start_time = ?, end_time = ?, course_id = ?, type = ?, description = ?, attachments = ?, updated_at = CURRENT_TIMESTAMP(6)
+       WHERE id = ?${expectedTimestamp ? ' AND updated_at = ?' : ''}`,
+      expectedTimestamp
+        ? [title, date, endDate, startTime, endTime, courseId, type, description, attachments, id, expectedTimestamp]
+        : [title, date, endDate, startTime, endTime, courseId, type, description, attachments, id]
     );
+    if (result.affectedRows !== 1) return null;
 
     return {
       id,
@@ -1035,13 +1087,17 @@ export async function dbUpdateEvent(id: string, data: any) {
       type,
       description,
       author: current.author,
-      attachments: typeof attachments === 'string' ? JSON.parse(attachments) : attachments
+      attachments: typeof attachments === 'string' ? JSON.parse(attachments) : attachments,
+      updatedAt: current.updated_at_version || (current.updated_at ? new Date(current.updated_at).toISOString() : new Date().toISOString())
     };
   }
 
   const idx = memoryStore.events.findIndex(e => e.id === id);
   if (idx !== -1) {
-    const nextEvent = { ...memoryStore.events[idx], ...data };
+    const current = memoryStore.events[idx];
+    if (expectedUpdatedAt && current.updatedAt && current.updatedAt !== expectedUpdatedAt) return null;
+    const nextUpdateAt = new Date(Math.max(Date.now(), (current.updatedAt ? new Date(current.updatedAt).getTime() : 0) + 1)).toISOString();
+    const nextEvent = { ...current, ...data, updatedAt: nextUpdateAt };
     if (!nextEvent.endDate || nextEvent.endDate < nextEvent.date) nextEvent.endDate = nextEvent.date;
     memoryStore.events[idx] = nextEvent;
     return memoryStore.events[idx];
@@ -1149,20 +1205,24 @@ export async function dbGetCategories() {
       id: r.id,
       name: r.name,
       color: r.color,
+      // MariaDB-Treiber können TINYINT(1) je nach Konfiguration als Zahl oder
+      // als String liefern. `!!'0'` wäre fälschlich wahr und würde jede
+      // öffentliche Kategorie als gesperrt behandeln.
+      locked: r.locked === true || r.locked === 1 || r.locked === '1',
       sort_order: r.sort_order
     }));
   }
   return [...memoryStore.categories].sort((a, b) => a.sort_order - b.sort_order);
 }
 
-export async function dbSaveCategory(category: { id: string; name: string; color: string; sort_order?: number }) {
+export async function dbSaveCategory(category: { id: string; name: string; color: string; sort_order?: number; locked?: boolean }) {
   if (isConnected && pool) {
     const sortOrder = category.sort_order !== undefined ? category.sort_order : 999;
     await pool.query(
-      `INSERT INTO event_categories (id, name, color, sort_order) 
-       VALUES (?, ?, ?, ?) 
-       ON DUPLICATE KEY UPDATE name = VALUES(name), color = VALUES(color), sort_order = VALUES(sort_order)`,
-      [category.id, category.name, category.color, sortOrder]
+      `INSERT INTO event_categories (id, name, color, sort_order, locked)
+       VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE name = VALUES(name), color = VALUES(color), sort_order = VALUES(sort_order), locked = VALUES(locked)`,
+      [category.id, category.name, category.color, sortOrder, category.locked ? 1 : 0]
     );
     return category;
   }

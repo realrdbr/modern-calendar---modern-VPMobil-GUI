@@ -1,7 +1,7 @@
 import React, { useState, useEffect, FormEvent } from 'react';
 import { adminElevate, adminFetchUsers, adminUpdateUserStatus, adminResetUserPin, adminSetUserPin, adminAddUser, adminDeleteUser, fetchCategories, saveCategory, deleteCategory, reorderCategories, fetchCourses, saveCourse, deleteCourse, reorderCourses } from '../lib/api';
 import { User, EventCategory, UserPreferences, Course } from '../types';
-import { X, ShieldCheck, Search, ShieldAlert, KeyRound, Check, Trash2, Plus, GripVertical, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Layers } from 'lucide-react';
+import { X, ShieldCheck, Search, ShieldAlert, KeyRound, Check, Trash2, Plus, GripVertical, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Layers, Lock, Unlock } from 'lucide-react';
 
 interface Props {
   isOpen: boolean;
@@ -81,6 +81,10 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
       setUsers(fetchedUsers);
       const fetchedCats = await fetchCategories();
       setCategories(fetchedCats.filter((category: EventCategory) => !category.isPrivate));
+      setDeletedCategoryIds([]);
+      setNewCategoryIds([]);
+      setCategoryDirty(false);
+      setCategorySaveMessage('');
       const fetchedCourses = await fetchCourses();
       setCourses(fetchedCourses);
     } catch (err) {
@@ -207,36 +211,62 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
   // Category management
   const [newCatName, setNewCatName] = useState('');
   const [newCatColor, setNewCatColor] = useState('#0f766e');
+  const [deletedCategoryIds, setDeletedCategoryIds] = useState<string[]>([]);
+  const [newCategoryIds, setNewCategoryIds] = useState<string[]>([]);
+  const [categoryDirty, setCategoryDirty] = useState(false);
+  const [categorySaving, setCategorySaving] = useState(false);
+  const [categorySaveMessage, setCategorySaveMessage] = useState('');
 
-  const handleAddCategory = async () => {
+  const handleAddCategory = () => {
     if (!newCatName.trim()) return;
     const id = newCatName.trim().toUpperCase().replace(/\s+/g, '_');
-    const newCat = { id, name: newCatName.trim(), color: newCatColor, sort_order: categories.length };
-    try {
-      const saved = await saveCategory(newCat, adminToken);
-      setCategories(prev => [...prev, saved]);
-      setNewCatName('');
-    } catch (e) {
-      if (!handleAdminRequestError(e)) alert('Fehler beim Speichern');
+    if (categories.some(category => category.id === id)) {
+      alert('Eine Kategorie mit diesem Namen existiert bereits.');
+      return;
     }
+    setCategories(prev => [...prev, { id, name: newCatName.trim(), color: newCatColor, sort_order: prev.length, locked: false }]);
+    setNewCategoryIds(prev => [...prev, id]);
+    setNewCatName('');
+    setCategoryDirty(true);
+    setCategorySaveMessage('');
   };
 
-  const handleUpdateCategory = async (id: string, name: string, color: string) => {
-    try {
-      const saved = await saveCategory({ id, name, color }, adminToken);
-      setCategories(prev => prev.map(c => c.id === id ? saved : c));
-    } catch (e) {
-      if (!handleAdminRequestError(e)) alert('Fehler beim Speichern');
-    }
+  const handleUpdateCategory = (id: string, name: string, color: string, locked = false) => {
+    setCategories(prev => prev.map(category => category.id === id ? { ...category, name, color, locked } : category));
+    setCategoryDirty(true);
+    setCategorySaveMessage('');
   };
 
-  const handleDeleteCategory = async (id: string) => {
+  const handleDeleteCategory = (id: string) => {
     if (!confirm('Kategorie wirklich löschen?')) return;
+    setCategories(prev => prev.filter(category => category.id !== id));
+    if (newCategoryIds.includes(id)) {
+      setNewCategoryIds(prev => prev.filter(categoryId => categoryId !== id));
+    } else {
+      setDeletedCategoryIds(prev => prev.includes(id) ? prev : [...prev, id]);
+    }
+    setCategoryDirty(true);
+    setCategorySaveMessage('');
+  };
+
+  const handleSaveCategories = async () => {
+    if (!categoryDirty || categorySaving) return;
+    setCategorySaving(true);
+    setCategorySaveMessage('');
     try {
-      await deleteCategory(id, adminToken);
-      setCategories(prev => prev.filter(c => c.id !== id));
-    } catch (e) {
-      if (!handleAdminRequestError(e)) alert('Fehler beim Löschen');
+      const saved = await Promise.all(categories.map(category => saveCategory(category, adminToken)));
+      await Promise.all(deletedCategoryIds.map(id => deleteCategory(id, adminToken)));
+      setCategories(saved);
+      setDeletedCategoryIds([]);
+      setNewCategoryIds([]);
+      setCategoryDirty(false);
+      setCategorySaveMessage('Änderungen gespeichert.');
+    } catch (error) {
+      if (!handleAdminRequestError(error)) {
+        setCategorySaveMessage(error instanceof Error ? error.message : 'Änderungen konnten nicht gespeichert werden.');
+      }
+    } finally {
+      setCategorySaving(false);
     }
   };
 
@@ -703,9 +733,23 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
 
             {activeTab === 'categories' && (
               <div className="space-y-6">
-                <div>
-                  <h3 className={`font-bold text-xl ${theme.textMain} mb-1`}>Globale Kategorien</h3>
-                  <p className={`text-sm ${theme.textFaint}`}>Diese Kategorien stehen allen Benutzern zur Verfügung.</p>
+                <div className="flex flex-wrap items-end justify-between gap-3">
+                  <div>
+                    <h3 className={`font-bold text-xl ${theme.textMain} mb-1`}>Globale Kategorien</h3>
+                    <p className={`text-sm ${theme.textFaint}`}>Änderungen werden erst nach dem Speichern veröffentlicht.</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {categorySaveMessage && <span className={`text-sm font-medium ${categorySaveMessage === 'Änderungen gespeichert.' ? 'text-emerald-600' : 'text-rose-600'}`}>{categorySaveMessage}</span>}
+                    <button
+                      type="button"
+                      onClick={handleSaveCategories}
+                      disabled={!categoryDirty || categorySaving}
+                      className="px-4 py-2 text-sm font-bold text-white rounded-lg disabled:cursor-not-allowed disabled:opacity-45 shrink-0"
+                      style={{ backgroundColor: theme.accent }}
+                    >
+                      {categorySaving ? 'Speichert…' : 'Speichern'}
+                    </button>
+                  </div>
                 </div>
 
                 <div className={`flex items-center gap-3 p-4 border ${theme.border} rounded-xl ${theme.bgInput}`}>
@@ -739,16 +783,25 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
                         <input
                           type="color"
                           value={c.color}
-                          onChange={(e) => handleUpdateCategory(c.id, c.name, e.target.value)}
+                          onChange={(e) => handleUpdateCategory(c.id, c.name, e.target.value, !!c.locked)}
                           className="w-6 h-6 p-0 border-0 rounded cursor-pointer shrink-0 bg-transparent"
                         />
                         <input 
                           type="text" 
                           value={c.name}
-                          onChange={(e) => handleUpdateCategory(c.id, e.target.value, c.color)}
+                          onChange={(e) => handleUpdateCategory(c.id, e.target.value, c.color, !!c.locked)}
                           className={`font-semibold text-sm ${theme.textMain} bg-transparent border-none focus:outline-none focus:ring-1 focus:ring-teal-700 rounded px-1 w-full max-w-[200px]`}
                         />
                       </div>
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateCategory(c.id, c.name, c.color, !c.locked)}
+                        className={`p-1.5 rounded-lg transition-colors shrink-0 ${c.locked ? 'text-amber-600 bg-amber-500/10 hover:bg-amber-500/20' : `${theme.textMuted} hover:bg-black/5 dark:hover:bg-white/5`}`}
+                        title={c.locked ? 'Kategorie entsperren' : 'Kategorie sperren'}
+                        aria-label={c.locked ? `Kategorie ${c.name} entsperren` : `Kategorie ${c.name} sperren`}
+                      >
+                        {c.locked ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}
+                      </button>
                       <button
                         onClick={() => handleDeleteCategory(c.id)}
                         className="p-1.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-colors shrink-0"

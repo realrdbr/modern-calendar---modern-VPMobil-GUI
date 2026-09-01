@@ -66,6 +66,8 @@ class Handler(BaseHTTPRequestHandler):
             with CLI_LOCK:
                 if self.path == "/ensure":
                     self._ensure(payload, username)
+                elif self.path == "/ensure-publisher":
+                    self._ensure_publisher(payload, username)
                 elif self.path == "/delete":
                     result = run_ntfy("user", "del", username)
                     if result.returncode != 0 and "does not exist" not in (result.stderr + result.stdout).lower():
@@ -96,6 +98,23 @@ class Handler(BaseHTTPRequestHandler):
         access = run_ntfy("access", username, topic, "read-write")
         if access.returncode != 0:
             raise RuntimeError("ntfy-Zugriff konnte nicht gesetzt werden.")
+
+    @staticmethod
+    def _ensure_publisher(payload: dict[str, object], username: str) -> None:
+        password = str(payload["password"])
+        if not 16 <= len(password) <= 128:
+            raise ValueError("Ungültige ntfy-Zugangsdaten.")
+        added = run_ntfy("user", "add", username, password=password)
+        if added.returncode != 0:
+            changed = run_ntfy("user", "change-pass", username, password=password)
+            if changed.returncode != 0:
+                raise RuntimeError("ntfy-Publisher konnte nicht angelegt werden.")
+        # Alte, widersprüchliche Wildcard-ACLs entfernen. Der Publisher darf
+        # ausschließlich veröffentlichen, niemals fremde Topics lesen.
+        run_ntfy("access", "--reset", username, "*")
+        access = run_ntfy("access", username, "*", "write-only")
+        if access.returncode != 0:
+            raise RuntimeError("ntfy-Publisher konnte nicht autorisiert werden.")
 
     def _reply(self, status: int, payload: dict[str, object]) -> None:
         body = json.dumps(payload).encode("utf-8")

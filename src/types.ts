@@ -11,6 +11,7 @@ export interface EventCategory {
   color: string;
   sort_order?: number;
   isPrivate?: boolean;
+  locked?: boolean;
 }
 
 export interface UserPreferences {
@@ -58,6 +59,7 @@ export interface AppEvent {
   attachments?: Attachment[];
   deletedAt?: string;
   deletedBy?: string;
+  updatedAt?: string;
 }
 
 export const COURSES: Course[] = [

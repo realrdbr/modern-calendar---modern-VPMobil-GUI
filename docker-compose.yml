@@ -128,6 +128,7 @@ services:
       SCHULNUMMER: ${SCHULNUMMER}
       BENUTZERNAME: ${BENUTZERNAME}
       PASSWORT: ${PASSWORT}
+      VPMOBIL_CACHE_DIR: /app/.vp_cache
       GOOD_ROOMS: ${GOOD_ROOMS}
       MEDIUM_ROOMS: ${MEDIUM_ROOMS}
       BAD_ROOMS: ${BAD_ROOMS}
@@ -136,6 +137,7 @@ services:
       - "${VP_PORT:-8000}:${VP_PORT:-8000}"
     volumes:
       - ./data/ntfy:/var/lib/ntfy
+      - vp_plan_cache:/app/.vp_cache
     networks:
       - cal11_net
 
@@ -164,6 +166,8 @@ volumes:
   caddy_data:
     driver: local
   caddy_config:
+    driver: local
+  vp_plan_cache:
     driver: local
 
 networks:

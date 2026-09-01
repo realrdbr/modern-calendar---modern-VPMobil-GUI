@@ -83,6 +83,10 @@ class NtfyService:
 
     def ensure_running(self) -> None:
         if os.getenv("NTFY_AUTOSTART", "true").lower() not in {"1", "true", "yes"}:
+            # Der VP-Container hat bewusst keinen Docker-Socket. Die Publisher-
+            # ACL wird deshalb direkt über den internen Provisioner sichergestellt.
+            if self.provisioner_url:
+                self.ensure_server_publisher()
             return
         result = self._compose("up", "-d", "ntfy")
         if result.returncode != 0:
@@ -150,6 +154,9 @@ class NtfyService:
 
     def ensure_server_publisher(self) -> None:
         username, password = resolve_ntfy_publisher_auth()
+        if self.provisioner_url:
+            self._provision("ensure-publisher", username=username, password=password)
+            return
         add = self._compose(
             "exec", "-T", "-e", f"NTFY_PASSWORD={password}", "ntfy", "ntfy", "user", "add", username
         )
@@ -178,10 +185,14 @@ class NtfyService:
             raise RuntimeError("ntfy-Nutzer konnte nicht gelöscht werden: " + (result.stderr.strip() or result.stdout.strip()))
 
     def send_test_notification(self, topic: str, message: str) -> None:
+        # Auch dieser Legacy-Helfer darf bei deny-all niemals anonym senden.
+        # Der dedizierte Publisher hat ausschließlich Schreibrechte und kann
+        # damit weder Nachrichten lesen noch Benutzer-Topics abonnieren.
         response = requests.post(
             f"{self.internal_url}/{topic}",
             data=message.encode("utf-8"),
             headers={"Title": "VPrintfy-Test", "Priority": "high", "Tags": "white_check_mark"},
             timeout=10,
+            auth=resolve_ntfy_publisher_auth(),
         )
         response.raise_for_status()

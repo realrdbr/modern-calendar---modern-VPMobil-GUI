@@ -499,14 +499,14 @@ async function startServer() {
     const privateData = await dbGetPrivateCalendar(currentUser);
     const isPrivateType = privateData.categories.some(category => category.id === type);
     const globalCategories = await dbGetCategories();
-    if (!isPrivateType && !globalCategories.some(category => category.id === type)) {
+    const globalCategory = globalCategories.find(category => category.id === type);
+    if (!isPrivateType && !globalCategory) {
       return res.status(400).json({ error: 'Die gewählte Kategorie ist nicht verfügbar.' });
     }
-
-    // FERIEN restriction: Only admins can create FERIEN events
-    if (type === 'FERIEN' && !(await dbIsAdmin(currentUser))) {
-      return res.status(403).json({ error: 'Nur Admins dürfen Ferientermine erstellen.' });
+    if (globalCategory?.locked && !(await dbIsAdmin(currentUser))) {
+      return res.status(403).json({ error: 'Fehler beim Speichern einer gesperrten Kategorie.' });
     }
+
     const isAdmin = await dbIsAdmin(currentUser);
     const courses = await dbGetCourses();
     if (!isPrivateType && courseId !== 'ALLGEMEIN' && (!courses.some(course => course.id === courseId)
@@ -535,10 +535,15 @@ async function startServer() {
   app.put('/api/events/:id', requireWriteAuth, async (req, res) => {
     const id = req.params.id as string;
     const currentUser = (req as any).authenticatedUser;
+    const expectedUpdatedAt = typeof req.body?.expectedUpdatedAt === 'string' ? req.body.expectedUpdatedAt : undefined;
     const update = safeEventUpdate(req.body);
     if ((update.date !== undefined && !validCalendarDate(update.date)) || (update.endDate !== undefined && !isOptionalCalendarDate(update.endDate))
       || String(update.description || '').length > 10000 || String(update.title || '').length > 255) {
       return res.status(400).json({ error: 'Ungültige Termindaten.' });
+    }
+    if (expectedUpdatedAt) {
+      const privateCurrent = (await dbGetPrivateCalendar(currentUser)).events.find(event => event.id === id);
+      if (privateCurrent?.updatedAt && privateCurrent.updatedAt !== expectedUpdatedAt) return res.status(409).json({ error: 'Dieser Termin wurde inzwischen geändert. Bitte laden Sie die aktuelle Version.' });
     }
     const privateUpdated = await dbUpdatePrivateEvent(currentUser, id, update).catch(error => {
       if (error.message === 'PRIVATE_CATEGORY_FORBIDDEN') return undefined;
@@ -550,29 +555,39 @@ async function startServer() {
     }
     const existing = await dbGetEventById(id);
     if (!existing) return res.status(404).json({ error: 'Event not found' });
-    if (String(existing.author || '').toLowerCase() !== currentUser.toLowerCase() && !(await dbIsAdmin(currentUser))) {
-      return res.status(403).json({ error: 'Sie dürfen nur eigene Termine bearbeiten.' });
+    if (expectedUpdatedAt && existing.updatedAt && expectedUpdatedAt !== existing.updatedAt) {
+      return res.status(409).json({ error: 'Dieser Termin wurde inzwischen geändert. Bitte laden Sie die aktuelle Version.' });
+    }
+    const isAdmin = await dbIsAdmin(currentUser);
+    const globalCategories = await dbGetCategories();
+    const existingCategory = globalCategories.find(category => category.id === existing.type);
+    if (!existingCategory) {
+      return res.status(400).json({ error: 'Die Kategorie dieses Termins ist nicht mehr verfügbar.' });
+    }
+    if (existingCategory?.locked && !isAdmin) {
+      return res.status(403).json({ error: 'Fehler beim Speichern einer gesperrten Kategorie.' });
     }
     if (update.type !== undefined) {
-      const globalCategories = await dbGetCategories();
-      if (!globalCategories.some(category => category.id === update.type)) {
+      const category = globalCategories.find(category => category.id === update.type);
+      if (!category) {
         return res.status(400).json({ error: 'Globale Termine können nur globale Kategorien verwenden.' });
       }
+      if (category.locked && !isAdmin) return res.status(403).json({ error: 'Fehler beim Speichern einer gesperrten Kategorie.' });
     }
     if (update.courseId !== undefined && update.courseId !== 'ALLGEMEIN') {
       const courses = await dbGetCourses();
-      const isAdmin = await dbIsAdmin(currentUser);
-      const user = await dbGetUser(currentUser);
-      if (!courses.some(course => course.id === update.courseId)
-        || (!isAdmin && !(user?.courses || []).includes(update.courseId))) {
-        return res.status(403).json({ error: 'Für diesen Kurs besteht keine Berechtigung.' });
+      if (!courses.some(course => course.id === update.courseId)) {
+        return res.status(400).json({ error: 'Der ausgewählte Kurs existiert nicht.' });
       }
     }
-    if ((existing.type === 'FERIEN' || update.type === 'FERIEN') && !(await dbIsAdmin(currentUser))) {
-      return res.status(403).json({ error: 'Nur Admins dürfen Ferientermine bearbeiten.' });
+    const updated = await dbUpdateEvent(id, update, expectedUpdatedAt);
+    if (!updated) {
+      return res.status(expectedUpdatedAt ? 409 : 404).json({
+        error: expectedUpdatedAt
+          ? 'Dieser Termin wurde inzwischen geändert. Bitte laden Sie die aktuelle Version.'
+          : 'Event not found',
+      });
     }
-
-    const updated = await dbUpdateEvent(id, update);
     broadcastCalendarChange();
     res.json(updated);
   });
@@ -585,8 +600,11 @@ async function startServer() {
       return res.json({ success: true });
     }
     const existing = await dbGetEventById(id);
-    if (existing && existing.type === 'FERIEN' && !(await dbIsAdmin(currentUser))) {
-      return res.status(403).json({ error: 'Nur Admins dürfen Ferientermine löschen.' });
+    if (!existing) return res.status(404).json({ error: 'Event not found' });
+    const isAdmin = await dbIsAdmin(currentUser);
+    const category = (await dbGetCategories()).find(entry => entry.id === existing.type);
+    if (category?.locked && !isAdmin) {
+      return res.status(403).json({ error: 'Diese Kategorie ist gesperrt.' });
     }
     await dbDeleteEvent(id, currentUser);
     broadcastCalendarChange();
@@ -811,6 +829,7 @@ async function startServer() {
     await dbSaveUser(uname, {
       courses: [],
       pin: pin || undefined,
+      className: String(className || process.env.VP_DEFAULT_CLASS || '11').trim(),
       preferences: {
         darkMode: false,
         accentColor: '#e91e63',

@@ -19,11 +19,11 @@ from dotenv import load_dotenv
 from account_page import render_login, render_subscriptions
 from accounts import AccountStore, NotifySettings, Session
 from ntfy.service import NtfyService, resolve_ntfy_internal_url
-from plan_page import get_selected_subject_cookie_name, get_week_plans_for_page, get_week_version, render_plan_page
-from rooms_page import render_rooms_page
+from plan_page import get_available_classes, get_selected_class_cookie_name, get_selected_subject_cookie_name, get_week_plans_for_page, get_week_version, render_plan_page, resolve_initial_class
+from rooms_page import get_free_rooms_for_page, get_room_plan_version, render_rooms_page, warm_free_room_results_from_cache
 from subscriptions import SubscriptionNotifier, available_class_names_from_plans, subject_key, subject_options_from_plans
 from teacher_page import render_teacher_page
-from vp_data import ResourceNotFound, Unauthorized, fetch_plan, find_free_rooms_in_plan, get_plan_for_page, get_subject_catalog_plans, log
+from vp_data import ResourceNotFound, Unauthorized, fetch_plan, get_cached_plan_for_page, get_plan_for_page, get_subject_catalog_plans, get_subject_catalog_plans_for_page, log, warm_page_caches_from_disk
 from web_utils import cookie_values, format_week_value, join_cookie_list, make_cookie, parse_cookie_header, parse_hour, parse_week, query_value, query_values, redirect, send_html, split_cookie_list
 
 
@@ -239,8 +239,9 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/room-version":
             from web_utils import parse_date
-            plan = get_plan_for_page(parse_date(query_value(query, "datum")))
-            self._send_json({"version": str(getattr(plan, "zeitstempel", "") or "")})
+            selected_date = parse_date(query_value(query, "datum"))
+            plan = get_cached_plan_for_page(selected_date)
+            self._send_json({"version": get_room_plan_version(plan, selected_date)})
             return
         if parsed.path == "/raeume":
             self.handle_rooms_page(query)
@@ -497,37 +498,60 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         selected_date = parse_week(query_value(query, "woche"))
         cookies = self._cookies()
         session = self._session()
-        selected_class = query_value(query, "klasse") or cookies.get("selected_class")
+        explicit_class = query_value(query, "klasse")
+        class_cookie_name = get_selected_class_cookie_name(session.user.username) if session else "selected_class"
+        selected_class = explicit_class or cookies.get(class_cookie_name)
+        initial_class_resolved = False
         if not selected_class and session:
-            saved_classes, _ = self.store.get_selected_classes(session.user.id, session.user.class_name)
-            selected_class = saved_classes[0] if saved_classes else session.user.class_name
+            # Beim allerersten Aufruf die hinterlegte Klasse möglichst genau auf
+            # eine vorhandene Plan-Klasse abbilden. URL und Cookie bleiben
+            # danach ausdrücklich vorrangig.
+            try:
+                available = get_available_classes(get_week_plans_for_page(selected_date))
+                selected_class = resolve_initial_class(session.user.class_name, available)
+                initial_class_resolved = selected_class is not None
+            except Exception:
+                selected_class = None
         selected_subjects: list[str] = []
         filters_active = query_value(query, "show_all") != "1"
+        requested_block_mode = query_value(query, "block")
+        block_mode = (requested_block_mode == "1") if requested_block_mode is not None else cookies.get("vp_block_mode") == "1"
         headers: list[str] = []
+        if requested_block_mode is not None:
+            headers.append(make_cookie("vp_block_mode", "1" if block_mode else "0"))
         if query_value(query, "klasse_clear") == "1":
-            headers.append(make_cookie("selected_class", "", max_age=0))
+            headers.extend([
+                make_cookie(class_cookie_name, "", max_age=0),
+                # Bereinigt den früher globalen Cookie, damit eine alte
+                # Auswahl eines anderen Nutzers nie die Erstauswahl blockiert.
+                make_cookie("selected_class", "", max_age=0),
+            ])
             redirect(self, f"/?woche={format_week_value(selected_date)}", headers)
             return
         subject_cookie_name = get_selected_subject_cookie_name(selected_class) if selected_class else None
         if selected_class and subject_cookie_name:
+            # Der Plan-Request darf für Filterdaten nicht auf Stundenplan24
+            # warten. Der Cache wird parallel aufgefrischt; die aktuelle Woche
+            # selbst liefert im Renderer einen sofort verfügbaren Fallback.
+            page_catalog_plans = get_subject_catalog_plans_for_page()
             if session:
-                current_options = subject_options_from_plans(get_subject_catalog_plans(), selected_class)
+                current_options = subject_options_from_plans(page_catalog_plans, selected_class)
                 allowed_keys = {option.key for option in current_options}
                 stored_by_class, has_stored = self.store.get_subject_selections(session.user.id, session.user.class_name)
-                if has_stored and selected_class in stored_by_class:
+                if has_stored and current_options and selected_class in stored_by_class:
                     pruned = stored_by_class[selected_class] & allowed_keys
                     if pruned != stored_by_class[selected_class]:
                         stored_by_class[selected_class] = pruned
                         self.store.replace_subjects(session.user.id, stored_by_class)
             selected_subjects = query_values(query, "fach") or split_cookie_list(cookies.get(subject_cookie_name))
             if not selected_subjects and session:
-                catalog_options = subject_options_from_plans(get_subject_catalog_plans(), selected_class)
+                catalog_options = subject_options_from_plans(page_catalog_plans, selected_class)
                 labels_by_key = {option.key: option.label for option in catalog_options}
                 stored_by_class, has_stored = self.store.get_subject_selections(session.user.id, session.user.class_name)
                 selected_keys = (stored_by_class.get(selected_class, set()) & set(labels_by_key)) if has_stored else {
                     subject_key(course_id) for course_id in self.store.get_calendar_course_ids(session.user.username)
                 }
-                if has_stored and selected_keys != stored_by_class.get(selected_class, set()):
+                if has_stored and catalog_options and selected_keys != stored_by_class.get(selected_class, set()):
                     stored_by_class[selected_class] = selected_keys
                     self.store.replace_subjects(session.user.id, stored_by_class)
                 selected_subjects = [labels_by_key[key] for key in selected_keys if key in labels_by_key]
@@ -535,12 +559,16 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             selected_subjects = []
             if subject_cookie_name:
                 headers.append(make_cookie(subject_cookie_name, "", max_age=0))
-        if selected_class:
-            headers.append(make_cookie("selected_class", selected_class))
+        if selected_class and (explicit_class or cookies.get(class_cookie_name) or initial_class_resolved):
+            headers.append(make_cookie(class_cookie_name, selected_class))
         if selected_class and subject_cookie_name and "fach" in query:
             headers.append(make_cookie(subject_cookie_name, join_cookie_list(selected_subjects)))
-            if session:
-                options = subject_options_from_plans(get_subject_catalog_plans(), selected_class)
+            # Ohne bereits vorliegenden Katalog können Fach-Labels noch nicht
+            # sicher in persistente Kurs-IDs übersetzt werden. Der Cookie bleibt
+            # erhalten und die Hintergrundaktualisierung macht die Zuordnung
+            # beim nächsten Request verlustfrei verfügbar.
+            if session and page_catalog_plans:
+                options = subject_options_from_plans(page_catalog_plans, selected_class)
                 keys_by_label = {option.label: option.key for option in options}
                 selected_keys = {keys_by_label[label] for label in selected_subjects if label in keys_by_label}
                 stored_by_class, _ = self.store.get_subject_selections(session.user.id, session.user.class_name)
@@ -556,6 +584,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             html = render_plan_page(
                 selected_date, selected_class, selected_subjects,
                 filters_active=filters_active,
+                block_mode=block_mode,
                 logout_csrf_token=session.csrf_token if session else None,
                 pin_modal_error=pin_modal_error,
                 pin_modal_changed=pin_modal_changed,
@@ -567,6 +596,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 selected_date, selected_class, selected_subjects,
                 error_message="Für diese Woche wurden keine Vertretungsplandaten gefunden.",
                 filters_active=filters_active,
+                block_mode=block_mode,
                 logout_csrf_token=session.csrf_token if session else None,
                 pin_modal_error=pin_modal_error,
                 pin_modal_changed=pin_modal_changed,
@@ -578,6 +608,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 selected_date, selected_class, selected_subjects,
                 error_message="Die Zugangsdaten sind ungültig oder haben keinen Zugriff auf diese Daten.",
                 filters_active=filters_active,
+                block_mode=block_mode,
                 logout_csrf_token=session.csrf_token if session else None,
                 pin_modal_error=pin_modal_error,
                 pin_modal_changed=pin_modal_changed,
@@ -589,6 +620,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 selected_date, selected_class, selected_subjects,
                 error_message=f"Beim Laden der Daten ist ein Fehler aufgetreten: {error}",
                 filters_active=filters_active,
+                block_mode=block_mode,
                 logout_csrf_token=session.csrf_token if session else None,
                 pin_modal_error=pin_modal_error,
                 pin_modal_changed=pin_modal_changed,
@@ -600,7 +632,11 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         selected_date = parse_week(query_value(query, "woche"))
         cookies = self._cookies()
         teacher = query_value(query, "lehrer") or cookies.get("selected_teacher")
+        requested_block_mode = query_value(query, "block")
+        block_mode = (requested_block_mode == "1") if requested_block_mode is not None else cookies.get("teacher_block_mode") == "1"
         headers: list[str] = []
+        if requested_block_mode is not None:
+            headers.append(make_cookie("teacher_block_mode", "1" if block_mode else "0"))
 
         if query_value(query, "lehrer_clear") == "1":
             teacher = None
@@ -613,13 +649,14 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         session = self._session()
         flags = self._nav_flags(session) if session else {}
         try:
-            send_html(self, render_teacher_page(selected_date, teacher, logout_csrf_token=session.csrf_token if session else None, **flags), headers)
+            send_html(self, render_teacher_page(selected_date, teacher, block_mode=block_mode, logout_csrf_token=session.csrf_token if session else None, **flags), headers)
         except Exception as error:
             send_html(
                 self,
                 render_teacher_page(
                     selected_date,
                     teacher,
+                    block_mode=block_mode,
                     error_message=f"Beim Laden der Daten ist ein Fehler aufgetreten: {error}",
                     logout_csrf_token=session.csrf_token if session else None,
                     **flags,
@@ -633,12 +670,13 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         session = self._session()
         flags = self._nav_flags(session) if session else {}
         try:
-            plan = get_plan_for_page(selected_date)
+            plan = get_cached_plan_for_page(selected_date)
             html = render_rooms_page(
                 selected_date,
                 selected_hour,
-                find_free_rooms_in_plan(plan, selected_hour),
-                plan_version=str(getattr(plan, "zeitstempel", "") or ""),
+                get_free_rooms_for_page(plan, selected_date, selected_hour) if plan is not None else None,
+                loading=plan is None,
+                plan_version=get_room_plan_version(plan, selected_date),
                 logout_csrf_token=session.csrf_token if session else None,
                 **flags,
             )
@@ -660,10 +698,15 @@ class AppRequestHandler(BaseHTTPRequestHandler):
 def main() -> None:
     store = build_store()
     NtfyService(ROOT).ensure_running()
+    warm_page_caches_from_disk()
     AppRequestHandler.store = store
     host = resolve_bind_host()
     port = int(os.getenv("VP_PORT", os.getenv("PORT", "8000")))
     server = ThreadingHTTPServer((host, port), AppRequestHandler)
+    # Die zusätzliche Raumlisten-Vorbereitung darf die Erreichbarkeit des
+    # Webservers nicht verzögern. Sie nutzt nur Caches und läuft nach dem
+    # Binden des Ports parallel.
+    Thread(target=warm_free_room_results_from_cache, daemon=True, name="room-cache-warm").start()
     stop_event = Event()
     worker = NotificationWorker(store, stop_event)
     worker.start()

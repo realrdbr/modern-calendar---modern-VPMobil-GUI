@@ -1,6 +1,6 @@
 import { useState, useEffect, FormEvent, ChangeEvent } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import { format } from 'date-fns';
+import { addDays, differenceInCalendarDays, format } from 'date-fns';
 import { AppEvent, Attachment, Course, COURSES as DEFAULT_COURSES, UserPreferences, EventCategory } from '../types';
 import { uploadFile } from '../lib/api';
 
@@ -18,11 +18,14 @@ interface Props {
   username: string;
   preferences: UserPreferences;
   isReadOnly?: boolean;
+  canEdit?: boolean;
   isAdmin?: boolean;
+  conflict?: boolean;
+  onDismissConflict?: () => void;
+  onSaveAsNew?: (eventData: any) => void;
 }
 
-export default function EventModal({ isOpen, onClose, onSave, onDelete, initialDate, initialTime, event, userCourses, allCourses = DEFAULT_COURSES, categories = [], username, preferences, isReadOnly = false, isAdmin = false }: Props) {
-  const canManageFerien = isAdmin;
+export default function EventModal({ isOpen, onClose, onSave, onDelete, initialDate, initialTime, event, userCourses, allCourses = DEFAULT_COURSES, categories = [], username, preferences, isReadOnly = false, canEdit = false, isAdmin = false, conflict = false, onDismissConflict, onSaveAsNew }: Props) {
   // If editing an existing event or read-only, default to view mode.
   const [isViewMode, setIsViewMode] = useState(!!event || isReadOnly);
   
@@ -77,6 +80,19 @@ export default function EventModal({ isOpen, onClose, onSave, onDelete, initialD
     }
   }, [event, initialDate]);
 
+  useEffect(() => {
+    if (event || isAdmin || categories.length === 0) return;
+    const selectableCategory = categories.find(category => !category.isPrivate && !category.locked)
+      || categories.find(category => category.isPrivate);
+    const currentCategory = categories.find(category => category.id === type);
+    const currentIsSelectable = !!currentCategory
+      && (currentCategory.isPrivate || !currentCategory.locked);
+    if (!currentIsSelectable && selectableCategory) {
+      setType(selectableCategory.id);
+      if (selectableCategory.isPrivate) setCourseId('ALLGEMEIN');
+    }
+  }, [categories, event, isAdmin, type]);
+
   if (!isOpen) return null;
 
   const handleSubmit = (e: FormEvent) => {
@@ -94,6 +110,20 @@ export default function EventModal({ isOpen, onClose, onSave, onDelete, initialD
       type,
       description,
       attachments
+    });
+  };
+
+  const handleStartDateChange = (nextDate: string) => {
+    setDate(previousDate => {
+      setEndDate(previousEndDate => {
+        if (!previousEndDate || !previousDate) return previousEndDate;
+        const duration = Math.max(0, differenceInCalendarDays(
+          new Date(`${previousEndDate}T12:00:00`),
+          new Date(`${previousDate}T12:00:00`),
+        ));
+        return format(addDays(new Date(`${nextDate}T12:00:00`), duration), 'yyyy-MM-dd');
+      });
+      return nextDate;
     });
   };
 
@@ -230,7 +260,7 @@ export default function EventModal({ isOpen, onClose, onSave, onDelete, initialD
               >
                 Schließen
               </button>
-              {!isReadOnly && (type !== 'FERIEN' || canManageFerien) && (
+              {canEdit && (
                 <button
                   type="button"
                   onClick={() => setIsViewMode(false)}
@@ -261,6 +291,15 @@ export default function EventModal({ isOpen, onClose, onSave, onDelete, initialD
         </div>
         
         <form onSubmit={handleSubmit} className="p-4 space-y-4 overflow-y-auto">
+          {conflict && (
+            <div role="alert" className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100">
+              <div className="min-w-0 flex-1 leading-relaxed">
+                Termin wurde neu gespeichert. Deine Änderungen werden nicht gespeichert, weil die zuerst gespeicherte Version gilt.{" "}
+                {onSaveAsNew && <button type="button" onClick={() => onSaveAsNew({ title, date, endDate: endDate || null, startTime: showTime ? startTime : undefined, endTime: showTime ? endTime : undefined, courseId, type, description, attachments })} className="font-semibold underline underline-offset-2">Als neuen Eintrag speichern</button>}
+              </div>
+              <button type="button" onClick={onDismissConflict} aria-label="Meldung schließen" className="shrink-0 p-0.5 text-base font-bold leading-none" title="Meldung schließen">×</button>
+            </div>
+          )}
           <div>
             <label className={`block text-sm font-semibold ${theme.textMuted} mb-1`}>Titel</label>
             <input
@@ -279,7 +318,7 @@ export default function EventModal({ isOpen, onClose, onSave, onDelete, initialD
                 type="date"
                 required
                 value={date}
-                onChange={e => setDate(e.target.value)}
+                onChange={e => handleStartDateChange(e.target.value)}
                 className={`w-full px-3 py-1.5 border ${theme.border} ${theme.inputBg} ${theme.textMain} focus:outline-none`}
               />
             </div>
@@ -356,7 +395,7 @@ export default function EventModal({ isOpen, onClose, onSave, onDelete, initialD
                 className={`w-full px-3 py-1.5 border ${theme.border} ${theme.inputBg} ${theme.textMain} focus:outline-none`}
               >
                 {categories.map(c => {
-                  if (c.id === 'FERIEN' && !canManageFerien) return null;
+                  if (c.locked && !isAdmin) return null;
                   return (
                     <option key={c.id} value={c.id}>{c.name}</option>
                   );

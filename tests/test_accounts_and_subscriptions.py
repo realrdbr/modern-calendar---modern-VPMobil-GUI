@@ -455,12 +455,12 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         self.assertEqual(loaded.calendar_notification_days_before, MAX_CALENDAR_NOTIFICATION_DAYS_BEFORE)
         self.assertEqual(loaded.calendar_notification_days_before_by_type["KLAUSUR"], MAX_CALENDAR_NOTIFICATION_DAYS_BEFORE)
 
-    def test_automatic_publish_uses_personal_topic_credentials(self):
+    def test_automatic_publish_uses_server_publisher_credentials(self):
         notifier = SubscriptionNotifier(self.store, "https://ntfy.invalid")
         with patch("subscriptions.requests.post") as post:
             post.return_value.raise_for_status.return_value = None
             notifier._publish(self.alice, "Nachricht", "Titel")
-        self.assertEqual(post.call_args.kwargs["auth"], (self.alice.ntfy_username, self.alice.ntfy_password))
+        self.assertEqual(post.call_args.kwargs["auth"], notifier._publisher_auth)
 
     def test_deliveries_get_sequence_ids_and_expire_from_clients_after_23_hours(self):
         notifier = SubscriptionNotifier(self.store, "https://ntfy.invalid")

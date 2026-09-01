@@ -8,8 +8,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from vp_data import (
     ResourceNotFound,
     Unauthorized,
-    get_official_weekly_plans_for_page,
-    get_subject_catalog_plans,
+    get_subject_catalog_plans_for_page,
     get_week_plans_for_page,
 )
 from subscriptions import lesson_display_label, subject_options_from_plans
@@ -53,7 +52,7 @@ def get_week_version(week_plans: dict[date, object | None]) -> str:
     """Erzeugt eine kurze Version aus den Plan-Zeitstempeln der Woche."""
 
     return "|".join(
-        f"{plan_date.isoformat()}:{getattr(plan, 'zeitstempel', '') or ''}"
+        f"{plan_date.isoformat()}:{'vorhanden' if plan is not None else 'fehlend'}:{getattr(plan, 'zeitstempel', '') or ''}"
         for plan_date, plan in week_plans.items()
     )
 
@@ -110,6 +109,16 @@ def get_selected_subject_cookie_name(class_name: str) -> str:
     return f"selected_subjects_{safe_class_name}"
 
 
+def get_selected_class_cookie_name(username: str) -> str:
+    """Erzeugt einen benutzergebundenen Cookie-Namen für die VP-Klasse."""
+
+    safe_username = "".join(
+        char for char in username.casefold()
+        if char.isalnum() or char in ("-", "_")
+    )
+    return f"selected_class_{safe_username or 'user'}"
+
+
 def get_available_classes(week_plans: dict[date, object | None]) -> list[str]:
     """Sammelt alle Klassen, die in mindestens einem Wochenplan vorkommen."""
 
@@ -122,6 +131,31 @@ def get_available_classes(week_plans: dict[date, object | None]) -> list[str]:
         classes.update(plan.klassen.keys())
 
     return sorted(classes, key=natural_sort_key)
+
+
+def resolve_initial_class(account_class: str | None, available_classes: list[str]) -> str | None:
+    """Ordnet die beim Konto hinterlegte Klasse einer verfügbaren Plan-Klasse zu."""
+
+    if not available_classes:
+        return None
+
+    preferred = (account_class or "").strip()
+    by_normalized_name = {class_name.casefold(): class_name for class_name in available_classes}
+    if preferred.casefold() in by_normalized_name:
+        return by_normalized_name[preferred.casefold()]
+
+    match = re.match(r"\s*(\d+)", preferred)
+    if match:
+        grade = match.group(1)
+        grade_classes = [
+            class_name for class_name in available_classes
+            if re.match(rf"^{re.escape(grade)}(?:\D|$)", class_name, re.IGNORECASE)
+        ]
+        if grade_classes:
+            preferred_main = by_normalized_name.get(f"{grade}a")
+            return preferred_main or grade_classes[0]
+
+    return available_classes[0]
 
 
 def get_class_subject_options(
@@ -205,6 +239,7 @@ def render_subject_filter(
     selected_subjects: list[str],
     catalog_plans: list[object] | None = None,
     filters_active: bool = True,
+    block_mode: bool = False,
 ) -> str:
     """Rendert die Fachauswahl für die ausgewählte Klasse."""
 
@@ -245,7 +280,7 @@ def render_subject_filter(
                     </div>
                 </form>
               </details>
-              <a class="filter-toggle-button" href="/?{urlencode({'woche': format_week_value(selected_date), 'klasse': selected_class, **({'show_all': '1'} if filters_active else {})})}"
+              <a class="filter-toggle-button" href="/?{urlencode({'woche': format_week_value(selected_date), 'klasse': selected_class, **({'show_all': '1'} if filters_active else {}), **({'block': '1'} if block_mode else {})})}"
                  aria-label="{'Ganzen Vertretungsplan anzeigen' if filters_active else 'Gespeicherte Filter wieder aktivieren'}"
                  title="{'Ganzen Vertretungsplan anzeigen' if filters_active else 'Gespeicherte Filter wieder aktivieren'}">{'+' if filters_active else '-'}</a>
             </div>
@@ -276,7 +311,7 @@ def render_lesson_details(lesson) -> str:
     )
 
 
-def render_lesson_cell(lessons: list) -> str:
+def render_lesson_cell(lessons: list, period_labels: list[int] | None = None) -> str:
     """Rendert eine Tabellenzelle mit einer oder mehreren Stunden."""
 
     if not lessons:
@@ -284,13 +319,18 @@ def render_lesson_cell(lessons: list) -> str:
 
     cards = []
 
-    for lesson in lessons:
+    for index, lesson in enumerate(lessons):
         changed_class = "week-lesson--changed" if lesson.änderung or lesson.ausfall else ""
+        period_label = (
+            f'<span class="lesson-period-label">{period_labels[index]}. Stunde</span>'
+            if period_labels and index < len(period_labels) else ""
+        )
 
         cards.append(f"""
             <details class="week-lesson {changed_class}">
                 <summary>
                     <strong>{escape(lesson.fach or "-")}</strong>
+                    {period_label}
                     <span>{escape(format_tuple(lesson.lehrer))}</span>
                     <span>{escape(format_tuple(lesson.räume))}</span>
                 </summary>
@@ -309,6 +349,7 @@ def render_week_table(
     selected_class: str,
     selected_subjects: list[str],
     weekly_dates: set[date] | None = None,
+    block_mode: bool = False,
 ) -> str:
     """Rendert den Wochenplan von Montag bis Freitag."""
 
@@ -352,16 +393,30 @@ def render_week_table(
 
     rows = []
 
-    for period in range(1, max_period + 1):
+    periods = list(range(1, max_period + 1))
+    if block_mode:
+        periods = [p for p in periods if p % 2 == 1]
+    for period in periods:
         day_cells = []
 
         for plan_date in dates:
             lessons = week_lessons.get(period, {}).get(plan_date, [])
-            day_cells.append(f"<td>{render_lesson_cell(lessons)}</td>")
+            period_labels = None
+            if block_mode and period + 1 <= max_period:
+                second = week_lessons.get(period + 1, {}).get(plan_date, [])
+                signature = lambda items: [(getattr(x, 'fach', ''), tuple(getattr(x, 'lehrer', ())), tuple(getattr(x, 'räume', ()))) for x in items]
+                if signature(lessons) == signature(second):
+                    # Gleiche Doppelstunde: Fach/Lehrer/Raum bleiben sichtbar,
+                    # die Tabellenzeile wird lediglich zu 1–2, 3–4 usw.
+                    pass
+                elif lessons != second:
+                    period_labels = [period] * len(lessons) + [period + 1] * len(second)
+                    lessons = lessons + second
+            day_cells.append(f"<td>{render_lesson_cell(lessons, period_labels)}</td>")
 
         rows.append(f"""
             <tr>
-                <th class="period-head">{period}</th>
+                <th class="period-head">{f'{period}–{period + 1}' if block_mode and period + 1 <= max_period else period}</th>
                 {"".join(day_cells)}
             </tr>
         """)
@@ -410,13 +465,18 @@ def get_latest_timestamp_text(week_plans: dict[date, object | None]) -> str:
     return max(timestamps).strftime("%d.%m.%Y %H:%M")
 
 
-def render_week_navigation(selected_date: date, selected_class: str | None) -> str:
+def render_week_navigation(selected_date: date, selected_class: str | None, filters_active: bool = True, block_mode: bool = False) -> str:
     """Rendert die Navigation für die vorherige und nächste Schulwoche."""
 
     previous_week = selected_date - timedelta(days=7)
     next_week = selected_date + timedelta(days=7)
     current_week = date.today() - timedelta(days=date.today().weekday())
-    class_query = f"&{urlencode({'klasse': selected_class})}" if selected_class else ""
+    query_values = ({'klasse': selected_class} if selected_class else {})
+    if not filters_active:
+        query_values['show_all'] = '1'
+    if block_mode:
+        query_values['block'] = '1'
+    class_query = f"&{urlencode(query_values)}" if query_values else ""
 
     return f"""
         <div class="week-navigation" aria-label="Wochennavigation">
@@ -444,6 +504,7 @@ def render_plan_page(
     selected_subjects: list[str] | None = None,
     error_message: str | None = None,
     filters_active: bool = True,
+    block_mode: bool = False,
     logout_csrf_token: str | None = None,
     can_change_pin: bool = False,
     force_pin_change: bool = False,
@@ -469,14 +530,6 @@ def render_plan_page(
     else:
         week_plans = get_week_plans_for_page(selected_date)
         weekly_dates: set[date] = set()
-        try:
-            official_week_plans = get_official_weekly_plans_for_page(selected_date)
-            for plan_date, weekly_plan in official_week_plans.items():
-                if week_plans.get(plan_date) is None:
-                    week_plans[plan_date] = weekly_plan
-                    weekly_dates.add(plan_date)
-        except Exception:
-            weekly_dates = set()
         week_title = get_week_title(week_plans)
         plan_timestamp_text = get_latest_timestamp_text(week_plans)
         week_version = get_week_version(week_plans)
@@ -493,14 +546,20 @@ def render_plan_page(
                         <p>Wochenplan von Montag bis Freitag. Tippe eine Stunde an, um Details zu sehen.</p>
                     </div>
 
+                    <form method="get" action="/" class="block-toggle-form">
+                      <input type="hidden" name="woche" value="{selected_date.isoformat()}">
+                      <input type="hidden" name="klasse" value="{escape(selected_class)}">
+                      <input type="hidden" name="block" value="{'0' if block_mode else '1'}">
+                      <label class="block-switch"><span>Block-Unterricht</span><input type="checkbox" {"checked" if block_mode else ""} onchange="this.form.submit()" aria-label="Block-Unterricht umschalten"><span class="block-switch-track" aria-hidden="true"><span></span></span></label>
+                    </form>
                     <label class="class-select-label">Klasse anzeigen
-                      <select class="class-select" data-plan-class-select>{''.join(f'<option value="/?woche={format_week_value(selected_date)}&amp;klasse={escape(class_name)}"{" selected" if class_name == selected_class else ""}>{escape(class_name)}</option>' for class_name in available_classes)}</select>
+                      <select class="class-select" data-plan-class-select>{''.join(f'<option value="/?woche={format_week_value(selected_date)}&amp;klasse={escape(class_name)}{"&amp;block=1" if block_mode else ""}"{" selected" if class_name == selected_class else ""}>{escape(class_name)}</option>' for class_name in available_classes)}</select>
                     </label>
                 </section>
 
-                {render_subject_filter(week_plans, selected_date, selected_class, selected_subjects, get_subject_catalog_plans(), filters_active)}
+                {render_subject_filter(week_plans, selected_date, selected_class, selected_subjects, get_subject_catalog_plans_for_page() or [plan for plan in week_plans.values() if plan is not None], filters_active, block_mode)}
 
-                {render_week_table(week_plans, selected_class, selected_subjects if filters_active else [], weekly_dates)}
+                {render_week_table(week_plans, selected_class, selected_subjects if filters_active else [], weekly_dates, block_mode)}
             """
 
     return f"""<!doctype html>
@@ -523,6 +582,15 @@ def render_plan_page(
             align-items: center;
             justify-content: space-between;
         }}
+
+        .block-toggle-form {{ margin: 0; }}
+        .block-switch {{ display:inline-flex; align-items:center; gap:8px; min-height:36px; color:var(--text); font-size:.82rem; font-weight:700; cursor:pointer; user-select:none; }}
+        .block-switch input {{ position:absolute; opacity:0; width:1px; height:1px; }}
+        .block-switch-track {{ width:40px; height:22px; padding:2px; border:1px solid var(--border); border-radius:999px; background:var(--surface-muted); transition:background .15s,border-color .15s; }}
+        .block-switch-track span {{ display:block; width:16px; height:16px; border-radius:50%; background:var(--muted); transition:transform .15s,background .15s; }}
+        .block-switch input:checked + .block-switch-track {{ background:var(--primary); border-color:var(--primary); }}
+        .block-switch input:checked + .block-switch-track span {{ transform:translateX(18px); background:#fff; }}
+        .block-switch input:focus-visible + .block-switch-track {{ outline:3px solid color-mix(in srgb, var(--primary) 35%, transparent); outline-offset:2px; }}
 
         .filter-card {{
             margin-bottom: 18px;
@@ -1034,7 +1102,7 @@ def render_plan_page(
         </header>
 
         <section class="panel">
-            {render_week_navigation(selected_date, selected_class)}
+            {render_week_navigation(selected_date, selected_class, filters_active, block_mode)}
 
             <div class="meta">
                 Neuester Planstand: {escape("Keine Plandaten verfügbar" if plan_timestamp_text == "unbekannt" else plan_timestamp_text)}
@@ -1058,7 +1126,7 @@ def render_plan_page(
                         }}
                     }})
                     .catch(() => {{}});
-            }}, 30000);
+            }}, 5000);
 
             document.querySelectorAll("details.week-lesson").forEach(details => {{
                 details.addEventListener("toggle", () => {{
@@ -1102,9 +1170,8 @@ def render_plan_page(
 
                         left = Math.max(12, Math.min(left, window.innerWidth - popupWidth - 12));
                         top = Math.max(12, Math.min(top, window.innerHeight - popupHeight - 12));
-                        details.style.setProperty("--popup-left", `${{left}}px`);
-                        details.style.setProperty("--popup-top", `${{top}}px`);
-                        details.classList.add("popup-fixed");
+                        // Das Detailfenster bleibt absichtlich absolut am
+                        // Stundenfeld verankert und scrollt mit dem Plan.
                     }});
                 }});
             }});

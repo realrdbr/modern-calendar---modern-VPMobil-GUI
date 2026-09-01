@@ -38,6 +38,10 @@ _weekly_plan_cache: dict[date, dict[date, object]] = {}
 _weekly_refreshing: set[date] = set()
 _weekly_last_refresh: dict[date, float] = {}
 _weekly_cache_lock = Lock()
+_subject_catalog_cache: list[object] | None = None
+_subject_catalog_last_refresh = 0.0
+_subject_catalog_refreshing = False
+_subject_catalog_lock = Lock()
 
 
 def _json_env_list(name: str) -> list:
@@ -294,8 +298,8 @@ def get_future_week_plans() -> dict[date, object | None]:
     return plans
 
 
-def get_subject_catalog_plans() -> list[object]:
-    """Lädt den Klassen-Kurskatalog und ergänzt ihn um zwei Zukunftswochen."""
+def _refresh_subject_catalog() -> list[object]:
+    global _subject_catalog_cache, _subject_catalog_last_refresh, _subject_catalog_refreshing
 
     plans: list[object] = []
     try:
@@ -308,7 +312,44 @@ def get_subject_catalog_plans() -> list[object]:
             plans.extend(get_official_weekly_plans_for_page(week_start).values())
         except Exception as error:
             log(f"Originaler Wochenplan konnte nicht geladen werden: {error}")
+    with _subject_catalog_lock:
+        _subject_catalog_cache = plans
+        _subject_catalog_last_refresh = monotonic()
+        _subject_catalog_refreshing = False
     return plans
+
+
+def get_subject_catalog_plans() -> list[object]:
+    """Liefert den Kurskatalog cache-first; Aktualisierung läuft im Hintergrund."""
+    global _subject_catalog_refreshing
+    with _subject_catalog_lock:
+        cached = list(_subject_catalog_cache or [])
+        stale = monotonic() - _subject_catalog_last_refresh >= WEEKLY_REFRESH_INTERVAL_SECONDS
+        if cached and stale and not _subject_catalog_refreshing:
+            _subject_catalog_refreshing = True
+            Thread(target=_refresh_subject_catalog, daemon=True, name="subject-catalog-refresh").start()
+    if cached:
+        return cached
+    return _refresh_subject_catalog()
+
+
+def get_subject_catalog_plans_for_page() -> list[object]:
+    """Liefert den Katalog ohne einen Seitenrequest durch Netzwerkzugriffe zu blockieren.
+
+    Die Verwaltungs- und Benachrichtigungsabläufe dürfen weiterhin den
+    vollständigen, synchronen Katalog anfordern. Die Planansicht zeigt dagegen
+    stets den vorhandenen Cache sofort an und aktualisiert ihn im Hintergrund –
+    genau wie die Tages- und Wochenplan-Caches.
+    """
+
+    global _subject_catalog_refreshing
+    with _subject_catalog_lock:
+        cached = list(_subject_catalog_cache or [])
+        stale = monotonic() - _subject_catalog_last_refresh >= WEEKLY_REFRESH_INTERVAL_SECONDS
+        if (not cached or stale) and not _subject_catalog_refreshing:
+            _subject_catalog_refreshing = True
+            Thread(target=_refresh_subject_catalog, daemon=True, name="subject-catalog-refresh").start()
+    return cached
 
 
 def fetch_official_weekly_plans(start_date: date | None = None) -> dict[date, object]:
@@ -380,6 +421,22 @@ def get_official_weekly_plans_for_page(selected_date: date) -> dict[date, object
     """Returns a cached weekly plan immediately and refreshes it in background."""
 
     monday = _week_monday(selected_date)
+    cached = get_cached_official_weekly_plans_for_page(selected_date)
+    if cached is not None:
+        return cached
+
+    plans = fetch_official_weekly_plans(monday)
+    with _weekly_cache_lock:
+        _weekly_plan_cache[monday] = plans
+        _weekly_last_refresh[monday] = monotonic()
+    _save_weekly_cache(monday, plans)
+    return plans
+
+
+def get_cached_official_weekly_plans_for_page(selected_date: date) -> dict[date, object] | None:
+    """Liest ausschließlich den normalen Wochenplan-Cache, ohne Netzwerkzugriff."""
+
+    monday = _week_monday(selected_date)
     with _weekly_cache_lock:
         cached = _weekly_plan_cache.get(monday)
     if cached is None:
@@ -390,13 +447,7 @@ def get_official_weekly_plans_for_page(selected_date: date) -> dict[date, object
     if cached is not None:
         refresh_official_weekly_plans_in_background(monday)
         return cached
-
-    plans = fetch_official_weekly_plans(monday)
-    with _weekly_cache_lock:
-        _weekly_plan_cache[monday] = plans
-        _weekly_last_refresh[monday] = monotonic()
-    _save_weekly_cache(monday, plans)
-    return plans
+    return None
 
 
 def fetch_week_plans(selected_date: date) -> dict[date, object | None]:
@@ -469,8 +520,26 @@ def get_plan_for_page(selected_date: date):
         refresh_plan_in_background(selected_date)
         return cached_plan
 
-    # Ohne lokalen Cache muss der erste Aufruf einmalig synchron laden.
-    fresh_plan = fetch_plan(selected_date)
+    # Ein normaler Stundenplan ist der korrekte Ersatz für Tage ohne
+    # veröffentlichten Vertretungsplan. Der Wochen-Cache wird vor jedem
+    # potenziell langsamen Tagesabruf geprüft – wichtig für Freie Räume.
+    official_week = get_cached_official_weekly_plans_for_page(selected_date)
+    official_plan = official_week.get(selected_date) if official_week else None
+    if official_plan is not None:
+        refresh_plan_in_background(selected_date)
+        return official_plan
+
+    # Ohne lokalen Cache muss der erste Aufruf einmalig den veröffentlichten
+    # Tagesplan prüfen. Liefert VpMobil keinen Plan, laden wir zuverlässig den
+    # normalen Stundenplan derselben Woche.
+    try:
+        fresh_plan = fetch_plan(selected_date)
+    except ResourceNotFound:
+        official_week = get_official_weekly_plans_for_page(selected_date)
+        official_plan = official_week.get(selected_date)
+        if official_plan is not None:
+            return official_plan
+        raise
 
     with _page_cache_lock:
         _page_plan_cache[selected_date] = fresh_plan
@@ -479,8 +548,68 @@ def get_plan_for_page(selected_date: date):
     return fresh_plan
 
 
+def get_cached_plan_for_page(selected_date: date):
+    """Liefert ausschließlich bereits bekannte Plandaten und blockiert nie.
+
+    Diese Variante ist für interaktive Seiten gedacht, die sofort mit dem
+    Server-Cache antworten sollen. Fehlt ein Eintrag, laufen sowohl die
+    Vertretungsplan- als auch die normale Wochenplan-Aktualisierung parallel.
+    """
+
+    with _page_cache_lock:
+        cached_plan = _page_plan_cache.get(selected_date)
+    if cached_plan is None:
+        cached_plan = load_plan_from_cache(selected_date)
+        if cached_plan is not None:
+            with _page_cache_lock:
+                _page_plan_cache[selected_date] = cached_plan
+    if cached_plan is not None:
+        refresh_plan_in_background(selected_date)
+        return cached_plan
+
+    official_week = get_cached_official_weekly_plans_for_page(selected_date)
+    official_plan = official_week.get(selected_date) if official_week else None
+    if official_plan is not None:
+        refresh_plan_in_background(selected_date)
+        return official_plan
+
+    # Kein Seitenrequest wartet auf diese Abrufe. Sobald einer fertig ist,
+    # liefert die Versionsabfrage den Cache an den Browser aus.
+    refresh_plan_in_background(selected_date)
+    refresh_official_weekly_plans_in_background(_week_monday(selected_date))
+    return None
+
+
+def warm_page_caches_from_disk(anchor_date: date | None = None) -> int:
+    """Wärmt Plan-Caches beim Start vor, ohne den Serverstart zu blockieren."""
+
+    anchor_date = anchor_date or date.today()
+    if anchor_date.weekday() >= 5:
+        anchor_date += timedelta(days=7 - anchor_date.weekday())
+    warmed = 0
+    for week_anchor in (anchor_date, anchor_date + timedelta(days=7)):
+        # Der normale Wochenplan ist der schnelle Fallback für Klassen-,
+        # Lehrer- und Freie-Räume-Seite. Vorhandene Dateicaches werden sofort
+        # übernommen; fehlt er, beginnt der Netzabruf rein im Hintergrund.
+        if get_cached_official_weekly_plans_for_page(week_anchor) is None:
+            refresh_official_weekly_plans_in_background(_week_monday(week_anchor))
+        for plan_date in get_school_week_dates(week_anchor):
+            with _page_cache_lock:
+                if plan_date in _page_plan_cache:
+                    continue
+            cached_plan = load_plan_from_cache(plan_date)
+            if cached_plan is None:
+                continue
+            with _page_cache_lock:
+                _page_plan_cache[plan_date] = cached_plan
+            warmed += 1
+    if warmed:
+        log(f"{warmed} Plan-Cache(s) für Vertretungsplan und Freie Räume vorgewärmt.")
+    return warmed
+
+
 def get_week_plans_for_page(selected_date: date) -> dict[date, object | None]:
-    """Lädt eine Woche sofort aus vorhandenem Cache und aktualisiert danach."""
+    """Lädt Tagespläne cache-first und ergänzt fehlende Tage mit dem Wochenplan."""
 
     week_plans = {}
     has_cached_data = False
@@ -502,8 +631,16 @@ def get_week_plans_for_page(selected_date: date) -> dict[date, object | None]:
         week_plans[plan_date] = cached_plan
 
     if has_cached_data:
-        # Auch fehlende Tage werden im Hintergrund geprüft. Die Seite muss dafür
-        # nicht auf mehrere Netzwerkaufrufe warten.
+        # Liegen Tagesdaten vor, wird die Seite strikt ohne Netzwerkwartezeit
+        # gerendert. Ein vorhandener Wochen-Cache ergänzt fehlende Tage sofort;
+        # fehlt er noch, startet sein Abruf ausschließlich im Hintergrund.
+        official_week = get_cached_official_weekly_plans_for_page(selected_date)
+        if any(plan is None for plan in week_plans.values()) and official_week is None:
+            refresh_official_weekly_plans_in_background(_week_monday(selected_date))
+        if official_week:
+            for plan_date, official_plan in official_week.items():
+                if week_plans.get(plan_date) is None:
+                    week_plans[plan_date] = official_plan
         for plan_date in week_plans:
             refresh_plan_in_background(plan_date)
 
@@ -602,9 +739,13 @@ __all__ = [
     "get_future_week_dates",
     "get_future_week_plans",
     "get_subject_catalog_plans",
+    "get_subject_catalog_plans_for_page",
     "fetch_official_weekly_plans",
     "get_official_weekly_plans_for_page",
+    "get_cached_official_weekly_plans_for_page",
+    "get_cached_plan_for_page",
     "get_plan_for_page",
+    "warm_page_caches_from_disk",
     "get_week_plans_for_page",
     "find_free_rooms",
     "find_free_rooms_in_plan",

@@ -41,12 +41,14 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
   const [rawEvents, setRawEvents] = useState<AppEvent[]>([]);
   const [allCourses, setAllCourses] = useState<Course[]>(COURSES);
   const [categories, setCategories] = useState<EventCategory[]>([]);
+  const [categoriesResolved, setCategoriesResolved] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(isInitialSetup);
   const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedTime, setSelectedTime] = useState<string | undefined>(undefined);
   const [editingEvent, setEditingEvent] = useState<AppEvent | undefined>(undefined);
+  const [editConflict, setEditConflict] = useState(false);
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -120,6 +122,8 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
       setCategories(list);
     } catch (e) {
       console.error(e);
+    } finally {
+      setCategoriesResolved(true);
     }
   };
 
@@ -183,7 +187,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
   const handleSaveEvent = async (eventData: Partial<AppEvent>) => {
     try {
       const savedEvent = editingEvent
-        ? await updateEvent(editingEvent.id, eventData)
+        ? await updateEvent(editingEvent.id, { ...eventData, expectedUpdatedAt: editingEvent.updatedAt })
         : await createEvent({ ...eventData, author: user.username });
       if (savedEvent?.date || eventData.date) {
         setCurrentDate(new Date(`${savedEvent?.date || eventData.date}T12:00:00`));
@@ -191,9 +195,30 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
       await loadEvents();
       setIsModalOpen(false);
       setEditingEvent(undefined);
+      setEditConflict(false);
     } catch (e) {
       console.error('Failed to save event:', e);
-      alert('Fehler beim Speichern des Termins.');
+      if (editingEvent && (e as Error & { status?: number }).status === 409) {
+        setEditConflict(true);
+        return;
+      }
+      alert(e instanceof Error ? e.message : 'Fehler beim Speichern des Termins.');
+    }
+  };
+
+  const handleSaveEventAsNew = async (eventData: Partial<AppEvent>) => {
+    try {
+      const savedEvent = await createEvent({ ...eventData, author: user.username });
+      if (savedEvent?.date || eventData.date) {
+        setCurrentDate(new Date(`${savedEvent?.date || eventData.date}T12:00:00`));
+      }
+      await loadEvents();
+      setIsModalOpen(false);
+      setEditingEvent(undefined);
+      setEditConflict(false);
+    } catch (e) {
+      console.error('Failed to save event as new:', e);
+      alert(e instanceof Error ? e.message : 'Der neue Termin konnte nicht gespeichert werden.');
     }
   };
 
@@ -203,6 +228,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
       await loadEvents();
       setIsModalOpen(false);
       setEditingEvent(undefined);
+      setEditConflict(false);
     } catch (e) {
       console.error('Failed to delete event:', e);
       const message = e instanceof Error ? e.message : 'Du darfst diesen Termin nicht löschen.';
@@ -213,10 +239,11 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
   const isReadOnly = user.status === 'READ_ONLY';
 
   const openNewEventModal = (date?: Date, time?: string) => {
-    if (isReadOnly) return;
+    if (isReadOnly || !categoriesResolved) return;
     setSelectedDate(date || new Date());
     setSelectedTime(time);
     setEditingEvent(undefined);
+    setEditConflict(false);
     setIsModalOpen(true);
   };
 
@@ -224,8 +251,17 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
     e.stopPropagation();
     setEditingEvent(event);
     setSelectedDate(new Date(event.date));
+    setEditConflict(false);
     setIsModalOpen(true);
   };
+
+  useEffect(() => {
+    if (!editingEvent) return;
+    const latest = rawEvents.find(event => event.id === editingEvent.id);
+    if (latest?.updatedAt && editingEvent.updatedAt && latest.updatedAt !== editingEvent.updatedAt) {
+      setEditConflict(true);
+    }
+  }, [rawEvents, editingEvent]);
 
   const navigatePrev = () => {
     if (view === 'month') setCurrentDate(subMonths(currentDate, 1));
@@ -404,20 +440,6 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
     return { backgroundColor: color, color: luminance > 0.5 ? '#000' : '#fff' };
   };
 
-  const mixWithGray = (color: string, grayRatio: number) => {
-    const hex = color.replace('#', '');
-    if (hex.length !== 6) return color;
-    const value = Number.parseInt(hex, 16);
-    const r = (value >> 16) & 255;
-    const g = (value >> 8) & 255;
-    const b = value & 255;
-    const neutral = isDark ? 70 : 190;
-    const mixedR = Math.round(r * (1 - grayRatio) + neutral * grayRatio);
-    const mixedG = Math.round(g * (1 - grayRatio) + neutral * grayRatio);
-    const mixedB = Math.round(b * (1 - grayRatio) + neutral * grayRatio);
-    return `rgb(${mixedR}, ${mixedG}, ${mixedB})`;
-  };
-
   const isEventPast = (event: AppEvent) => {
     const now = new Date();
     const eventEnd = new Date(`${event.endDate || event.date}T${event.endTime || event.startTime || '23:59'}:59`);
@@ -427,14 +449,19 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
   const getEventCardStyle = (event: AppEvent) => {
     const baseStyle = getEventTypeStyle(event.type);
     if (!isEventPast(event)) return baseStyle;
-    const mutedRatio = isDark ? 0.55 : 0.45;
-    const mutedColor = mixWithGray(baseStyle.backgroundColor, mutedRatio);
     return {
-      backgroundColor: mutedColor,
-      color: isDark ? '#f4f4f5' : '#27272a',
-      borderColor: mixWithGray(baseStyle.backgroundColor, mutedRatio + 0.1)
+      ...baseStyle,
+      opacity: isDark ? 0.62 : 0.58
     };
   };
+
+  const selectedCategory = editingEvent
+    ? categories.find(category => category.id === editingEvent.type)
+    : undefined;
+  const canEditSelectedEvent = !editingEvent || (
+    categoriesResolved
+    && (isAdmin || (!!selectedCategory && !selectedCategory.locked))
+  );
 
   // Group days by week
   const weeks: Date[][] = [];
@@ -925,7 +952,10 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
       {isModalOpen && (
         <EventModal
           isOpen={isModalOpen}
-          onClose={() => setIsModalOpen(false)}
+          onClose={() => {
+            setIsModalOpen(false);
+            setEditConflict(false);
+          }}
           onSave={handleSaveEvent}
           onDelete={editingEvent ? () => handleDeleteEvent(editingEvent.id) : undefined}
           initialDate={selectedDate}
@@ -937,7 +967,11 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
           username={user.username}
           preferences={{ ...preferences, darkMode: isDark }}
           isReadOnly={isReadOnly}
+          canEdit={canEditSelectedEvent && !isReadOnly}
           isAdmin={isAdmin}
+          conflict={editConflict}
+          onDismissConflict={() => setEditConflict(false)}
+          onSaveAsNew={editingEvent ? handleSaveEventAsNew : undefined}
         />
       )}
 

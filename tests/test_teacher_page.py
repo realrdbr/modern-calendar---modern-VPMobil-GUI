@@ -58,7 +58,7 @@ class TeacherPageTests(unittest.TestCase):
         self.assertIn("KÖN", lessons[1][monday][0].lehrer)
         self.assertEqual(lessons[1][monday][0].klassen, ("11a",))
 
-    def test_render_teacher_page_adds_weekly_fallback_for_missing_days(self):
+    def test_render_teacher_page_uses_week_loader_with_normal_plan_fallback(self):
         selected_date = date(2026, 8, 24)
         lesson = SimpleNamespace(
             fach="MA",
@@ -74,17 +74,13 @@ class TeacherPageTests(unittest.TestCase):
         weekly_plan = SimpleNamespace(klassen={"11a": class_item}, zeitstempel=None)
 
         week_plans = {
-            date(2026, 8, 24): None,
+            date(2026, 8, 24): weekly_plan,
             date(2026, 8, 25): None,
             date(2026, 8, 26): None,
             date(2026, 8, 27): None,
             date(2026, 8, 28): None,
         }
-        official_week = {date(2026, 8, 24): weekly_plan}
-
-        with patch("teacher_page.get_week_plans_for_page", return_value=week_plans), patch(
-            "teacher_page.get_official_weekly_plans_for_page", return_value=official_week
-        ):
+        with patch("teacher_page.get_week_plans_for_page", return_value=week_plans):
             html = render_teacher_page(selected_date)
 
         self.assertIn("KÖN", html)

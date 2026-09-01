@@ -8,7 +8,6 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from vp_data import (
     ResourceNotFound,
     Unauthorized,
-    get_official_weekly_plans_for_page,
     get_week_plans_for_page,
 )
 from web_utils import (
@@ -195,7 +194,7 @@ def render_lesson_details(lesson) -> str:
     )
 
 
-def render_lesson_cell(lessons: list) -> str:
+def render_lesson_cell(lessons: list, period_labels: list[int] | None = None) -> str:
     """Rendert eine Tabellenzelle."""
 
     if not lessons:
@@ -203,13 +202,18 @@ def render_lesson_cell(lessons: list) -> str:
 
     cards = []
 
-    for lesson in lessons:
+    for index, lesson in enumerate(lessons):
         changed_class = "week-lesson--changed" if lesson.änderung or lesson.ausfall else ""
+        period_label = (
+            f'<span class="lesson-period-label">{period_labels[index]}. Stunde</span>'
+            if period_labels and index < len(period_labels) else ""
+        )
 
         cards.append(f"""
             <details class="week-lesson {changed_class}">
                 <summary>
                     <strong>{escape(lesson.fach or "-")}</strong>
+                    {period_label}
                     <span>{escape(format_tuple(lesson.klassen))}</span>
                     <span>{escape(format_tuple(lesson.räume))}</span>
                 </summary>
@@ -226,6 +230,7 @@ def render_lesson_cell(lessons: list) -> str:
 def render_teacher_week_table(
     week_plans: dict[date, object | None],
     selected_teacher: str,
+    block_mode: bool = False,
 ) -> str:
     """Rendert den Wochenplan eines Lehrers."""
 
@@ -267,16 +272,26 @@ def render_teacher_week_table(
 
     rows = []
 
-    for period in range(1, max_period + 1):
+    periods = [p for p in range(1, max_period + 1) if not block_mode or p % 2 == 1]
+    for period in periods:
         day_cells = []
 
         for plan_date in dates:
             lessons = week_lessons.get(period, {}).get(plan_date, [])
-            day_cells.append(f"<td>{render_lesson_cell(lessons)}</td>")
+            period_labels = None
+            if block_mode and period + 1 <= max_period:
+                second = week_lessons.get(period + 1, {}).get(plan_date, [])
+                signature = lambda items: [(getattr(x, 'fach', ''), tuple(getattr(x, 'klassen', ())), tuple(getattr(x, 'räume', ()))) for x in items]
+                if signature(lessons) == signature(second):
+                    pass
+                elif lessons != second:
+                    period_labels = [period] * len(lessons) + [period + 1] * len(second)
+                    lessons = lessons + second
+            day_cells.append(f"<td>{render_lesson_cell(lessons, period_labels)}</td>")
 
         rows.append(f"""
             <tr>
-                <th class="period-head">{period}</th>
+                <th class="period-head">{f'{period}–{period + 1}' if block_mode and period + 1 <= max_period else period}</th>
                 {"".join(day_cells)}
             </tr>
         """)
@@ -329,7 +344,7 @@ def get_week_version(week_plans: dict[date, object | None]) -> str:
     """Erzeugt eine kurze Version aus den Zeitstempeln der Wochenpläne."""
 
     return "|".join(
-        f"{plan_date.isoformat()}:{getattr(plan, 'zeitstempel', '') or ''}"
+        f"{plan_date.isoformat()}:{'vorhanden' if plan is not None else 'fehlend'}:{getattr(plan, 'zeitstempel', '') or ''}"
         for plan_date, plan in week_plans.items()
     )
 
@@ -372,6 +387,7 @@ def render_teacher_page(
     pin_modal_error: str | None = None,
     pin_modal_changed: bool = False,
     session_username: str | None = None,
+    block_mode: bool = False,
 ) -> str:
     """Erzeugt die komplette Lehrerplan-Seite."""
 
@@ -389,13 +405,6 @@ def render_teacher_page(
         """
     else:
         week_plans = get_week_plans_for_page(selected_date)
-        try:
-            official_week_plans = get_official_weekly_plans_for_page(selected_date)
-            for plan_date, weekly_plan in official_week_plans.items():
-                if week_plans.get(plan_date) is None:
-                    week_plans[plan_date] = weekly_plan
-        except Exception:
-            pass
         week_title = get_week_title(week_plans)
         plan_timestamp_text = get_latest_timestamp_text(week_plans)
         week_version = get_week_version(week_plans)
@@ -412,12 +421,13 @@ def render_teacher_page(
                         <p>Wochenplan von Montag bis Freitag. Tippe eine Stunde an, um Details zu sehen.</p>
                     </div>
 
+                    <label class="block-switch"><span>Block-Unterricht</span><input type="checkbox" {'checked' if block_mode else ''} onchange="window.location.href='/lehrer?woche={format_week_value(selected_date)}&lehrer={escape(selected_teacher)}&block='+(this.checked?'1':'0')" aria-label="Block-Unterricht umschalten"><span class="block-switch-track" aria-hidden="true"><span></span></span></label>
                     <a class="button button-secondary" href="/lehrer?woche={format_week_value(selected_date)}&lehrer_clear=1">
                         Anderen Lehrer wählen
                     </a>
                 </section>
 
-                {render_teacher_week_table(week_plans, selected_teacher)}
+                {render_teacher_week_table(week_plans, selected_teacher, block_mode)}
             """
 
     return f"""<!doctype html>
@@ -446,6 +456,14 @@ def render_teacher_page(
             color: var(--text);
             border: 1px solid var(--border);
         }}
+
+        .block-switch {{ display:inline-flex; align-items:center; gap:8px; min-height:36px; color:var(--text); font-size:.82rem; font-weight:700; cursor:pointer; user-select:none; }}
+        .block-switch input {{ position:absolute; opacity:0; width:1px; height:1px; }}
+        .block-switch-track {{ width:40px; height:22px; padding:2px; border:1px solid var(--border); border-radius:999px; background:var(--surface-muted); transition:background .15s,border-color .15s; }}
+        .block-switch-track span {{ display:block; width:16px; height:16px; border-radius:50%; background:var(--muted); transition:transform .15s,background .15s; }}
+        .block-switch input:checked + .block-switch-track {{ background:var(--primary); border-color:var(--primary); }}
+        .block-switch input:checked + .block-switch-track span {{ transform:translateX(18px); background:#fff; }}
+        .block-switch input:focus-visible + .block-switch-track {{ outline:3px solid color-mix(in srgb, var(--primary) 35%, transparent); outline-offset:2px; }}
 
         .week-navigation {{
             display: grid;
@@ -894,7 +912,7 @@ def render_teacher_page(
                             }}
                         }})
                         .catch(() => {{}});
-                }}, 30000);
+            }}, 5000);
             }}
 
             document.querySelectorAll("details.week-lesson").forEach(details => {{
@@ -940,9 +958,8 @@ def render_teacher_page(
 
                         left = Math.max(12, Math.min(left, window.innerWidth - popupWidth - 12));
                         top = Math.max(12, Math.min(top, window.innerHeight - popupHeight - 12));
-                        details.style.setProperty("--popup-left", `${{left}}px`);
-                        details.style.setProperty("--popup-top", `${{top}}px`);
-                        details.classList.add("popup-fixed");
+                        // Wie im Vertretungsplan bleibt das Detailfenster am
+                        // Stundenfeld verankert und scrollt mit der Seite.
                     }});
                 }});
             }});

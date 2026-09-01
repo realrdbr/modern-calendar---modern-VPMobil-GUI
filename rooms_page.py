@@ -1,7 +1,8 @@
 import json
-from datetime import date
+from datetime import date, timedelta
 from html import escape
 from http.server import BaseHTTPRequestHandler
+from threading import Lock, Thread
 from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
@@ -11,7 +12,9 @@ from vp_data import (
     Unauthorized,
     _json_env_list,
     find_free_rooms_in_plan,
-    get_plan_for_page,
+    get_cached_plan_for_page,
+    get_school_week_dates,
+    warm_page_caches_from_disk,
 )
 from web_utils import (
     CALENDAR_PUBLIC_URL,
@@ -31,6 +34,17 @@ load_dotenv()
 GOOD_ROOMS = set(_json_env_list("GOOD_ROOMS"))
 MEDIUM_ROOMS = set(_json_env_list("MEDIUM_ROOMS"))
 BAD_ROOMS = set(_json_env_list("BAD_ROOMS"))
+_room_result_cache: dict[tuple[date, str, int], tuple[int, ...]] = {}
+_room_result_cache_lock = Lock()
+
+
+def get_room_plan_version(plan, selected_date: date) -> str:
+    """Erzeugt auch für normale Wochenpläne eine stabile Reload-Version."""
+
+    if plan is None:
+        return f"loading:{selected_date.isoformat()}"
+    timestamp = getattr(plan, "zeitstempel", None)
+    return str(timestamp) if timestamp is not None else f"normal:{selected_date.isoformat()}"
 
 
 def get_room_quality(room: int) -> str:
@@ -64,11 +78,53 @@ def sort_rooms_by_quality(rooms: list[int]) -> list[int]:
     )
 
 
+def get_free_rooms_for_page(plan, selected_date: date, selected_hour: int) -> list[int]:
+    """Liefert freie Räume pro Planstand aus dem Arbeitsspeicher-Cache."""
+    version = str(getattr(plan, "zeitstempel", "") or "")
+    key = (selected_date, version, selected_hour)
+    with _room_result_cache_lock:
+        cached = _room_result_cache.get(key)
+    if cached is not None:
+        return list(cached)
+    rooms = find_free_rooms_in_plan(plan, selected_hour)
+    with _room_result_cache_lock:
+        _room_result_cache[key] = tuple(rooms)
+        # Begrenzter Cache: alte Planstände werden nicht mehr benötigt.
+        if len(_room_result_cache) > 160:
+            _room_result_cache.clear()
+            _room_result_cache[key] = tuple(rooms)
+    return rooms
+
+
+def warm_free_room_results_from_cache(anchor_date: date | None = None) -> int:
+    """Berechnet Raumlisten für vorhandene Plan-Caches vor dem ersten Klick.
+
+    Es werden ausschließlich die cache-only Plan-Daten verwendet. Fehlende
+    Daten starten höchstens die vorhandenen Hintergrund-Refreshes und halten
+    den Webserverstart nie auf.
+    """
+
+    anchor_date = anchor_date or date.today()
+    if anchor_date.weekday() >= 5:
+        anchor_date += timedelta(days=7 - anchor_date.weekday())
+    warmed = 0
+    for week_anchor in (anchor_date, anchor_date + timedelta(days=7)):
+        for plan_date in get_school_week_dates(week_anchor):
+            plan = get_cached_plan_for_page(plan_date)
+            if plan is None:
+                continue
+            for hour in range(1, 9):
+                get_free_rooms_for_page(plan, plan_date, hour)
+                warmed += 1
+    return warmed
+
+
 def render_rooms_page(
     selected_date: date,
     selected_hour: int,
     free_rooms: list[int] | None = None,
     error_message: str | None = None,
+    loading: bool = False,
     plan_version: str = "",
     logout_csrf_token: str | None = None,
     can_change_pin: bool = False,
@@ -99,6 +155,13 @@ def render_rooms_page(
             <section class="message message--error">
                 <h2>Keine Daten verfügbar</h2>
                 <p>{escape(error_message)}</p>
+            </section>
+        """
+    elif loading:
+        result_block = """
+            <section class="message">
+                <h2>Plandaten werden aktualisiert</h2>
+                <p>Gespeicherte Daten sind noch nicht vorhanden. Die Ansicht aktualisiert sich automatisch, sobald der Plan geladen wurde.</p>
             </section>
         """
     elif free_rooms is not None:
@@ -298,7 +361,7 @@ def render_rooms_page(
                         }}
                     }})
                     .catch(() => {{}});
-            }}, 30000);
+            }}, 5000);
         }})();
     </script>''' if plan_version else ""}
 </body>
@@ -317,14 +380,14 @@ class RoomsPageHandler(BaseHTTPRequestHandler):
         selected_date = parse_date(query_value(query, "datum"))
 
         if parsed_url.path == "/api/room-version":
-            plan = get_plan_for_page(selected_date)
+            plan = get_cached_plan_for_page(selected_date)
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(
-                json.dumps({"version": str(getattr(plan, "zeitstempel", "") or "")}).encode("utf-8")
+                json.dumps({"version": get_room_plan_version(plan, selected_date)}).encode("utf-8")
             )
             return
 
@@ -333,11 +396,13 @@ class RoomsPageHandler(BaseHTTPRequestHandler):
         free_rooms = None
         error_message = None
         plan_version = ""
+        plan = None
 
         try:
-            plan = get_plan_for_page(selected_date)
-            free_rooms = find_free_rooms_in_plan(plan, selected_hour)
-            plan_version = str(getattr(plan, "zeitstempel", "") or "")
+            plan = get_cached_plan_for_page(selected_date)
+            if plan is not None:
+                free_rooms = get_free_rooms_for_page(plan, selected_date, selected_hour)
+            plan_version = get_room_plan_version(plan, selected_date)
         except ResourceNotFound:
             error_message = "Für dieses Datum wurden keine Vertretungsplandaten gefunden."
         except Unauthorized:
@@ -350,6 +415,7 @@ class RoomsPageHandler(BaseHTTPRequestHandler):
             selected_hour=selected_hour,
             free_rooms=free_rooms,
             error_message=error_message,
+            loading=plan is None and error_message is None,
             plan_version=plan_version,
         )
 
@@ -365,6 +431,8 @@ def main(additional_port: int = 0):
     """Startet nur die Freie-Räume-Seite."""
 
     try:
+        warm_page_caches_from_disk()
+        Thread(target=warm_free_room_results_from_cache, daemon=True, name="room-cache-warm").start()
         start_server(RoomsPageHandler, "Freie-Räume-Seite", port = DEFAULT_PORT + additional_port)
     except OSError:
         additional_port += 1

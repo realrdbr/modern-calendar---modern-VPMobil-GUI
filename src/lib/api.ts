@@ -140,7 +140,11 @@ export async function updateEvent(id: string, eventData: any) {
     headers: getHeaders(),
     body: JSON.stringify(eventData),
   });
-  if (!res.ok) throw new Error((await res.json()).error || 'Termin konnte nicht geändert werden.');
+  if (!res.ok) {
+    const error = new Error((await res.json()).error || 'Termin konnte nicht geändert werden.') as Error & { status: number };
+    error.status = res.status;
+    throw error;
+  }
   return res.json();
 }
 
@@ -349,7 +353,7 @@ export async function deletePrivateCategory(id: string) {
   return data;
 }
 
-export async function saveCategory(category: { id?: string; name: string; color: string; sort_order?: number }, adminToken?: string) {
+export async function saveCategory(category: { id?: string; name: string; color: string; sort_order?: number; locked?: boolean }, adminToken?: string) {
   if (category.id) {
     const res = await fetch(`${API_URL}/api/categories/${category.id}`, {
       method: 'PUT',
