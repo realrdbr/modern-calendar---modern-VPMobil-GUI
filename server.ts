@@ -585,15 +585,10 @@ async function startServer() {
       return res.json({ success: true });
     }
     const existing = await dbGetEventById(id);
-    if (existing) {
-      if (String(existing.author || '').toLowerCase() !== currentUser.toLowerCase() && !(await dbIsAdmin(currentUser))) {
-        return res.status(403).json({ error: 'Sie dürfen nur eigene Termine löschen.' });
-      }
-      if (existing.type === 'FERIEN' && !(await dbIsAdmin(currentUser))) {
-        return res.status(403).json({ error: 'Nur Admins dürfen Ferientermine löschen.' });
-      }
+    if (existing && existing.type === 'FERIEN' && !(await dbIsAdmin(currentUser))) {
+      return res.status(403).json({ error: 'Nur Admins dürfen Ferientermine löschen.' });
     }
-    await dbDeleteEvent(id, (req as any).authenticatedUser);
+    await dbDeleteEvent(id, currentUser);
     broadcastCalendarChange();
     res.json({ success: true });
   });
