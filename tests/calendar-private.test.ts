@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mergeCategoriesForDisplay } from '../src/lib/categoryVisibility';
 import {
   dbCreatePrivateCategory,
   dbCreatePrivateEvent,
@@ -33,4 +34,15 @@ test('private calendars are isolated and limited to five categories', async () =
   await dbCreatePrivateEvent('gustav', { id: 'event-g', title: 'Geheim', date: '2026-08-27', type: 'g-0' });
   assert.deepEqual((await dbGetPrivateCalendar('gustav')).events.map(event => event.id), ['event-g']);
   assert.deepEqual((await dbGetPrivateCalendar('anderer')).events, []);
+});
+
+test('admin category lists ignore private categories while regular calendar views still include them', () => {
+  const globalCategories = [{ id: 'KLAUSUR', name: 'Klausur', color: '#ef4444' }];
+  const privateCategories = [{ id: 'PRIVATE_1', name: 'Persönlich', color: '#14b8a6', isPrivate: true }];
+
+  assert.deepEqual(mergeCategoriesForDisplay(globalCategories, privateCategories, true), [
+    ...globalCategories,
+    ...privateCategories,
+  ]);
+  assert.deepEqual(mergeCategoriesForDisplay(globalCategories, privateCategories, false), globalCategories);
 });

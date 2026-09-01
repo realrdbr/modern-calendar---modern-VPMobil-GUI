@@ -205,6 +205,8 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
       setEditingEvent(undefined);
     } catch (e) {
       console.error('Failed to delete event:', e);
+      const message = e instanceof Error ? e.message : 'Du darfst diesen Termin nicht löschen.';
+      alert(message);
     }
   };
 
@@ -402,6 +404,20 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
     return { backgroundColor: color, color: luminance > 0.5 ? '#000' : '#fff' };
   };
 
+  const mixWithGray = (color: string, grayRatio: number) => {
+    const hex = color.replace('#', '');
+    if (hex.length !== 6) return color;
+    const value = Number.parseInt(hex, 16);
+    const r = (value >> 16) & 255;
+    const g = (value >> 8) & 255;
+    const b = value & 255;
+    const neutral = isDark ? 38 : 180;
+    const mixedR = Math.round(r * (1 - grayRatio) + neutral * grayRatio);
+    const mixedG = Math.round(g * (1 - grayRatio) + neutral * grayRatio);
+    const mixedB = Math.round(b * (1 - grayRatio) + neutral * grayRatio);
+    return `rgb(${mixedR}, ${mixedG}, ${mixedB})`;
+  };
+
   const isEventPast = (event: AppEvent) => {
     const now = new Date();
     const eventEnd = new Date(`${event.endDate || event.date}T${event.endTime || event.startTime || '23:59'}:59`);
@@ -409,10 +425,14 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
   };
 
   const getEventCardStyle = (event: AppEvent) => {
-    if (!isEventPast(event)) return getEventTypeStyle(event.type);
-    return isDark
-      ? { backgroundColor: '#27272a', color: '#a1a1aa', borderColor: '#3f3f46' }
-      : { backgroundColor: '#e4e4e7', color: '#52525b', borderColor: '#d4d4d8' };
+    const baseStyle = getEventTypeStyle(event.type);
+    if (!isEventPast(event)) return baseStyle;
+    const mutedColor = mixWithGray(baseStyle.backgroundColor, isDark ? 0.85 : 0.9);
+    return {
+      backgroundColor: mutedColor,
+      color: isDark ? '#e4e4e7' : '#27272a',
+      borderColor: mixWithGray(baseStyle.backgroundColor, isDark ? 0.7 : 0.8)
+    };
   };
 
   // Group days by week

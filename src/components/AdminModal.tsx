@@ -80,7 +80,7 @@ export default function AdminModal({ isOpen, onClose, username, preferences }: P
       const fetchedUsers = await adminFetchUsers(token);
       setUsers(fetchedUsers);
       const fetchedCats = await fetchCategories();
-      setCategories(fetchedCats);
+      setCategories(fetchedCats.filter((category: EventCategory) => !category.isPrivate));
       const fetchedCourses = await fetchCourses();
       setCourses(fetchedCourses);
     } catch (err) {
