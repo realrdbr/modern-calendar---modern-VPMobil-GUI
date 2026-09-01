@@ -411,7 +411,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
     const r = (value >> 16) & 255;
     const g = (value >> 8) & 255;
     const b = value & 255;
-    const neutral = isDark ? 38 : 180;
+    const neutral = isDark ? 70 : 190;
     const mixedR = Math.round(r * (1 - grayRatio) + neutral * grayRatio);
     const mixedG = Math.round(g * (1 - grayRatio) + neutral * grayRatio);
     const mixedB = Math.round(b * (1 - grayRatio) + neutral * grayRatio);
@@ -427,11 +427,12 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
   const getEventCardStyle = (event: AppEvent) => {
     const baseStyle = getEventTypeStyle(event.type);
     if (!isEventPast(event)) return baseStyle;
-    const mutedColor = mixWithGray(baseStyle.backgroundColor, isDark ? 0.85 : 0.9);
+    const mutedRatio = isDark ? 0.55 : 0.45;
+    const mutedColor = mixWithGray(baseStyle.backgroundColor, mutedRatio);
     return {
       backgroundColor: mutedColor,
-      color: isDark ? '#e4e4e7' : '#27272a',
-      borderColor: mixWithGray(baseStyle.backgroundColor, isDark ? 0.7 : 0.8)
+      color: isDark ? '#f4f4f5' : '#27272a',
+      borderColor: mixWithGray(baseStyle.backgroundColor, mutedRatio + 0.1)
     };
   };
 
