@@ -30,6 +30,7 @@ from web_utils import (
     render_theme_script,
     render_today_marker_script,
     render_vp_navigation,
+    render_vp_user_identity,
 )
 
 DAY_NAMES = {
@@ -223,7 +224,6 @@ def render_class_selection(week_plans: dict[date, object | None], selected_date:
     return f"""
         <section class="message">
             <h2>Klasse auswählen</h2>
-            <p>Wähle deine Klasse aus. Die Auswahl wird im Browser gespeichert.</p>
         </section>
 
         <section class="choice-grid">
@@ -351,7 +351,7 @@ def render_week_table(
     weekly_dates: set[date] | None = None,
     block_mode: bool = False,
 ) -> str:
-    """Rendert den Wochenplan von Montag bis Freitag."""
+    """Rendert den Wochenplan."""
 
     week_lessons = collect_week_lessons(week_plans, selected_class, selected_subjects)
 
@@ -416,7 +416,7 @@ def render_week_table(
 
         rows.append(f"""
             <tr>
-                <th class="period-head">{f'{period}–{period + 1}' if block_mode and period + 1 <= max_period else period}</th>
+                <th class="period-head">{((period + 1) // 2) if block_mode else period}</th>
                 {"".join(day_cells)}
             </tr>
         """)
@@ -426,7 +426,7 @@ def render_week_table(
             <table class="week-table">
                 <thead>
                     <tr>
-                        <th class="period-head">Std.</th>
+                        <th class="period-head">{'Bl' if block_mode else 'Std.'}</th>
                         {"".join(header_cells)}
                     </tr>
                 </thead>
@@ -471,6 +471,8 @@ def render_week_navigation(selected_date: date, selected_class: str | None, filt
     previous_week = selected_date - timedelta(days=7)
     next_week = selected_date + timedelta(days=7)
     current_week = date.today() - timedelta(days=date.today().weekday())
+    selected_week = selected_date - timedelta(days=selected_date.weekday())
+    is_current_week = selected_week == current_week
     query_values = ({'klasse': selected_class} if selected_class else {})
     if not filters_active:
         query_values['show_all'] = '1'
@@ -481,17 +483,17 @@ def render_week_navigation(selected_date: date, selected_class: str | None, filt
     return f"""
         <div class="week-navigation" aria-label="Wochennavigation">
             <a class="week-nav-button" href="/?woche={format_week_value(previous_week)}{class_query}" aria-label="Vorherige Woche">
-                <span aria-hidden="true">‹</span>
+                <svg class="week-nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg>
                 <small>Zurück</small>
             </a>
 
-            <a class="week-nav-button week-nav-button--current" href="/?woche={format_week_value(current_week)}{class_query}">
-                <span aria-hidden="true">⌂</span>
+            <a class="week-nav-button {'week-nav-button--current' if is_current_week else ''}" href="/?woche={format_week_value(current_week)}{class_query}">
+                <svg class="week-nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"></path><path d="M5 9.5V21h14V9.5M9 21v-6h6v6"></path></svg>
                 <small>Aktuelle Woche</small>
             </a>
 
             <a class="week-nav-button" href="/?woche={format_week_value(next_week)}{class_query}" aria-label="Nächste Woche">
-                <span aria-hidden="true">›</span>
+                <svg class="week-nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>
                 <small>Weiter</small>
             </a>
         </div>
@@ -543,7 +545,6 @@ def render_plan_page(
                 <section class="message class-message">
                     <div>
                         <h2>Klasse {escape(selected_class)}</h2>
-                        <p>Wochenplan von Montag bis Freitag. Tippe eine Stunde an, um Details zu sehen.</p>
                     </div>
 
                     <form method="get" action="/" class="block-toggle-form">
@@ -567,6 +568,7 @@ def render_plan_page(
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="/icons/favicon.png" type="image/png">
     <title>Vertretungsplan</title>
     <style>
         {COMMON_CSS}
@@ -579,7 +581,7 @@ def render_plan_page(
             display: flex;
             flex-wrap: wrap;
             gap: 12px;
-            align-items: center;
+            .class-message .block-toggle-form {{ justify-self: start; margin-left: 0; }}
             justify-content: space-between;
         }}
 
@@ -677,10 +679,10 @@ def render_plan_page(
             align-items: center;
             justify-content: center;
             gap: 8px;
-            min-height: 64px;
-            padding: 8px 14px;
+            min-height: 46px;
+            padding: 6px 10px;
             border: 1px solid var(--border);
-            border-radius: 8px;
+            border-radius: 7px;
             background: var(--surface-muted);
             color: var(--text);
             text-decoration: none;
@@ -701,11 +703,6 @@ def render_plan_page(
         .week-nav-button:hover {{
             background: var(--surface);
             border-color: var(--primary);
-        }}
-
-        .week-nav-button span {{
-            font-size: 2rem;
-            line-height: 1;
         }}
 
         .week-nav-button small {{
@@ -778,15 +775,16 @@ def render_plan_page(
             z-index: 1;
         }}
 
-        .week-table thead th.day-head--today .day-head-marker::before {{
+        .week-table thead th.day-head--today::after {{
             content: "";
             position: absolute;
-            inset: -0.03rem -0.08rem;
-            border-radius: 0.55rem;
-            background: rgba(220, 38, 38, 0.17);
-            border: 2px solid rgba(220, 38, 38, 0.82);
+            right: 0;
+            top: 0;
+            left: 0;
+            height: 2px;
+            opacity: .72;
+            background: var(--primary);
             pointer-events: none;
-            z-index: 0;
         }}
 
         .week-table thead span,
@@ -946,11 +944,6 @@ def render_plan_page(
                 padding: 0.16rem 0.44rem 0.18rem;
             }}
 
-            .week-table thead th.day-head--today .day-head-marker::before {{
-                inset: -0.03rem -0.04rem;
-                border-width: 1.5px;
-            }}
-
             .week-table thead small {{
                 font-size: 0.66rem;
             }}
@@ -1005,6 +998,8 @@ def render_plan_page(
                 display: grid;
             }}
 
+            .block-toggle-form {{ justify-self: start; margin-left: 0; }}
+
             .week-navigation {{
                 grid-template-columns: 1fr 1.25fr 1fr;
                 gap: 10px;
@@ -1014,10 +1009,6 @@ def render_plan_page(
                 min-height: 48px;
                 padding: 6px 8px;
                 gap: 4px;
-            }}
-
-            .week-nav-button span {{
-                font-size: 1.55rem;
             }}
 
             .week-nav-button small {{
@@ -1057,11 +1048,6 @@ def render_plan_page(
                 padding: 0.1rem 0.08rem 0.12rem;
             }}
 
-            .week-table thead th.day-head--today .day-head-marker::before {{
-                inset: -0.01rem 0;
-                border-width: 1px;
-            }}
-
             .week-table thead small {{
                 font-size: 0.58rem;
             }}
@@ -1095,13 +1081,14 @@ def render_plan_page(
         <header class="topbar">
             <div class="brand">
                 <h1>Vertretungsplan</h1>
-                <p>Woche {escape(week_title)}</p>
+                {render_vp_user_identity(session_username)}
             </div>
 
             {render_vp_navigation("classes", logout_csrf_token, can_change_pin=can_change_pin, force_pin_change=force_pin_change, pin_modal_error=pin_modal_error, pin_modal_changed=pin_modal_changed, session_username=session_username)}
         </header>
 
         <section class="panel">
+            <div class="selected-week-label">Ausgewählte Woche: <strong>{escape(week_title)}</strong></div>
             {render_week_navigation(selected_date, selected_class, filters_active, block_mode)}
 
             <div class="meta">

@@ -25,6 +25,7 @@ from web_utils import (
     render_theme_script,
     render_today_marker_script,
     render_vp_navigation,
+    render_vp_user_identity,
 )
 
 
@@ -161,7 +162,6 @@ def render_teacher_selection(week_plans: dict[date, object | None], selected_dat
     return f"""
         <section class="message">
             <h2>Lehrer auswählen</h2>
-            <p>Wähle ein Lehrerkürzel aus. Die Auswahl wird im Browser gespeichert.</p>
         </section>
 
         <section class="choice-grid">
@@ -291,7 +291,7 @@ def render_teacher_week_table(
 
         rows.append(f"""
             <tr>
-                <th class="period-head">{f'{period}–{period + 1}' if block_mode and period + 1 <= max_period else period}</th>
+                <th class="period-head">{((period + 1) // 2) if block_mode else period}</th>
                 {"".join(day_cells)}
             </tr>
         """)
@@ -301,7 +301,7 @@ def render_teacher_week_table(
             <table class="week-table">
                 <thead>
                     <tr>
-                        <th class="period-head">Std.</th>
+                        <th class="period-head">{'Bl' if block_mode else 'Std.'}</th>
                         {"".join(header_cells)}
                     </tr>
                 </thead>
@@ -349,28 +349,33 @@ def get_week_version(week_plans: dict[date, object | None]) -> str:
     )
 
 
-def render_week_navigation(selected_date: date, selected_teacher: str | None) -> str:
+def render_week_navigation(selected_date: date, selected_teacher: str | None, block_mode: bool = False) -> str:
     """Rendert die Navigation für die vorherige und nächste Schulwoche."""
 
     previous_week = selected_date - timedelta(days=7)
     next_week = selected_date + timedelta(days=7)
     current_week = date.today() - timedelta(days=date.today().weekday())
-    teacher_query = f"&{urlencode({'lehrer': selected_teacher})}" if selected_teacher else ""
+    selected_week = selected_date - timedelta(days=selected_date.weekday())
+    is_current_week = selected_week == current_week
+    query_values = ({'lehrer': selected_teacher} if selected_teacher else {})
+    if block_mode:
+        query_values['block'] = '1'
+    teacher_query = f"&{urlencode(query_values)}" if query_values else ""
 
     return f"""
         <div class="week-navigation" aria-label="Wochennavigation">
             <a class="week-nav-button" href="/lehrer?woche={format_week_value(previous_week)}{teacher_query}" aria-label="Vorherige Woche">
-                <span aria-hidden="true">‹</span>
+                <svg class="week-nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg>
                 <small>Zurück</small>
             </a>
 
-            <a class="week-nav-button week-nav-button--current" href="/lehrer?woche={format_week_value(current_week)}{teacher_query}">
-                <span aria-hidden="true">⌂</span>
+            <a class="week-nav-button {'week-nav-button--current' if is_current_week else ''}" href="/lehrer?woche={format_week_value(current_week)}{teacher_query}">
+                <svg class="week-nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"></path><path d="M5 9.5V21h14V9.5M9 21v-6h6v6"></path></svg>
                 <small>Aktuelle Woche</small>
             </a>
 
             <a class="week-nav-button" href="/lehrer?woche={format_week_value(next_week)}{teacher_query}" aria-label="Nächste Woche">
-                <span aria-hidden="true">›</span>
+                <svg class="week-nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg>
                 <small>Weiter</small>
             </a>
         </div>
@@ -418,7 +423,6 @@ def render_teacher_page(
                 <section class="message class-message">
                     <div>
                         <h2>Lehrer {escape(selected_teacher)}</h2>
-                        <p>Wochenplan von Montag bis Freitag. Tippe eine Stunde an, um Details zu sehen.</p>
                     </div>
 
                     <label class="block-switch"><span>Block-Unterricht</span><input type="checkbox" {'checked' if block_mode else ''} onchange="window.location.href='/lehrer?woche={format_week_value(selected_date)}&lehrer={escape(selected_teacher)}&block='+(this.checked?'1':'0')" aria-label="Block-Unterricht umschalten"><span class="block-switch-track" aria-hidden="true"><span></span></span></label>
@@ -435,6 +439,7 @@ def render_teacher_page(
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="/icons/favicon.png" type="image/png">
     <title>Lehrerplan</title>
     <style>
         {COMMON_CSS}
@@ -457,7 +462,7 @@ def render_teacher_page(
             border: 1px solid var(--border);
         }}
 
-        .block-switch {{ display:inline-flex; align-items:center; gap:8px; min-height:36px; color:var(--text); font-size:.82rem; font-weight:700; cursor:pointer; user-select:none; }}
+        .block-switch {{ display:inline-flex; align-items:center; gap:8px; min-height:36px; margin-left:auto; color:var(--text); font-size:.82rem; font-weight:700; cursor:pointer; user-select:none; }}
         .block-switch input {{ position:absolute; opacity:0; width:1px; height:1px; }}
         .block-switch-track {{ width:40px; height:22px; padding:2px; border:1px solid var(--border); border-radius:999px; background:var(--surface-muted); transition:background .15s,border-color .15s; }}
         .block-switch-track span {{ display:block; width:16px; height:16px; border-radius:50%; background:var(--muted); transition:transform .15s,background .15s; }}
@@ -478,10 +483,10 @@ def render_teacher_page(
             align-items: center;
             justify-content: center;
             gap: 8px;
-            min-height: 64px;
-            padding: 8px 14px;
+            min-height: 46px;
+            padding: 6px 10px;
             border: 1px solid var(--border);
-            border-radius: 8px;
+            border-radius: 7px;
             background: var(--surface-muted);
             color: var(--text);
             text-decoration: none;
@@ -502,11 +507,6 @@ def render_teacher_page(
         .week-nav-button:hover {{
             background: var(--surface);
             border-color: var(--primary);
-        }}
-
-        .week-nav-button span {{
-            font-size: 2rem;
-            line-height: 1;
         }}
 
         .week-nav-button small {{
@@ -577,15 +577,16 @@ def render_teacher_page(
             z-index: 1;
         }}
 
-        .week-table thead th.day-head--today .day-head-marker::before {{
+        .week-table thead th.day-head--today::after {{
             content: "";
             position: absolute;
-            inset: -0.03rem -0.08rem;
-            border-radius: 0.55rem;
-            background: rgba(220, 38, 38, 0.17);
-            border: 2px solid rgba(220, 38, 38, 0.82);
+            right: 0;
+            top: 0;
+            left: 0;
+            height: 2px;
+            opacity: .72;
+            background: var(--primary);
             pointer-events: none;
-            z-index: 0;
         }}
 
         .week-table thead span,
@@ -746,11 +747,6 @@ def render_teacher_page(
                 padding: 0.16rem 0.44rem 0.18rem;
             }}
 
-            .week-table thead th.day-head--today .day-head-marker::before {{
-                inset: -0.03rem -0.04rem;
-                border-width: 1.5px;
-            }}
-
             .week-table thead small {{
                 font-size: 0.66rem;
             }}
@@ -799,6 +795,8 @@ def render_teacher_page(
                 display: grid;
             }}
 
+            .block-switch {{ justify-self: start; margin-left: 0; }}
+
             .week-navigation {{
                 grid-template-columns: 1fr 1.25fr 1fr;
                 gap: 10px;
@@ -808,10 +806,6 @@ def render_teacher_page(
                 min-height: 48px;
                 padding: 6px 8px;
                 gap: 4px;
-            }}
-
-            .week-nav-button span {{
-                font-size: 1.55rem;
             }}
 
             .week-nav-button small {{
@@ -841,11 +835,6 @@ def render_teacher_page(
                 width: 100%;
                 max-width: 100%;
                 padding: 0.1rem 0.08rem 0.12rem;
-            }}
-
-            .week-table thead th.day-head--today .day-head-marker::before {{
-                inset: -0.01rem 0;
-                border-width: 1px;
             }}
 
             .week-table thead small {{
@@ -880,15 +869,16 @@ def render_teacher_page(
     <main>
         <header class="topbar">
             <div class="brand">
-                <h1>Lehrerplan</h1>
-                <p>Woche {escape(week_title)}</p>
+                <h1>Vertretungsplan</h1>
+                {render_vp_user_identity(session_username)}
             </div>
 
             {render_vp_navigation("teachers", logout_csrf_token, can_change_pin=can_change_pin, force_pin_change=force_pin_change, pin_modal_error=pin_modal_error, pin_modal_changed=pin_modal_changed, session_username=session_username)}
         </header>
 
         <section class="panel">
-            {render_week_navigation(selected_date, selected_teacher)}
+            <div class="selected-week-label">Ausgewählte Woche: <strong>{escape(week_title)}</strong></div>
+            {render_week_navigation(selected_date, selected_teacher, block_mode)}
 
             <div class="meta">
                 Neuester Planstand: {escape("Keine Plandaten verfügbar" if plan_timestamp_text == "unbekannt" else plan_timestamp_text)}

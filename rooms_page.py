@@ -25,6 +25,7 @@ from web_utils import (
     query_value,
     render_theme_script,
     render_vp_navigation,
+    render_vp_user_identity,
     send_html,
     start_server,
 )
@@ -195,6 +196,7 @@ def render_rooms_page(
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="/icons/favicon.png" type="image/png">
     <title>Freie Räume</title>
     <style>
         {COMMON_CSS}
@@ -314,7 +316,7 @@ def render_rooms_page(
         <header class="topbar">
             <div class="brand">
                 <h1>Freie Räume</h1>
-                <p>Freie Räume nach Datum und Stunde anzeigen.</p>
+                {render_vp_user_identity(session_username)}
             </div>
 
             {render_vp_navigation("rooms", logout_csrf_token, can_change_pin=can_change_pin, force_pin_change=force_pin_change, pin_modal_error=pin_modal_error, pin_modal_changed=pin_modal_changed, session_username=session_username)}

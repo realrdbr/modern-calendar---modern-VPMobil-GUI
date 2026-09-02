@@ -5,7 +5,7 @@ import { getStoredSession, saveStoredSession, clearStoredSession } from '../lib/
 import CalendarView from '../components/CalendarView';
 import AuthFooter from '../components/AuthFooter';
 import { User } from '../types';
-import { Lock, ArrowLeft, ArrowRight, AlertCircle, CalendarDays } from 'lucide-react';
+import { Lock, ArrowLeft, ArrowRight, AlertCircle } from 'lucide-react';
 
 export default function UserDashboard() {
   const { username } = useParams<{ username: string }>();
@@ -289,20 +289,18 @@ export default function UserDashboard() {
   // Render PIN authentication screen if PIN is needed
   if (needsPin) {
     return (
-      <div className="min-h-screen bg-white text-[#0f172a] font-sans flex flex-col items-center justify-between w-full">
+      <div className="h-screen overflow-hidden bg-white text-[#0f172a] dark:bg-[#121212] dark:text-[#eeeeee] font-sans flex flex-col items-center w-full">
         {/* CENTERED LOGIN BLOCK */}
-        <div className="my-auto max-w-[480px] w-full px-6 py-8 flex flex-col items-center">
+        <div className="flex-1 min-h-0 max-w-[480px] w-full px-6 py-5 flex flex-col justify-center items-center overflow-y-auto">
           {/* HEADER */}
           <header className="mb-6 text-center">
-            <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-[10px] border border-[#cbd5e1] bg-[#f8f9fa] text-[#e91e63]" aria-hidden="true">
-              <CalendarDays className="h-6 w-6" strokeWidth={1.8} />
-            </div>
+            <picture>
+              <source media="(prefers-color-scheme: dark)" srcSet="/icons/logo_dark.webp" />
+              <img src="/icons/logo_white.webp" alt="cal11" className="mx-auto mb-5 h-32 w-auto object-contain" />
+            </picture>
             <h1 className="text-3xl sm:text-[32px] font-extrabold tracking-tight text-[#0f172a] mb-2">
-              Jahrgangskalender 11
+              Jahrgangskalender
             </h1>
-            <p className="text-sm sm:text-[15px] text-[#64748b] leading-snug max-w-[320px] mx-auto font-medium">
-              Klausuren, Hausaufgaben und Termine auf einen Blick.
-            </p>
           </header>
 
           {/* ONE-LINE FORMULAR */}
@@ -315,7 +313,7 @@ export default function UserDashboard() {
             )}
 
             <form onSubmit={handlePinSubmit} className="w-full space-y-3">
-              <div className="w-full bg-white border border-zinc-300 focus-within:border-teal-700 rounded-md p-1 pl-3 flex items-center transition-colors">
+              <div className="w-full bg-white dark:bg-[#1e1e1e] border-[1.5px] border-[#cbd5e1] dark:border-[#444] focus-within:border-[#e91e63] rounded-xl p-1.5 pl-3.5 flex items-center shadow-none transition-colors h-[52px]">
                 <div className="text-[#94a3b8] mr-2.5 shrink-0 flex items-center">
                   <Lock className="w-[18px] h-[18px]" />
                 </div>
@@ -334,7 +332,7 @@ export default function UserDashboard() {
                 <button
                   type="submit"
                   disabled={submittingPin || pinInput.length < 4}
-                  className="bg-teal-700 hover:bg-teal-800 text-white border-none rounded-md py-2 px-3 text-sm font-semibold cursor-pointer flex items-center gap-1.5 shrink-0 transition-colors disabled:opacity-50"
+                  className="bg-[#e91e63] hover:bg-[#d81b60] text-white border-none rounded-lg py-2.5 px-4 text-sm font-bold cursor-pointer flex items-center gap-1.5 shrink-0 shadow-none transition-colors disabled:opacity-60"
                 >
                   <span>{submittingPin ? '...' : 'Entsperren'}</span>
                   <ArrowRight className="w-4 h-4" />

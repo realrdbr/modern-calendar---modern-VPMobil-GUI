@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import InfoModal from './InfoModal';
-import { KALENDER_URL, VERTRETUNGSPLAN_URL } from '../lib/externalLinks';
+import { KALENDER_URL } from '../lib/externalLinks';
 
 export default function AuthFooter() {
   const [isInfoOpen, setIsInfoOpen] = useState(false);
 
   return (
     <>
-      <footer className="w-full border-t border-[#cbd5e1] dark:border-[#333] py-4 mt-auto bg-white dark:bg-[#121212]">
+      <footer className="w-full shrink-0 border-t border-[#cbd5e1] dark:border-[#333] py-4 bg-white dark:bg-[#121212]">
         <div className="w-full px-6 sm:px-12 flex items-center justify-between text-[13.5px] font-semibold text-[#0f172a] dark:text-[#eee]">
           <div className="flex items-center gap-3">
             <button
@@ -17,12 +17,6 @@ export default function AuthFooter() {
             >
               Info
             </button>
-            <a
-              href={VERTRETUNGSPLAN_URL}
-              className="hover:opacity-75 transition-opacity font-semibold py-1"
-            >
-              Vertretungsplan
-            </a>
           </div>
 
           <a href={KALENDER_URL} className="font-bold tracking-wide">

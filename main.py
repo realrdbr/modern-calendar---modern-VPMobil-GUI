@@ -205,6 +205,23 @@ class AppRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
+        if parsed.path in {
+            "/icons/favicon.png",
+            "/icons/logo_cal11.webp",
+            "/icons/logo_white.webp",
+            "/icons/logo_dark.webp",
+        }:
+            asset_path = ROOT / parsed.path.removeprefix("/")
+            if asset_path.is_file() and asset_path.parent == ROOT / "icons":
+                content_type = "image/png" if asset_path.suffix == ".png" else "image/webp"
+                payload = asset_path.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(payload)))
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
+                self.wfile.write(payload)
+                return
         if parsed.path == "/api/session-status":
             if session := self._session():
                 self._send_json({"username": session.user.username})

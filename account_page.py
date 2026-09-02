@@ -7,13 +7,13 @@ from urllib.parse import quote
 
 from accounts import CalendarEventTypeOption, NotifySettings, User
 from subscriptions import SubjectOption
-from web_utils import CALENDAR_PUBLIC_URL, COMMON_CSS, render_theme_script, render_vp_navigation
+from web_utils import CALENDAR_PUBLIC_URL, COMMON_CSS, render_theme_script, render_vp_navigation, render_vp_user_identity
 
 
 def _layout(title: str, body: str) -> str:
-    main_class = ' class="login-root"' if title.startswith("Anmelden") else ""
-    return f"""<!doctype html><html lang=\"de\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{escape(title)}</title><style>{COMMON_CSS}
-:root {{ color-scheme: light; }}
+    main_class = ' class="login-root"' if title.startswith("Anmelden") or title == "Vertretungsplan" else ""
+    return f"""<!doctype html><html lang=\"de\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><link rel=\"icon\" href=\"/icons/favicon.png\" type=\"image/png\"><title>{escape(title)}</title><style>{COMMON_CSS}
+:root {{ color-scheme: light dark; }}
 body {{ background: var(--background); color: var(--text); font-family:system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
 main {{ width:min(1320px, calc(100% - 24px)); min-height:100vh; }}
 .topbar {{ max-width: 1040px; margin: 0 auto; padding: 18px 14px 0; display:flex; justify-content:space-between; align-items:center; gap:12px; }}
@@ -122,20 +122,27 @@ button:not(.theme-toggle) {{ min-height:38px; border:1px solid var(--primary); b
 .login-root {{ width:100%; max-width:none; min-height:100vh; margin:0; padding:0; overflow:hidden; }}
 .calendar-login-shell {{ width:calc(100% - 48px); max-width:432px; margin:auto; padding:32px 0; display:flex; flex-direction:column; align-items:center; }}
 .calendar-login-header {{ margin-bottom:24px; text-align:center; }}
-.login-product-icon {{ width:48px; height:48px; margin:0 auto 14px; display:grid; place-items:center; border:1px solid var(--border); border-radius:10px; background:var(--surface-muted); color:#e91e63; }}
-.login-product-icon svg {{ width:26px; height:26px; }}
+.login-product-logo {{ display:block; width:auto; height:128px; margin:0 auto 18px; object-fit:contain; }}
 .calendar-login-header h1 {{ margin:0 0 8px; font-size:clamp(1.75rem, 5vw, 2rem); line-height:1.15; letter-spacing:-.025em; }}
-.calendar-login-header p {{ max-width:330px; margin:0 auto; color:var(--muted); font-size:.94rem; line-height:1.4; font-weight:500; }}
 .calendar-login-header a {{ display:inline-flex; margin-top:12px; min-height:36px; align-items:center; padding:6px 12px; border:1px solid var(--border); border-radius:8px; color:var(--text); background:var(--surface); text-decoration:none; font-size:.78rem; font-weight:650; }}
+.login-switch {{ display:flex; width:max-content; margin:16px auto 0; min-height:36px; align-items:center; padding:6px 12px; border:1px solid var(--border); border-radius:8px; color:var(--text); background:var(--surface); text-decoration:none; font-size:.78rem; font-weight:650; }}
 .calendar-login-form {{ width:100%; display:grid; gap:12px; }}
-.calendar-login-control {{ width:100%; display:flex; align-items:center; padding:6px 6px 6px 14px; border:1.5px solid var(--border); border-radius:12px; background:var(--surface); transition:border-color .15s; }}
+.calendar-login-control {{ width:100%; height:52px; display:flex; align-items:center; padding:6px 6px 6px 14px; border:1.5px solid var(--border); border-radius:12px; background:var(--surface); transition:border-color .15s; }}
 .calendar-login-control:focus-within {{ border-color:#e91e63; }}
+.calendar-login-control svg {{ width:18px; height:18px; flex:0 0 auto; margin-right:10px; color:#94a3b8; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }}
 .calendar-login-control input {{ flex:1 1 auto; width:auto; min-width:0; min-height:38px; padding:0; border:0; outline:0; background:transparent; color:var(--text); }}
 .calendar-login-control button {{ flex:0 0 auto; width:auto; min-height:40px; padding:8px 16px; border:0; border-radius:8px; background:#e91e63; font-weight:750; }}
 .calendar-login-back {{ justify-self:center; min-height:auto !important; padding:4px 8px !important; border:0 !important; background:transparent !important; color:var(--muted) !important; font-size:.78rem !important; }}
 .calendar-login .notice {{ width:100%; margin:0 0 12px; }}
-.calendar-login-footer {{ width:100%; padding:16px 24px; border-top:1px solid var(--border); display:flex; justify-content:space-between; color:var(--muted); font-size:.8rem; font-weight:650; }}
+.calendar-login-footer {{ width:100%; padding:16px 24px; border-top:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; color:var(--muted); font-size:.8rem; font-weight:650; }}
 .calendar-login-footer a {{ color:var(--text); text-decoration:none; }}
+.calendar-login-footer button {{ min-height:0; padding:0; border:0; background:transparent; color:var(--text); font:inherit; font-weight:700; cursor:pointer; }}
+.login-info {{ position:fixed; inset:0; z-index:5; display:none; place-items:center; padding:16px; background:rgba(15,23,42,.55); }}
+.login-info:target {{ display:grid; }}
+.login-info-card {{ width:min(440px, 100%); padding:20px; border:1px solid var(--border); border-radius:10px; background:var(--surface); color:var(--text); box-shadow:0 12px 30px rgba(15,23,42,.2); }}
+.login-info-card h2 {{ margin:0 0 12px; }}
+.login-info-card p {{ margin:0 0 10px; color:var(--muted); line-height:1.5; }}
+.login-info-close {{ display:inline-flex; margin-top:8px; padding:8px 12px !important; border-radius:7px !important; background:var(--primary) !important; color:white !important; }}
 </style></head><body><main{main_class}>{body}</main>{render_theme_script()}</body></html>"""
 
 
@@ -146,26 +153,25 @@ def render_login(error: str | None = None, *, username: str = "", pin_step: bool
         <form class="calendar-login-form" method="post" action="/login">
           <input type="hidden" name="stage" value="pin">
           <input type="hidden" name="username" value="{escape(username)}">
-          <div class="calendar-login-control"><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{{4}}" minlength="4" maxlength="4"
+          <div class="calendar-login-control"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path></svg><input name="pin" type="password" inputmode="numeric" pattern="[0-9]{{4}}" minlength="4" maxlength="4"
               autocomplete="current-password" aria-label="Vierstellige PIN für {escape(username)}" placeholder="PIN für {escape(username)}" required autofocus data-pin-input>
             <button type="submit">Entsperren <span aria-hidden="true">→</span></button></div>
           <button class="calendar-login-back" type="submit" name="stage" value="restart" formnovalidate>‹ Anderen Benutzer verwenden</button>
         </form>
         <script>(() => {{ const input=document.querySelector('[data-pin-input]'); if(input) input.addEventListener('input',()=>input.value=input.value.replace(/\\D/g,'').slice(0,4)); }})();</script>
         """
-        step_label = "Schritt 2 von 2 · PIN"
     else:
         form = f"""
         <form class="calendar-login-form" method="post" action="/login">
           <input type="hidden" name="stage" value="username">
-          <div class="calendar-login-control"><input name="username" value="{escape(username)}" autocomplete="username" placeholder="z.B. SophiaM" aria-label="Dein Benutzername" required minlength="3" maxlength="64" autofocus spellcheck="false">
+          <div class="calendar-login-control"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"></circle><path d="M5 20a7 7 0 0 1 14 0"></path></svg><input name="username" value="{escape(username)}" autocomplete="username" placeholder="z.B. SophiaM" aria-label="Dein Benutzername" required minlength="3" maxlength="64" autofocus spellcheck="false">
             <button type="submit">Weiter <span aria-hidden="true">→</span></button></div>
         </form>
         """
-        step_label = "Schritt 1 von 2 · Konto"
-    return _layout("Anmelden · VpMobil", f"""
-    <div class="calendar-login"><section class="calendar-login-shell"><header class="calendar-login-header"><div class="login-product-icon" data-login-product="clock" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg></div><h1>Vertretungsplan</h1><p>Stundenplan, Änderungen und persönliche Ankündigungen auf einen Blick.</p><a href="{escape(CALENDAR_PUBLIC_URL)}">Zum Kalender</a></header>
-    {notice}{form}</section><footer class="calendar-login-footer"><span>{step_label}</span><a href="{escape(CALENDAR_PUBLIC_URL)}">cal11.de</a></footer></div>""")
+    info = """<div id="login-info" class="login-info"><div class="login-info-card"><h2>Info</h2><p>Diese Webseite hat keine offizielle Verbindung mit dem Gymnasium Olbernhau und wurde privat von Schülern erstellt.</p><p>Der Zugriff ist für Schüler:innen der 11. Klasse des Gymnasiums Olbernhau sowie in Ausnahmefällen für weitere autorisierte Schüler:innen vorgesehen.</p><p>Bei Fragen oder Problemen erreichst du uns unter support@cal11.de.</p><a class="login-info-close" href="#">Schließen</a></div></div>"""
+    return _layout("Vertretungsplan", f"""
+    <div class="calendar-login"><section class="calendar-login-shell"><header class="calendar-login-header"><picture><source media="(prefers-color-scheme: dark)" srcset="/icons/logo_dark.webp"><img class="login-product-logo" src="/icons/logo_white.webp" alt="cal11"></picture><h1>Vertretungsplan</h1></header>
+    {notice}{form}<a class="login-switch" href="{escape(CALENDAR_PUBLIC_URL)}">Zum Kalender</a></section><footer class="calendar-login-footer"><a href="#login-info">Info</a><a href="{escape(CALENDAR_PUBLIC_URL)}">cal11.de</a></footer></div>{info}""")
 
 
 def _choice_checkbox(name: str, value: str, label: str, *, checked: bool) -> str:
@@ -256,7 +262,7 @@ def render_subscriptions(
           </article>
     """
     return _layout("Ankündigungen · VpMobil", f"""
-    <header class=\"topbar\"><div class=\"brand\"><h1>Meine Ankündigungen</h1><p>{escape(user.username)} · Klasse {escape(user.class_name)}</p></div>
+    <header class=\"topbar\"><div class=\"brand\"><h1>Meine Ankündigungen</h1>{render_vp_user_identity(session_username)}</div>
       {render_vp_navigation("notifications", csrf_token, can_change_pin=can_change_pin, force_pin_change=force_pin_change, pin_modal_error=pin_modal_error, pin_modal_changed=pin_modal_changed, session_username=session_username)}</header>
     {message}<section class=\"panel\"><form class=\"stack\" method=\"post\" action=\"/abos\">
       <input type=\"hidden\" name=\"csrf_token\" value=\"{escape(csrf_token)}\">

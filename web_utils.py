@@ -28,15 +28,17 @@ def render_vp_navigation(
 ) -> str:
     links = (("classes", "/", "Klassen"), ("teachers", "/lehrer", "Lehrer"),
              ("rooms", "/raeume", "Freie Räume"), ("notifications", "/abos", "Ankündigungen"))
-    items = ""
+    primary_items = ""
     for key, href, label in links:
         active_class = ' class="active"' if key == active else ""
-        items += f'<a{active_class} href="{href}">{label}</a>'
+        primary_items += f'<a{active_class} href="{href}">{label}</a>'
     if can_change_pin:
-        items += '<button class="nav-button" type="button" data-pin-modal-open>PIN ändern</button>'
+        account_action = '<button class="nav-button" type="button" data-pin-modal-open>PIN ändern</button>'
+    else:
+        account_action = f'<a class="nav-link nav-link--calendar" href="{escape(CALENDAR_PUBLIC_URL)}"><svg class="nav-link-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="17" rx="2"></rect><path d="M16 2v4M8 2v4M3 10h18"></path></svg>Kalender</a>'
     logout = (
         f'<form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf_token" value="{escape(csrf_token)}">'
-        f'<button class="logout-button" type="submit">Abmelden</button></form>' if csrf_token else ""
+        f'<button class="logout-button" type="submit"><svg class="nav-link-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M10 17l5-5-5-5M15 12H3M21 19V5a2 2 0 0 0-2-2h-6"></path></svg>Abmelden</button></form>' if csrf_token else ""
     )
     modal = (
         render_pin_change_modal(
@@ -49,12 +51,31 @@ def render_vp_navigation(
     )
     escaped_session_username = escape(session_username) if session_username else ""
     user_attr = f' data-session-user="{escaped_session_username}"' if session_username else ""
-    user_badge = (
-        f'<span class="session-user-badge" title="Aktuell angemeldet">Angemeldet: {escaped_session_username}</span>'
-        if session_username else ""
+    mobile_menu = (
+        f'<details class="mobile-nav"><summary class="mobile-nav-trigger" aria-label="Menü öffnen">'
+        '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"></path></svg>'
+        '</summary><div class="mobile-nav-panel">'
+        f'<div class="mobile-nav-links">{primary_items}</div>'
+        f'<div class="mobile-nav-actions">{account_action}{logout}{render_theme_toggle_button()}</div>'
+        '</div></details>'
     )
-    calendar_link = "" if can_change_pin else f'<a href="{escape(CALENDAR_PUBLIC_URL)}">Kalender</a>'
-    return f'<div class="nav-wrap">{user_badge}<nav class="nav"{user_attr}>{items}{calendar_link}{logout}{render_theme_toggle_button()}</nav></div>{modal}'
+    desktop_menu = f'<nav class="nav desktop-nav"{user_attr}><div class="nav-group nav-group--sections">{primary_items}</div><div class="nav-group nav-group--actions">{account_action}{logout}{render_theme_toggle_button()}</div></nav>'
+    return f'<div class="nav-wrap">{desktop_menu}{mobile_menu}</div>{modal}'
+
+
+def render_vp_user_identity(session_username: str | None) -> str:
+    """Rendert die kompakte Identitaetsanzeige unter der VP-Ueberschrift."""
+
+    if not session_username:
+        return ""
+
+    return (
+        '<div class="session-user-identity" title="Aktuell angemeldet">'
+        '<svg class="session-user-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">'
+        '<circle cx="12" cy="8" r="3.5"></circle><path d="M5 20a7 7 0 0 1 14 0"></path></svg>'
+        f'<span>{escape(session_username)}</span>'
+        '</div>'
+    )
 
 
 def render_pin_change_modal(csrf_token: str | None, *, force: bool = False, error: str | None = None, changed: bool = False) -> str:
@@ -390,7 +411,7 @@ def start_server(handler_class: type[BaseHTTPRequestHandler], title: str, port: 
 
 def render_theme_toggle_button() -> str:
     return (
-        '<label class="theme-toggle" title="Darstellung wechseln">'
+        '<label class="theme-toggle">'
         '<input type="checkbox" data-theme-toggle aria-label="Dunkelmodus umschalten">'
         '<span class="theme-slider" aria-hidden="true">'
         '<svg class="theme-icon theme-icon--sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.42"></path></svg>'
@@ -406,7 +427,7 @@ def render_theme_script() -> str:
         (() => {
             const COOKIE_NAME = "vp_theme";
             const root = document.documentElement;
-            const toggle = document.querySelector("[data-theme-toggle]");
+            const toggles = document.querySelectorAll("[data-theme-toggle]");
             const prefersDark = window.matchMedia("(prefers-color-scheme: dark)");
 
             const readCookie = () => {
@@ -421,21 +442,21 @@ def render_theme_script() -> str:
 
             const applyTheme = (isDark) => {
                 root.setAttribute("data-theme", isDark ? "dark" : "light");
-                if (toggle) toggle.checked = isDark;
+                toggles.forEach((toggle) => { toggle.checked = isDark; });
             };
 
             const cookieValue = readCookie();
             const initialDark = cookieValue === "dark" || (cookieValue === "" && prefersDark.matches);
             applyTheme(initialDark);
-            if (!toggle) {
+            if (!toggles.length) {
                 return;
             }
 
-            toggle.addEventListener("change", () => {
+            toggles.forEach((toggle) => toggle.addEventListener("change", () => {
                 const isDark = !!toggle.checked;
                 writeCookie(isDark ? "dark" : "light");
                 applyTheme(isDark);
-            });
+            }));
         })();
     </script>
     """
@@ -571,6 +592,16 @@ main {
     color: var(--muted);
 }
 
+.selected-week-label {
+    margin-bottom: 12px;
+    color: var(--muted);
+    font-size: .88rem;
+}
+
+.selected-week-label strong {
+    color: var(--text);
+}
+
 .nav-wrap {
     display: flex;
     flex-direction: column;
@@ -579,13 +610,34 @@ main {
     min-width: 0;
 }
 
+.nav-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-muted);
+}
+
+.nav-group--actions {
+    gap: 6px;
+    background: var(--surface);
+}
+
+.nav-group > a,
+.nav-group > .logout-form > .logout-button,
+.nav-group > .nav-button {
+    border-color: transparent !important;
+}
+
 .session-user-badge {
     display: inline-flex;
     align-items: center;
     min-height: 24px;
     max-width: min(100%, 280px);
     padding: 2px 8px;
-    border: 1px solid var(--border);
+    border: 0;
     border-radius: 999px;
     background: var(--surface-muted);
     color: var(--muted);
@@ -597,11 +649,140 @@ main {
     white-space: nowrap;
 }
 
+.session-user-identity {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    margin-top: 2px;
+    color: var(--muted);
+    font-size: .82rem;
+    font-weight: 700;
+}
+
+.session-user-icon {
+    display: block;
+    width: 24px;
+    height: 24px;
+    fill: none;
+    stroke: var(--text);
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
 .nav {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 8px;
     justify-content: flex-end;
+}
+
+.mobile-nav {
+    display: none;
+    position: relative;
+}
+
+.mobile-nav-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 48px;
+    height: 48px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+    list-style: none;
+}
+
+.mobile-nav-trigger::-webkit-details-marker {
+    display: none;
+}
+
+.mobile-nav-trigger svg {
+    width: 21px;
+    height: 21px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+}
+
+.mobile-nav-panel {
+    position: absolute;
+    z-index: 20;
+    top: calc(100% + 8px);
+    right: 0;
+    width: min(280px, calc(100vw - 28px));
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    box-shadow: 0 12px 30px rgba(15, 23, 42, .18);
+}
+
+.mobile-nav-links,
+.mobile-nav-actions {
+    display: grid;
+    gap: 4px;
+}
+
+.mobile-nav-links {
+    grid-template-columns: 1fr;
+}
+
+.mobile-nav-actions {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 56px;
+    align-items: center;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+}
+
+.mobile-nav-links a,
+.mobile-nav-actions a,
+.mobile-nav-actions button,
+.mobile-nav-actions .logout-button {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
+    width: 100%;
+    min-height: 42px;
+    padding: 8px 10px;
+    border: 0 !important;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: .92rem;
+    font-weight: 700;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.mobile-nav-links a.active {
+    background: var(--primary);
+    color: white;
+}
+
+.mobile-nav-actions .theme-toggle {
+    width: 56px;
+    min-width: 56px;
+    justify-content: center;
+    padding: 0;
+}
+
+.nav-link-icon {
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
 }
 
 .nav a,
@@ -611,8 +792,8 @@ main {
     justify-content: center;
     min-height: 36px;
     padding: 0 12px;
-    border-radius: 6px;
-    background: var(--surface);
+    border-radius: 7px;
+    background: transparent;
     border: 1px solid var(--border);
     color: var(--text);
     text-decoration: none;
@@ -630,10 +811,10 @@ main {
     display: inline-flex;
     align-items: center;
     min-height: 36px;
-    padding: 4px;
-    border-radius: 6px;
-    background: var(--surface);
-    border: 1px solid var(--border);
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    border: 0;
     color: var(--text);
     cursor: pointer;
     width: fit-content;
@@ -652,12 +833,13 @@ main {
     width: 56px;
     height: 28px;
     background: color-mix(in srgb, var(--primary) 10%, var(--surface));
-    border: 1px solid var(--border);
+    border: 0;
     border-radius: 999px;
     position: relative;
     display: grid;
     grid-template-columns: 1fr 1fr;
     place-items: center;
+    overflow: hidden;
     transition: background 0.3s ease, border-color 0.3s ease;
 }
 
@@ -669,7 +851,7 @@ main {
     background: var(--primary);
     position: absolute;
     top: 4px;
-    left: 4px;
+    left: 5px;
     box-shadow: 0 3px 9px color-mix(in srgb, var(--primary) 35%, transparent);
     transition: transform 0.32s cubic-bezier(.22, 1, .36, 1);
 }
@@ -722,6 +904,32 @@ main {
     background: var(--primary);
     border-color: var(--primary);
     color: white;
+}
+.nav-link--calendar,
+.logout-button {
+    gap: 7px;
+}
+
+.week-nav-icon {
+    display: block;
+    width: 22px;
+    height: 22px;
+    flex: 0 0 22px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+.nav-link--calendar {
+    color: var(--text) !important;
+    font-weight: 800 !important;
+}
+.nav-link--calendar:hover,
+.logout-button:hover {
+    background: color-mix(in srgb, var(--primary) 9%, var(--surface)) !important;
+    border-color: color-mix(in srgb, var(--primary) 35%, var(--border)) !important;
+    color: var(--text) !important;
 }
 .nav-button:hover,
 .nav a:hover {
@@ -902,15 +1110,22 @@ button:not(.theme-toggle):hover,
 
     .topbar {
         align-items: stretch;
+        padding-inline: 8px;
+        flex-wrap: nowrap;
+        gap: 10px;
     }
 
     .brand {
-        width: 100%;
+        width: auto;
+        min-width: 0;
+        flex: 1 1 auto;
     }
 
     .nav-wrap {
-        width: 100%;
-        align-items: stretch;
+        width: auto;
+        align-items: center;
+        flex: 0 0 auto;
+        margin: 0;
     }
 
     .session-user-badge {
@@ -919,59 +1134,16 @@ button:not(.theme-toggle):hover,
         width: fit-content;
     }
 
-    .nav {
-        width: 100%;
+    .desktop-nav { display: none; }
+    .mobile-nav {
+        display: block;
+        width: 48px;
     }
 
-    .nav {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        align-items: stretch;
-    }
-
-    .nav > a,
-    .nav > .nav-button,
-    .nav > .logout-form,
-    .nav > .theme-toggle {
-        min-width: 0;
-        width: 100%;
-    }
-
-    .nav > a,
-    .nav > .nav-button,
-    .nav > .logout-form .logout-button {
-        height: 36px !important;
-        min-height: 36px !important;
-        max-height: 36px;
-        padding-left: 6px !important;
-        padding-right: 6px !important;
-        white-space: normal;
-        overflow-wrap: anywhere;
-        word-break: normal;
-        hyphens: auto;
-        line-height: 1.05;
-        font-size: clamp(.68rem, 2.6vw, .875rem) !important;
-        text-align: center;
-    }
-
-    .nav > .logout-form {
-        display: flex;
-    }
-
-    .nav > .logout-form .logout-button {
-        width: 100%;
-    }
-
-    .nav > .theme-toggle {
-        justify-content: center;
-        width: fit-content;
-        max-width: fit-content;
-        justify-self: start;
-    }
-
-    .theme-toggle {
-        flex: 0 0 auto;
-        width: fit-content;
+    .mobile-nav-panel {
+        right: 0;
+        left: auto;
+        transform: none;
     }
 
     .panel {
@@ -1012,7 +1184,7 @@ button:not(.theme-toggle):hover,
         max-width: fit-content;
     }
 
-    .nav > label.theme-toggle {
+    .nav-group--actions > label.theme-toggle {
         width: fit-content;
         max-width: fit-content;
         justify-content: center;

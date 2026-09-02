@@ -12,12 +12,12 @@ export default function InfoModal({ isOpen, onClose }: Props) {
       onClick={onClose}
     >
       <div 
-        className="bg-white rounded-lg max-w-md w-full p-5 shadow-lg border border-zinc-200 relative text-zinc-800 space-y-4"
+        className="bg-white dark:bg-[#1e1e1e] rounded-lg max-w-md w-full p-5 shadow-lg border border-[#cbd5e1] dark:border-[#444] relative text-[#0f172a] dark:text-[#eeeeee] space-y-4"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-          <h3 className="font-extrabold text-xl text-slate-900">
+          <div className="flex items-center justify-between border-b border-[#cbd5e1] dark:border-[#444] pb-3">
+          <h3 className="font-extrabold text-xl">
             Info
           </h3>
           <button
@@ -30,15 +30,15 @@ export default function InfoModal({ isOpen, onClose }: Props) {
         </div>
 
         {/* Simple Text Content */}
-        <div className="space-y-3.5 text-xs sm:text-sm text-slate-700 leading-relaxed font-normal">
+        <div className="space-y-3.5 text-xs sm:text-sm text-[#475569] dark:text-[#cbd5e1] leading-relaxed font-normal">
           <p>
-            Diese Webseite hat keinerlei offizielle Verbindung zum Gymnasium Olbernhau und wurde privat erstellt.
+            Diese Webseite hat keine offizielle Verbindung mit dem Gymnasium Olbernhau und wurde privat von Schülern erstellt.
           </p>
           <p>
-            Diese Webseite ist nur für Schülerinnen und Schüler der Klasse 11 vorgesehen und darf von niemand anderem benutzt werden.
+            Der Zugriff ist für Schüler:innen der 11. Klasse des Gymnasiums Olbernhau sowie in Ausnahmefällen für weitere autorisierte Schüler:innen vorgesehen.
           </p>
           <p>
-            Bei Fragen oder Problemen bitte an Lennard oder Gustav per LernSax oder WhatsApp wenden.
+            Bei Fragen oder Problemen erreichst du uns unter support@cal11.de.
           </p>
         </div>
 
@@ -46,7 +46,7 @@ export default function InfoModal({ isOpen, onClose }: Props) {
         <div className="pt-2">
           <button
             onClick={onClose}
-            className="w-full bg-teal-700 hover:bg-teal-800 text-white font-semibold py-2.5 px-4 rounded-md transition-colors text-sm cursor-pointer"
+            className="w-full bg-[#e91e63] hover:bg-[#d81b60] text-white font-semibold py-2.5 px-4 rounded-md transition-colors text-sm cursor-pointer"
           >
             Schließen
           </button>
