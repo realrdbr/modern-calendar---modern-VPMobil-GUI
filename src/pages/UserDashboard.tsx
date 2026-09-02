@@ -289,9 +289,9 @@ export default function UserDashboard() {
   // Render PIN authentication screen if PIN is needed
   if (needsPin) {
     return (
-      <div className="h-screen overflow-hidden bg-white text-[#0f172a] dark:bg-[#121212] dark:text-[#eeeeee] font-sans flex flex-col items-center w-full">
+      <div className="min-h-screen bg-white text-[#0f172a] dark:bg-[#121212] dark:text-[#eeeeee] font-sans flex flex-col items-center w-full">
         {/* CENTERED LOGIN BLOCK */}
-        <div className="flex-1 min-h-0 max-w-[480px] w-full px-6 py-5 flex flex-col justify-center items-center overflow-y-auto">
+        <div className="flex-1 max-w-[480px] w-full px-6 py-8 pb-28 flex flex-col justify-center items-center">
           {/* HEADER */}
           <header className="mb-6 text-center">
             <picture>
@@ -342,7 +342,7 @@ export default function UserDashboard() {
                 <button
                   type="button"
                   onClick={() => navigate('/')}
-                  className="inline-flex items-center gap-1 text-xs font-semibold text-zinc-500 hover:text-teal-700 transition-colors py-1 cursor-pointer"
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-[#64748b] dark:text-[#aaa] hover:text-[#e91e63] transition-colors py-1 cursor-pointer"
                 >
                   <ArrowLeft className="w-3.5 h-3.5" />
                   <span>Anderer Account / Startseite</span>

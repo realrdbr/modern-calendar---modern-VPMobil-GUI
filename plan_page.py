@@ -553,9 +553,7 @@ def render_plan_page(
                       <input type="hidden" name="block" value="{'0' if block_mode else '1'}">
                       <label class="block-switch"><span>Block-Unterricht</span><input type="checkbox" {"checked" if block_mode else ""} onchange="this.form.submit()" aria-label="Block-Unterricht umschalten"><span class="block-switch-track" aria-hidden="true"><span></span></span></label>
                     </form>
-                    <label class="class-select-label">Klasse anzeigen
-                      <select class="class-select" data-plan-class-select>{''.join(f'<option value="/?woche={format_week_value(selected_date)}&amp;klasse={escape(class_name)}{"&amp;block=1" if block_mode else ""}"{" selected" if class_name == selected_class else ""}>{escape(class_name)}</option>' for class_name in available_classes)}</select>
-                    </label>
+                                        <select class="class-select" aria-label="Klasse auswählen" data-plan-class-select>{''.join(f'<option value="/?woche={format_week_value(selected_date)}&amp;klasse={escape(class_name)}{"&amp;block=1" if block_mode else ""}"{" selected" if class_name == selected_class else ""}>{escape(class_name)}</option>' for class_name in available_classes)}</select>
                 </section>
 
                 {render_subject_filter(week_plans, selected_date, selected_class, selected_subjects, get_subject_catalog_plans_for_page() or [plan for plan in week_plans.values() if plan is not None], filters_active, block_mode)}
@@ -581,12 +579,11 @@ def render_plan_page(
             display: flex;
             flex-wrap: wrap;
             gap: 12px;
-            .class-message .block-toggle-form {{ justify-self: start; margin-left: 0; }}
             justify-content: space-between;
         }}
 
-        .block-toggle-form {{ margin: 0; }}
-        .block-switch {{ display:inline-flex; align-items:center; gap:8px; min-height:36px; color:var(--text); font-size:.82rem; font-weight:700; cursor:pointer; user-select:none; }}
+        .block-toggle-form {{ display: contents; }}
+        .block-switch {{ display:inline-flex; align-items:center; gap:8px; min-height:36px; margin-left:auto; color:var(--text); font-size:.82rem; font-weight:700; cursor:pointer; user-select:none; }}
         .block-switch input {{ position:absolute; opacity:0; width:1px; height:1px; }}
         .block-switch-track {{ width:40px; height:22px; padding:2px; border:1px solid var(--border); border-radius:999px; background:var(--surface-muted); transition:background .15s,border-color .15s; }}
         .block-switch-track span {{ display:block; width:16px; height:16px; border-radius:50%; background:var(--muted); transition:transform .15s,background .15s; }}
@@ -998,7 +995,7 @@ def render_plan_page(
                 display: grid;
             }}
 
-            .block-toggle-form {{ justify-self: start; margin-left: 0; }}
+            .class-message .block-switch {{ justify-self: start; margin-left: 0; }}
 
             .week-navigation {{
                 grid-template-columns: 1fr 1.25fr 1fr;

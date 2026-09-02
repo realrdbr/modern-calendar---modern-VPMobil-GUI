@@ -7,7 +7,7 @@ export default function AuthFooter() {
 
   return (
     <>
-      <footer className="w-full shrink-0 border-t border-[#cbd5e1] dark:border-[#333] py-4 bg-white dark:bg-[#121212]">
+      <footer className="fixed inset-x-0 bottom-0 z-40 border-t border-[#cbd5e1] dark:border-[#333] py-4 bg-white dark:bg-[#121212]">
         <div className="w-full px-6 sm:px-12 flex items-center justify-between text-[13.5px] font-semibold text-[#0f172a] dark:text-[#eee]">
           <div className="flex items-center gap-3">
             <button

@@ -108,9 +108,9 @@ export default function Home() {
   };
 
   return (
-    <div className="h-screen overflow-hidden bg-white text-[#0f172a] dark:bg-[#121212] dark:text-[#eeeeee] font-sans flex flex-col items-center w-full">
+    <div className="min-h-screen bg-white text-[#0f172a] dark:bg-[#121212] dark:text-[#eeeeee] font-sans flex flex-col items-center w-full">
       {/* CENTERED LOGIN BLOCK */}
-      <div className="flex-1 min-h-0 max-w-[480px] w-full px-6 py-5 flex flex-col justify-center items-center overflow-y-auto">
+      <div className="flex-1 max-w-[480px] w-full px-6 py-8 pb-28 flex flex-col justify-center items-center">
         {/* HEADER */}
         <header className="mb-6 text-center">
           <picture>

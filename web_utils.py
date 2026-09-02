@@ -497,7 +497,7 @@ html[data-theme="system"] {
 }
 
 @media (prefers-color-scheme: dark) {
-    html[data-theme="system"] {
+    html:not([data-theme="light"]) {
         --background: #121212;
         --surface: #1e1e1e;
         --surface-muted: #181818;
