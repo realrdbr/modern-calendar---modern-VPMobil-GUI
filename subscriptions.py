@@ -532,6 +532,12 @@ class SubscriptionNotifier:
                     for time_key, trigger_time in lesson_times[1:]:
                         if now.time() < trigger_time:
                             continue
+                        trigger_datetime = datetime.combine(plan_date, trigger_time)
+                        if now - trigger_datetime > timedelta(minutes=20):
+                            # Zu spät ausgelöst (z.B. weil kein aktueller Plan
+                            # verfügbar war) - lieber auslassen als eine sehr
+                            # verspätete Benachrichtigung zu versenden.
+                            continue
                         notification = self._next_block_notification(recipient, plan, trigger_time)
                         if notification is None:
                             continue

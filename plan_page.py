@@ -288,6 +288,32 @@ def render_subject_filter(
     """
 
 
+def render_day_info_marker(day_plan) -> str:
+    """Rendert das kleine "i"-Symbol mit PopUp für Tages-Zusatzinformationen.
+
+    Nutzt dieselbe PopUp-Optik/-Logik wie die Stunden-Infofenster
+    (details.week-lesson + .popup-content), inklusive Scroll-Verhalten.
+    """
+
+    zusatzinfo = getattr(day_plan, "zusatzinfo", None) if day_plan is not None else None
+    if not zusatzinfo or not zusatzinfo.strip():
+        return ""
+
+    info_html = "".join(
+        f"<p>{escape(line)}</p>" if line.strip() else "<br>"
+        for line in zusatzinfo.splitlines()
+    )
+
+    return f"""
+        <details class="week-lesson day-info-marker">
+            <summary aria-label="Zusätzliche Informationen zum Tag" title="Zusätzliche Informationen zum Tag">i</summary>
+            <div class="popup-content day-info-popup">
+                {info_html}
+            </div>
+        </details>
+    """
+
+
 def render_lesson_details(lesson) -> str:
     """Erzeugt den Detailbereich einer Stunde."""
 
@@ -382,6 +408,7 @@ def render_week_table(
 
         header_cells.append(f"""
             <th{head_class} data-plan-date="{plan_date.isoformat()}">
+                {render_day_info_marker(day_plan)}
                 <div class="day-head-marker">
                     <span>{escape(day_name)}</span>
                     <small>{plan_date.strftime("%d.%m.")}</small>
@@ -747,7 +774,7 @@ def render_plan_page(
             overflow: hidden;
         }}
 
-        .week-table thead th[data-plan-date] > * {{
+        .week-table thead th[data-plan-date] > *:not(.day-info-marker) {{
             position: relative;
             z-index: 1;
         }}
@@ -886,6 +913,7 @@ def render_plan_page(
             right: auto;
             bottom: auto;
             left: var(--popup-left);
+            transform: none;
             max-height: calc(100vh - 24px);
             overflow-y: auto;
         }}
@@ -911,6 +939,63 @@ def render_plan_page(
         .popup-row strong {{
             min-width: 0;
             overflow-wrap: anywhere;
+        }}
+
+        .day-info-marker {{
+            position: absolute;
+            top: 4px;
+            right: 4px;
+            z-index: 3;
+            margin: 0;
+        }}
+
+        .day-info-marker summary {{
+            display: grid;
+            place-items: center;
+            width: 16px;
+            height: 16px;
+            min-height: 0;
+            min-width: 0;
+            flex: none;
+            box-sizing: border-box;
+            padding: 0;
+            border: 1px solid var(--border);
+            border-radius: 50%;
+            background: var(--surface-muted);
+            color: var(--muted);
+            font-size: 0.68rem;
+            font-weight: 900;
+            font-style: italic;
+            line-height: 1;
+            cursor: pointer;
+            list-style: none;
+        }}
+
+        .day-info-marker summary::-webkit-details-marker {{
+            display: none;
+        }}
+
+        .day-info-popup {{
+            left: 50%;
+            transform: translateX(-50%);
+            max-height: min(320px, calc(100vh - 24px));
+            overflow-y: auto;
+            text-align: left;
+            white-space: normal;
+        }}
+
+        .week-lesson.day-info-marker.popup-open-left .popup-content {{
+            right: auto;
+        }}
+
+        .day-info-popup p {{
+            margin: 0 0 8px;
+            font-size: 0.82rem;
+            line-height: 1.4;
+        }}
+
+        .day-info-popup p:last-child {{
+            margin-bottom: 0;
         }}
 
         @media (max-width: 900px) {{
@@ -951,6 +1036,14 @@ def render_plan_page(
                 border-radius: 8px;
             }}
 
+            .day-info-marker summary {{
+                width: 16px;
+                height: 16px;
+                min-height: 0;
+                padding: 0;
+                border-radius: 50%;
+            }}
+
             .week-lesson strong {{
                 font-size: 0.72rem;
             }}
@@ -965,7 +1058,7 @@ def render_plan_page(
             }}
 
             .subject-grid {{
-                grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+                grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
             }}
         }}
 
@@ -993,9 +1086,16 @@ def render_plan_page(
 
             .class-message {{
                 display: grid;
+                grid-template-columns: 1fr auto;
+                align-items: center;
             }}
 
-            .class-message .block-switch {{ justify-self: start; margin-left: 0; }}
+            .class-message .block-switch {{ justify-self: end; margin-left: 0; }}
+
+            .class-message .class-select {{
+                grid-column: 1 / -1;
+                width: 100%;
+            }}
 
             .week-navigation {{
                 grid-template-columns: 1fr 1.25fr 1fr;
@@ -1014,10 +1114,19 @@ def render_plan_page(
 
             .filter-actions {{
                 display: grid;
+                grid-template-columns: 1fr;
+            }}
+
+            .filter-actions button,
+            .filter-actions .button,
+            .filter-actions a {{
+                width: 100%;
+                justify-content: center;
+                box-sizing: border-box;
             }}
 
             .subject-grid {{
-                grid-template-columns: 1fr;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
             }}
 
             .week-table-wrap {{
@@ -1052,6 +1161,14 @@ def render_plan_page(
             .week-lesson summary {{
                 min-height: 42px;
                 padding: 4px;
+            }}
+
+            .day-info-marker summary {{
+                width: 16px;
+                height: 16px;
+                min-height: 0;
+                padding: 0;
+                border-radius: 50%;
             }}
 
             .week-lesson strong {{
@@ -1113,12 +1230,27 @@ def render_plan_page(
             }}, 5000);
 
             document.querySelectorAll("details.week-lesson").forEach(details => {{
+                const originalParent = details.parentNode;
+                const originalNextSibling = details.nextSibling;
+
                 details.addEventListener("toggle", () => {{
                     details.classList.remove("popup-open-up", "popup-open-left", "popup-fixed");
                     details.style.removeProperty("--popup-left");
                     details.style.removeProperty("--popup-top");
 
                     if (!details.open) {{
+                        if (details.classList.contains("day-info-marker") && details.parentNode === document.body) {{
+                            details.style.removeProperty("position");
+                            details.style.removeProperty("top");
+                            details.style.removeProperty("left");
+                            details.style.removeProperty("right");
+                            details.style.removeProperty("margin");
+                            if (originalNextSibling) {{
+                                originalParent.insertBefore(details, originalNextSibling);
+                            }} else {{
+                                originalParent.appendChild(details);
+                            }}
+                        }}
                         return;
                     }}
 
@@ -1128,6 +1260,22 @@ def render_plan_page(
                             otherDetails.classList.remove("popup-open-up", "popup-open-left", "popup-fixed");
                         }}
                     }});
+
+                    if (details.classList.contains("day-info-marker")) {{
+                        // Tages-Info-Popups liegen in einer sticky
+                        // Tageskopfzeile, die einen eigenen Stacking-Context
+                        // bildet. Damit das Popup wirklich über allem liegt,
+                        // wird es kurzzeitig direkt an <body> gehängt. Die
+                        // Position wird vorher gemerkt, damit das i beim
+                        // Umhängen nicht an eine andere Stelle springt.
+                        const markerRect = details.getBoundingClientRect();
+                        document.body.appendChild(details);
+                        details.style.position = "fixed";
+                        details.style.top = `${{markerRect.top}}px`;
+                        details.style.left = `${{markerRect.left}}px`;
+                        details.style.right = "auto";
+                        details.style.margin = "0";
+                    }}
 
                     requestAnimationFrame(() => {{
                         const popup = details.querySelector(".popup-content");
@@ -1154,8 +1302,13 @@ def render_plan_page(
 
                         left = Math.max(12, Math.min(left, window.innerWidth - popupWidth - 12));
                         top = Math.max(12, Math.min(top, window.innerHeight - popupHeight - 12));
-                        // Das Detailfenster bleibt absichtlich absolut am
-                        // Stundenfeld verankert und scrollt mit dem Plan.
+
+                        // Fixed positioning verhindert, dass Popups von
+                        // Vorfahren mit overflow:hidden (z.B. sticky
+                        // Tageskopfzeilen) abgeschnitten werden.
+                        details.classList.add("popup-fixed");
+                        details.style.setProperty("--popup-left", `${{left}}px`);
+                        details.style.setProperty("--popup-top", `${{top}}px`);
                     }});
                 }});
             }});

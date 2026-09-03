@@ -113,6 +113,34 @@ class NotificationWorker(Thread):
         self.interval = max(15, int(os.getenv("NOTIFICATION_INTERVAL_SECONDS", "60")))
         self.notifier = SubscriptionNotifier(store, resolve_ntfy_internal_url())
 
+    @staticmethod
+    def _load_plan_for_worker(plan_date: date):
+        """Liefert einen Tagesplan für den Benachrichtigungs-Worker, ohne bei
+        jedem Tick blockierend live bei VpMobil anzufragen.
+
+        Nutzt zuerst den bereits vom Web-Frontend gepflegten, gedrosselten
+        Cache (`get_cached_plan_for_page`), der nie blockiert und den letzten
+        bekannten guten Plan sofort liefert. Nur wenn dieser Cache komplett
+        leer ist (z.B. direkt nach einem Kaltstart), wird einmalig ein
+        Live-Abruf versucht; schlägt auch der fehl, wird ein leerer Stub
+        zurückgegeben, damit der Worker nicht abstürzt.
+        """
+
+        try:
+            cached_plan = get_cached_plan_for_page(plan_date)
+        except Exception as error:
+            log(f"Cache-Abruf für Benachrichtigungen fehlgeschlagen: {error}")
+            cached_plan = None
+
+        if cached_plan is not None:
+            return cached_plan
+
+        try:
+            return fetch_plan(plan_date)
+        except Exception as error:
+            log(f"Planabruf für Benachrichtigungen fehlgeschlagen; Kalender läuft weiter: {error}")
+            return SimpleNamespace(datum=plan_date, zeitstempel=None, zeitplan={}, klassen={})
+
     def run(self) -> None:
         while not self.stop_event.is_set():
             try:
@@ -120,15 +148,8 @@ class NotificationWorker(Thread):
                 deleted = self.notifier.delete_expired_client_notifications(local_now)
                 if deleted:
                     log(f"{deleted} alte ntfy-Benachrichtigung(en) aus Clients/Web gelöscht.")
-                try:
-                    plan = fetch_plan(local_now.date())
-                except Exception as error:
-                    log(f"Planabruf für Benachrichtigungen fehlgeschlagen; Kalender läuft weiter: {error}")
-                    plan = SimpleNamespace(datum=local_now.date(), zeitstempel=None, zeitplan={}, klassen={})
-                try:
-                    next_plan = fetch_plan(local_now.date() + timedelta(days=1))
-                except Exception:
-                    next_plan = SimpleNamespace(datum=local_now.date() + timedelta(days=1), zeitstempel=None, zeitplan={}, klassen={})
+                plan = self._load_plan_for_worker(local_now.date())
+                next_plan = self._load_plan_for_worker(local_now.date() + timedelta(days=1))
                 sent = self.notifier.poll_once(plan, local_now, day_before_plan=next_plan)
                 if sent:
                     log(f"{sent} persönliche ntfy-Benachrichtigung(en) gesendet.")

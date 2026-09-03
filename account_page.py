@@ -15,16 +15,16 @@ def _layout(title: str, body: str) -> str:
     return f"""<!doctype html><html lang=\"de\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><link rel=\"icon\" href=\"/icons/favicon.png\" type=\"image/png\"><title>{escape(title)}</title><style>{COMMON_CSS}
 :root {{ color-scheme: light dark; }}
 body {{ background: var(--background); color: var(--text); font-family:system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
-main {{ width:min(1320px, calc(100% - 24px)); min-height:100vh; }}
-.topbar {{ max-width: 1040px; margin: 0 auto; padding: 18px 14px 0; display:flex; justify-content:space-between; align-items:center; gap:12px; }}
+main {{ width:min(1320px, calc(100% - 24px)); min-height:100vh; margin:0 auto; }}
+.topbar {{ max-width: none; margin: 0 auto; padding: 18px 14px 0; display:flex; justify-content:space-between; align-items:center; gap:12px; background: var(--background); }}
 .brand {{ display:flex; flex-direction:column; gap:3px; }}
 .brand h1, .brand p {{ margin:0; }}
 .brand h1 {{ font-size: clamp(1.3rem, 2vw, 2rem); }}
 .brand p {{ color: var(--muted); font-size: 0.85rem; }}
 .panel {{ max-width: 1040px; margin: 18px auto 0; padding: 0 14px 32px; }}
 .auth-card {{ max-width: 620px; margin: 8vh auto 0; }}
-.stack {{ display:grid; gap:16px; }}
-.settings-shell {{ display:grid; gap:16px; }}
+.stack {{ display:grid; gap:16px; grid-template-columns: 1fr; }}
+.settings-shell {{ display:grid; gap:16px; grid-template-columns: 1fr; }}
 .settings-grid {{ display:grid; gap:16px; grid-template-columns: repeat(2, minmax(0, 1fr)); }}
 .settings-card {{ display:grid; align-content:start; gap:14px; min-width:0; padding:18px; border:1px solid var(--border); border-radius:18px; background: var(--surface); box-shadow: 0 6px 24px rgba(15, 23, 42, 0.06); }}
 .settings-card h2, .settings-card h3, .settings-card h4 {{ margin:0; }}
@@ -83,6 +83,7 @@ code {{ word-break:break-all; }}
   .form-grid {{ grid-template-columns:1fr; }}
   .choice-list, .subject-list, .option-list {{ grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }}
   .settings-card-header {{ align-items:flex-start; flex-direction:column; }}
+  .time-tabs {{ grid-template-columns:repeat(2, minmax(0, 1fr)); }}
 }}
 @media (max-width: 430px) {{
   .topbar, .panel {{ padding-left:8px; padding-right:8px; }}
@@ -102,8 +103,8 @@ code {{ word-break:break-all; }}
   .save-row button {{ width:100%; }}
 }}
 /* Compact dashboard treatment */
-.topbar {{ max-width:none; margin:0 0 16px; padding:0; }}
-.panel {{ max-width:none; margin:0; padding:0 0 32px; }}
+.topbar {{ max-width:none; margin:0 auto 16px; padding:12px 0; background: var(--background); }}
+.panel {{ max-width:1040px; margin:0 auto; padding:0 0 32px; }}
 .auth-card {{ max-width:440px; margin-top:8vh; display:grid; gap:20px; padding:24px; border:1px solid var(--border); border-radius:8px; background:var(--surface); }}
 .login-heading {{ display:grid; gap:6px; padding-bottom:16px; border-bottom:1px solid var(--border); }}
 .login-heading h1, .login-heading p {{ margin:0; }}

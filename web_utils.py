@@ -56,11 +56,12 @@ def render_vp_navigation(
         '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"></path></svg>'
         '</summary><div class="mobile-nav-panel">'
         f'<div class="mobile-nav-links">{primary_items}</div>'
-        f'<div class="mobile-nav-actions">{account_action}{logout}{render_theme_toggle_button()}</div>'
+        f'<div class="mobile-nav-actions">{account_action}{logout}</div>'
         '</div></details>'
     )
     desktop_menu = f'<nav class="nav desktop-nav"{user_attr}><div class="nav-group nav-group--sections">{primary_items}</div><div class="nav-group nav-group--actions">{account_action}{logout}{render_theme_toggle_button()}</div></nav>'
-    return f'<div class="nav-wrap">{desktop_menu}{mobile_menu}</div>{modal}'
+    mobile_theme_toggle = f'<div class="mobile-header-theme-toggle">{render_theme_toggle_button()}</div>'
+    return f'{mobile_theme_toggle}<div class="nav-wrap">{desktop_menu}{mobile_menu}</div>{modal}'
 
 
 def render_vp_user_identity(session_username: str | None) -> str:
@@ -457,6 +458,14 @@ def render_theme_script() -> str:
                 writeCookie(isDark ? "dark" : "light");
                 applyTheme(isDark);
             }));
+
+            document.querySelectorAll("details.mobile-nav").forEach((menu) => {
+                document.addEventListener("click", (event) => {
+                    if (menu.open && !menu.contains(event.target)) {
+                        menu.open = false;
+                    }
+                });
+            });
         })();
     </script>
     """
@@ -578,6 +587,11 @@ main {
     align-items: center;
     justify-content: space-between;
     margin-bottom: 16px;
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    background: var(--background);
+    padding: 12px 0;
 }
 
 .brand h1 {
@@ -682,6 +696,10 @@ main {
     position: relative;
 }
 
+.mobile-header-theme-toggle {
+    display: none;
+}
+
 .mobile-nav-trigger {
     display: inline-flex;
     align-items: center;
@@ -733,7 +751,7 @@ main {
 }
 
 .mobile-nav-actions {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 56px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     align-items: center;
     margin-top: 8px;
     padding-top: 8px;
@@ -765,13 +783,6 @@ main {
 .mobile-nav-links a.active {
     background: var(--primary);
     color: white;
-}
-
-.mobile-nav-actions .theme-toggle {
-    width: 56px;
-    min-width: 56px;
-    justify-content: center;
-    padding: 0;
 }
 
 .nav-link-icon {
@@ -1119,13 +1130,47 @@ button:not(.theme-toggle):hover,
         width: auto;
         min-width: 0;
         flex: 1 1 auto;
+        order: 2;
     }
 
     .nav-wrap {
         width: auto;
         align-items: center;
         flex: 0 0 auto;
+        flex-direction: row;
         margin: 0;
+        order: 1;
+        gap: 10px;
+    }
+
+    .mobile-header-theme-toggle {
+        display: block;
+        order: 3;
+    }
+
+    .mobile-header-theme-toggle .theme-toggle {
+        min-height: 44px;
+    }
+
+    .mobile-header-theme-toggle .theme-slider {
+        width: 76px;
+        height: 38px;
+    }
+
+    .mobile-header-theme-toggle .theme-slider::after {
+        width: 26px;
+        height: 26px;
+        top: 6px;
+        left: 6px;
+    }
+
+    .mobile-header-theme-toggle .theme-toggle input:checked + .theme-slider::after {
+        transform: translateX(36px);
+    }
+
+    .mobile-header-theme-toggle .theme-icon {
+        width: 20px;
+        height: 20px;
     }
 
     .session-user-badge {
@@ -1141,8 +1186,8 @@ button:not(.theme-toggle):hover,
     }
 
     .mobile-nav-panel {
-        right: 0;
-        left: auto;
+        left: 0;
+        right: auto;
         transform: none;
     }
 
