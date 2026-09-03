@@ -278,7 +278,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/room-version":
             from web_utils import parse_date
             selected_date = parse_date(query_value(query, "datum"))
-            plan = get_cached_plan_for_page(selected_date)
+            plan = get_week_plans_for_page(selected_date).get(selected_date)
             self._send_json({"version": get_room_plan_version(plan, selected_date)})
             return
         if parsed.path == "/raeume":
@@ -708,7 +708,12 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         session = self._session()
         flags = self._nav_flags(session) if session else {}
         try:
-            plan = get_cached_plan_for_page(selected_date)
+            # Wie beim Kalender/Lehrerplan wird die ganze Schulwoche cache-first
+            # geladen. So zeigt "Freie Räume" sofort Daten an, sobald IRGENDEIN
+            # Tag der Woche gecached ist – unabhängig davon, ob ausgerechnet der
+            # angefragte Tag selbst schon im Cache liegt.
+            week_plans = get_week_plans_for_page(selected_date)
+            plan = week_plans.get(selected_date)
             html = render_rooms_page(
                 selected_date,
                 selected_hour,

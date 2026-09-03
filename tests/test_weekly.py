@@ -142,3 +142,25 @@ class WeeklyPlanTests(unittest.TestCase):
     def test_selected_class_cookie_is_scoped_to_the_logged_in_user(self):
         self.assertEqual(get_selected_class_cookie_name("Gustav.D"), "selected_class_gustavd")
         self.assertNotEqual(get_selected_class_cookie_name("gustavd"), get_selected_class_cookie_name("anderer"))
+
+    def test_rooms_page_uses_week_batch_loader_for_cache_first_rendering(self):
+        """Freie Räume soll wie Kalender/Lehrerplan sofort aus dem Wochen-Cache
+        rendern, auch wenn ausgerechnet der angefragte Tag noch nicht gecached
+        ist, solange irgendein anderer Tag der Woche bereits vorliegt."""
+
+        monday = date(2026, 8, 24)
+        tuesday = date(2026, 8, 25)
+        cached_plan = SimpleNamespace(klassen={}, zeitstempel="v1")
+        vp_data._page_plan_cache[monday] = cached_plan
+
+        import rooms_page
+
+        with patch("vp_data.get_cached_official_weekly_plans_for_page", return_value=None), patch(
+            "vp_data.refresh_official_weekly_plans_in_background"
+        ), patch("vp_data.refresh_plan_in_background"), patch(
+            "vp_data.fetch_plan", side_effect=AssertionError("kein synchroner Netzwerkabruf")
+        ):
+            week_plans = rooms_page.get_week_plans_for_page(tuesday)
+
+        self.assertIs(week_plans[monday], cached_plan)
+        self.assertIsNone(week_plans[tuesday])

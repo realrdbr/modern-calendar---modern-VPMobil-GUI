@@ -12,8 +12,7 @@ from vp_data import (
     Unauthorized,
     _json_env_list,
     find_free_rooms_in_plan,
-    get_cached_plan_for_page,
-    get_school_week_dates,
+    get_week_plans_for_page,
     warm_page_caches_from_disk,
 )
 from web_utils import (
@@ -100,9 +99,10 @@ def get_free_rooms_for_page(plan, selected_date: date, selected_hour: int) -> li
 def warm_free_room_results_from_cache(anchor_date: date | None = None) -> int:
     """Berechnet Raumlisten für vorhandene Plan-Caches vor dem ersten Klick.
 
-    Es werden ausschließlich die cache-only Plan-Daten verwendet. Fehlende
-    Daten starten höchstens die vorhandenen Hintergrund-Refreshes und halten
-    den Webserverstart nie auf.
+    Es werden ausschließlich die cache-only Plan-Daten verwendet (inklusive des
+    normalen Stundenplans als Fallback für Tage ohne Vertretungsplan-Cache).
+    Fehlende Daten starten höchstens die vorhandenen Hintergrund-Refreshes und
+    halten den Webserverstart nie auf.
     """
 
     anchor_date = anchor_date or date.today()
@@ -110,8 +110,8 @@ def warm_free_room_results_from_cache(anchor_date: date | None = None) -> int:
         anchor_date += timedelta(days=7 - anchor_date.weekday())
     warmed = 0
     for week_anchor in (anchor_date, anchor_date + timedelta(days=7)):
-        for plan_date in get_school_week_dates(week_anchor):
-            plan = get_cached_plan_for_page(plan_date)
+        week_plans = get_week_plans_for_page(week_anchor)
+        for plan_date, plan in week_plans.items():
             if plan is None:
                 continue
             for hour in range(1, 9):
@@ -382,7 +382,7 @@ class RoomsPageHandler(BaseHTTPRequestHandler):
         selected_date = parse_date(query_value(query, "datum"))
 
         if parsed_url.path == "/api/room-version":
-            plan = get_cached_plan_for_page(selected_date)
+            plan = get_week_plans_for_page(selected_date).get(selected_date)
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -401,7 +401,10 @@ class RoomsPageHandler(BaseHTTPRequestHandler):
         plan = None
 
         try:
-            plan = get_cached_plan_for_page(selected_date)
+            # Cache-first über die ganze Schulwoche (wie Kalender/Lehrerplan):
+            # zeigt sofort Ergebnisse, sobald irgendein Tag der Woche gecached
+            # ist, statt auf den exakt angefragten Tag warten zu müssen.
+            plan = get_week_plans_for_page(selected_date).get(selected_date)
             if plan is not None:
                 free_rooms = get_free_rooms_for_page(plan, selected_date, selected_hour)
             plan_version = get_room_plan_version(plan, selected_date)
