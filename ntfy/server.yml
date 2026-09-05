@@ -1,6 +1,21 @@
 # Private ntfy-Instanz. Nutzer und ihre individuellen Leserechte werden durch
 # `admin.py create-user` mit der ntfy-CLI angelegt.
-auth-default-access: "deny-all"
+#
+# WICHTIG: auth-default-access und behind-proxy werden NICHT hier hart
+# gesetzt, sondern bewusst aus der .env über die Compose-Environment-Variablen
+# NTFY_AUTH_DEFAULT_ACCESS / NTFY_BEHIND_PROXY injiziert (siehe docker-compose.yml
+# und ntfy-compose.yml). ntfy-Umgebungsvariablen überschreiben die Werte aus
+# dieser Datei, damit sich lokale und produktive Umgebung nur über die .env
+# unterscheiden müssen, ohne server.yml anzupassen.
+#
+# behind-proxy: Läuft ntfy hinter einem Reverse Proxy (z.B. Caddy auf
+# notify.cal11.de), MUSS NTFY_BEHIND_PROXY=true in der .env gesetzt sein.
+# Sonst wertet ntfy für das Rate-Limiting die Proxy-IP statt der echten
+# Client-IP aus X-Forwarded-For aus - dann teilen sich alle Nutzer (und der
+# App-Backend-Worker) ein einziges Rate-Limit-Kontingent, was zu unnötigen
+# HTTP 429 führt, obwohl die Anfragen tatsächlich von vielen verschiedenen
+# Clients stammen.
+#
 # Selbst gehostetes ntfy benötigt diesen Upstream für sofortige iOS-Pushs.
 upstream-base-url: "https://ntfy.sh"
 # Der ntfy-Manager entfernt den Verlauf rollierend nach ungefähr 23 Stunden.
@@ -8,4 +23,17 @@ upstream-base-url: "https://ntfy.sh"
 # aber automatisch aus der App, ohne direkte SQLite-Manipulation bei laufendem ntfy.
 cache-duration: "23h"
 manager-interval: "1m"
-# Nur authentifizierte Nutzer dürfen veröffentlichen/abonnieren.
+# Nur authentifizierte Nutzer dürfen veröffentlichen/abonnieren (siehe oben,
+# effektiver Wert kommt aus NTFY_AUTH_DEFAULT_ACCESS).
+
+# Rate-Limits: Sowohl der App-Backend-Worker (Publish/Delete/Polling) als auch
+# einzelne Nutzer-Browser/-Geräte (eigene read-write-Rechte auf ihr Topic)
+# erzeugen Traffic. Läuft ntfy korrekt mit behind-proxy hinter Caddy, wird
+# jeder echte Client separat gezählt und die ntfy-Standardwerte (burst: 60,
+# replenish: 5s) reichen in der Regel aus. Die Werte unten dienen nur als
+# zusätzliches Sicherheitsnetz gegen kurzzeitige Bursts (z.B. viele Nutzer
+# gleichzeitig zur selben Stundenwechsel-Zeit, inkl. Aufräumen alter
+# Nachrichten) und sind über .env/Compose überschreibbar
+# (NTFY_VISITOR_REQUEST_LIMIT_BURST / NTFY_VISITOR_REQUEST_LIMIT_REPLENISH).
+visitor-request-limit-burst: 120
+visitor-request-limit-replenish: "5s"

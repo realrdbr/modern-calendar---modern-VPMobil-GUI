@@ -12,6 +12,8 @@ services:
       NTFY_ENABLE_LOGIN: "true"
       NTFY_ENABLE_SIGNUP: "false"
       NTFY_BEHIND_PROXY: ${NTFY_BEHIND_PROXY:-false}
+      NTFY_VISITOR_REQUEST_LIMIT_BURST: ${NTFY_VISITOR_REQUEST_LIMIT_BURST:-120}
+      NTFY_VISITOR_REQUEST_LIMIT_REPLENISH: ${NTFY_VISITOR_REQUEST_LIMIT_REPLENISH:-5s}
     volumes:
       - ./data/ntfy:/var/lib/ntfy
       - ./ntfy/server.yml:/etc/ntfy/server.yml:ro
