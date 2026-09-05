@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -53,6 +54,33 @@ def resolve_cookie_domain() -> str | None:
 
 
 COOKIE_DOMAIN = resolve_cookie_domain()
+
+
+def _parse_trusted_proxies() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    raw = os.getenv("TRUSTED_PROXIES", "127.0.0.1,::1")
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            continue
+    return tuple(networks)
+
+
+# Direkte Verbindungen aus diesen Netzen (z.B. nginx auf demselben Host oder
+# im Docker-Bridge-Netz) dürfen den X-Forwarded-For-Header setzen.
+TRUSTED_PROXIES = _parse_trusted_proxies()
+
+
+def _is_trusted_proxy(ip_str: str) -> bool:
+    try:
+        address = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return any(address in network for network in TRUSTED_PROXIES)
 
 
 def session_cookie_headers(token: str, max_age: int) -> list[str]:
@@ -175,8 +203,21 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         return None
 
     def _client_ip(self) -> str:
-        # X-Forwarded-For wird bewusst nicht blind vertraut; davor gehört ein Reverse Proxy.
-        return self.client_address[0]
+        # X-Forwarded-For nur vertrauen, wenn die Verbindung direkt vom
+        # konfigurierten Reverse Proxy (z.B. nginx auf localhost) kommt.
+        peer_ip = self.client_address[0]
+        if not _is_trusted_proxy(peer_ip):
+            return peer_ip
+        forwarded_for = self.headers.get("X-Forwarded-For", "")
+        candidates = [part.strip() for part in forwarded_for.split(",") if part.strip()]
+        for candidate in reversed(candidates):
+            if not _is_trusted_proxy(candidate):
+                try:
+                    ipaddress.ip_address(candidate)
+                except ValueError:
+                    continue
+                return candidate
+        return peer_ip
 
     def _post_data(self) -> dict[str, list[str]]:
         try:

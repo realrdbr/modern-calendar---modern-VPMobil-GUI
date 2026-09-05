@@ -27,7 +27,7 @@ For ntfy, keep `behind-proxy: true` in `ntfy/server.yml` when the proxy is the p
 
 For nginx, the calendar vhost in [nginx.conf](/home/rdbr/PycharmProjects/jahrgangskalender/proxy/nginx.conf) already includes upload-safe settings for `/api/upload` (`client_max_body_size 12m`, `proxy_request_buffering off`). Keep this when adjusting templates, otherwise uploads can fail with HTTP 413.
 
-The application backend intentionally does not trust incoming `X-Forwarded-For`. The application should therefore be reached directly from the reverse proxy on localhost, or its trusted proxy handling must be designed and implemented before changing that behavior.
+The application backend now trusts `X-Forwarded-For` only from configured trusted proxies (env `TRUSTED_PROXIES`, default `127.0.0.1,::1`; CIDR ranges are supported). When the app runs in Docker and the reverse proxy connects via the container's published port, the peer address is the Docker bridge gateway, not `127.0.0.1` — set `TRUSTED_PROXIES` to that gateway/subnet (e.g. `172.16.0.0/12`, check with `docker network inspect`) so real client IPs are logged instead of the proxy's.
 
 The ntfy iOS flow still requires `upstream-base-url: "https://ntfy.sh"` in `ntfy/server.yml`, plus the user's ntfy credentials in the mobile app. The topic link opens the web view, but it does not carry authentication.
 
