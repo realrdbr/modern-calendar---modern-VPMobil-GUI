@@ -37,3 +37,12 @@ manager-interval: "1m"
 # (NTFY_VISITOR_REQUEST_LIMIT_BURST / NTFY_VISITOR_REQUEST_LIMIT_REPLENISH).
 visitor-request-limit-burst: 120
 visitor-request-limit-replenish: "5s"
+
+# Anzahl gleichzeitig offener Verbindungen (Abo/Websocket) pro erkannter
+# Client-IP. ntfy-Standard ist 30 - bei falsch konfiguriertem NTFY_BEHIND_PROXY
+# (siehe oben) teilen sich dadurch ALLE Nutzer hinter dem Reverse Proxy dieses
+# Kontingent, was zu sporadisch fehlender ntfy-Verbindung führt, sobald mehr
+# Geräte gleichzeitig verbunden sind als das Kontingent erlaubt. Deutlich
+# angehoben als zusätzliches Sicherheitsnetz; die eigentliche Abhilfe bleibt
+# ein korrekt gesetztes NTFY_BEHIND_PROXY=true in der Produktions-.env.
+visitor-subscription-limit: 250

@@ -779,8 +779,37 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         return
 
 
+def _warn_if_ntfy_misconfigured() -> None:
+    """Erkennt die häufigste Ursache für sporadisch fehlende ntfy-Verbindungen
+    und verspätete Benachrichtigungen: Läuft ntfy hinter einem Reverse Proxy
+    (öffentliche Domain statt localhost), aber ohne NTFY_BEHIND_PROXY=true,
+    wertet ntfy für sein Rate-Limiting die IP-Adresse des Proxys statt der
+    echten Client-IP aus. Dadurch teilen sich ALLE Nutzer (Handy-App-
+    Verbindungen) ein einziges Kontingent - u.a. `visitor-subscription-limit`
+    (Standard: 30 gleichzeitig offene Verbindungen pro erkannter IP). Sobald
+    mehr Geräte gleichzeitig verbunden sind, werden weitere Verbindungen
+    zufällig abgelehnt/getrennt, was sich als "mal keine Verbindung" und
+    verspätete Zustellung äußert.
+    """
+    public_url = os.getenv("NTFY_PUBLIC_URL", "")
+    hostname = (urlparse(public_url).hostname or "").lower()
+    behind_proxy = os.getenv("NTFY_BEHIND_PROXY", "false").strip().lower() in {"1", "true", "yes"}
+    if hostname and hostname not in {"127.0.0.1", "localhost", "::1"} and not behind_proxy:
+        log(
+            "WARNUNG: NTFY_PUBLIC_URL zeigt auf eine öffentliche Domain "
+            f"({public_url}), aber NTFY_BEHIND_PROXY ist nicht auf 'true' gesetzt. "
+            "Dadurch teilen sich alle ntfy-Clients (App-Verbindungen) hinter dem "
+            "Reverse Proxy ein einziges Rate-Limit-Kontingent - u.a. maximal 30 "
+            "gleichzeitige Verbindungen (visitor-subscription-limit). Das führt zu "
+            "sporadisch fehlender ntfy-Verbindung und verspäteten Benachrichtigungen, "
+            "sobald mehr Geräte gleichzeitig verbunden sind. Fix: NTFY_BEHIND_PROXY=true "
+            "in der Produktions-.env setzen und 'docker compose up -d --force-recreate ntfy' ausführen."
+        )
+
+
 def main() -> None:
     store = build_store()
+    _warn_if_ntfy_misconfigured()
     NtfyService(ROOT).ensure_running()
     warm_page_caches_from_disk()
     AppRequestHandler.store = store
