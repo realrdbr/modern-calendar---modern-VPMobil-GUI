@@ -23,8 +23,10 @@ services:
     container_name: ${APP_CONTAINER_NAME:-cal11_app}
     restart: unless-stopped
     depends_on:
-      - mariadb
-      - ntfy-provisioner
+      mariadb:
+        condition: service_started
+      ntfy-provisioner:
+        condition: service_healthy
     environment:
       HOST: ${HOST:-0.0.0.0}
       BIND_HOST: ${BIND_HOST:-0.0.0.0}
@@ -62,6 +64,12 @@ services:
         max-file: "3"
     image: binwiederhier/ntfy:v2.25.0
     container_name: ${NTFY_CONTAINER_NAME:-vpmobil-ntfy}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/v1/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
     command: serve
     restart: unless-stopped
     environment:
@@ -101,7 +109,14 @@ services:
     container_name: ${NTFY_PROVISIONER_CONTAINER_NAME:-vpmobil-ntfy-provisioner}
     restart: unless-stopped
     depends_on:
-      - ntfy
+      ntfy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).close()"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
     environment:
       NTFY_AUTH_FILE: /var/lib/ntfy/auth.db
       NTFY_PROVISIONER_SECRET: ${APP_ENCRYPTION_KEY:?APP_ENCRYPTION_KEY muss gesetzt sein}
@@ -122,9 +137,12 @@ services:
     container_name: ${VP_CONTAINER_NAME:-cal11_vp}
     restart: unless-stopped
     depends_on:
-      - mariadb
-      - ntfy
-      - ntfy-provisioner
+      mariadb:
+        condition: service_started
+      ntfy:
+        condition: service_healthy
+      ntfy-provisioner:
+        condition: service_healthy
     environment:
       HOST: ${HOST:-0.0.0.0}
       BIND_HOST: ${BIND_HOST:-0.0.0.0}

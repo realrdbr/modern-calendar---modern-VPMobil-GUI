@@ -60,14 +60,20 @@ button:not(.theme-toggle) {{ min-height:44px; border:0; border-radius:10px; padd
 .subject-card[hidden], .empty-selection[hidden] {{ display:none; }}
 .subject-card h3 {{ font-size:1.02rem; }}
 .time-tabs {{ display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:9px; }}
-.time-tab {{ display:grid; grid-template-rows:minmax(18px, auto) 40px auto; align-content:start; gap:5px; min-width:0; padding:10px; border:1px solid var(--border); border-radius:13px; background:rgba(148,163,184,.04); }}
+.time-tab {{ display:grid; grid-template-rows:minmax(18px, auto) 44px auto; align-content:start; gap:5px; min-width:0; padding:10px; border:1px solid var(--border); border-radius:13px; background:rgba(148,163,184,.04); }}
 .time-label {{ min-width:0; color:var(--muted); font-size:.72rem; font-weight:800; text-transform:uppercase; letter-spacing:.03em; overflow-wrap:anywhere; }}
-.time-tab > input {{ width:100%; min-width:0; height:40px; background:var(--surface); }}
+.time-tab > input {{ width:100%; min-width:0; height:44px; background:var(--surface); }}
 .day-before-toggle {{ display:flex; align-items:center; justify-content:flex-start; gap:6px; min-width:0; max-width:100%; font-size:.75rem; font-weight:700; color:var(--muted); line-height:1.2; }}
 .day-before-toggle > input {{ flex:0 0 auto; width:16px; height:16px; min-width:16px; min-height:16px; margin:0; }}
 .day-before-toggle > span {{ min-width:0; overflow-wrap:anywhere; }}
 .calendar-row {{ display:grid; grid-template-columns:minmax(125px, .8fr) minmax(240px, 1.4fr); gap:10px; align-items:end; }}
-.category-schedule {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; min-width:0; }}
+.category-schedule {{ display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:10px; min-width:0; }}
+/* Keep native Safari time controls inside the announcements form grid. */
+.settings-shell input[type="time"] {{ display:block; box-sizing:border-box; width:100%; max-width:100%; min-width:0; -webkit-appearance:none; appearance:none; }}
+.settings-shell input[type="time"]::-webkit-date-and-time-value {{ min-width:0; text-align:left; }}
+.settings-shell input[type="time"]::-webkit-datetime-edit {{ min-width:0; padding:0; }}
+.category-schedule > label {{ min-width:0; overflow-wrap:anywhere; }}
+.category-schedule input {{ width:100%; min-width:0; max-width:100%; }}
 .category-block {{ display:grid; gap:9px; }}
 .category-block h3 {{ font-size:.9rem; }}
 .class-select-label {{ display:grid; }}
@@ -75,6 +81,10 @@ button:not(.theme-toggle) {{ min-height:44px; border:0; border-radius:10px; padd
 .save-row {{ position:sticky; bottom:10px; z-index:3; display:flex; justify-content:flex-end; padding:10px; border:1px solid var(--border); border-radius:15px; background:color-mix(in srgb, var(--surface) 90%, transparent); backdrop-filter:blur(12px); }}
 .muted {{ color: var(--muted); }}
 code {{ word-break:break-all; }}
+@media (max-width: 1024px) {{
+  .settings-grid {{ grid-template-columns:minmax(0, 1fr); }}
+  .calendar-row {{ grid-template-columns:minmax(0, .8fr) minmax(0, 1.4fr); }}
+}}
 @media (max-width: 760px) {{
   .topbar {{ padding-top:12px; align-items:flex-start; }}
   .settings-grid {{ grid-template-columns:1fr; }}

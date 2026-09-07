@@ -24,3 +24,10 @@ class DeliveryNetworkTests(unittest.TestCase):
         self.assertIn('ntfy-delivery', services['ntfy']['networks']['ntfy_delivery']['aliases'])
         self.assertNotEqual(services['vp']['networks']['ntfy_delivery']['ipv4_address'],
                             services['ntfy']['networks']['ntfy_delivery']['ipv4_address'])
+
+    def test_startup_waits_for_ntfy_and_provisioner_health(self):
+        services = self.config['services']
+        for dependency in ('ntfy', 'ntfy-provisioner'):
+            self.assertEqual(services['vp']['depends_on'][dependency]['condition'], 'service_healthy')
+            self.assertIn('healthcheck', services[dependency])
+        self.assertEqual(services['ntfy-provisioner']['depends_on']['ntfy']['condition'], 'service_healthy')

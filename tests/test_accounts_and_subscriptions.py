@@ -1023,6 +1023,31 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         self.assertEqual(len(change_messages), 1)
         self.assertIn("1. Block: Mathe in 102 [Änderung]", change_messages[0])
 
+    def test_failed_plan_change_is_retried_without_resending_to_successful_user(self):
+        for user in (self.alice, self.bob):
+            self.store.replace_subjects(user.id, {subject_key("Mathe")})
+        def plan(room, changed=False):
+            return SimpleNamespace(
+                datum=date(2026, 8, 20), zeitstempel=datetime(2026, 8, 20, 6, 30),
+                zeitplan={1: (time(7, 45), time(9, 15))},
+                klassen={"11": SimpleNamespace(kurse={}, stunden={
+                    1: [lesson("Mathe", room, 1, changed=changed)],
+                    2: [lesson("Mathe", room, 2, changed=changed)],
+                })},
+            )
+        notifier = SubscriptionNotifier(self.store, "https://ntfy.invalid")
+        now = datetime(2026, 8, 20, 6, 59)
+        self.assertEqual(notifier.poll_once(plan("101"), now), 0)
+        notifier._publish = Mock(side_effect=[None, requests.ConnectionError("offline"), None])
+        changed = plan("102", True)
+        self.assertEqual(notifier.poll_once(changed, now), 1)
+        failed_user = notifier._publish.call_args.args[0].id
+        self.assertEqual(len(notifier.delivery_errors), 1)
+        self.assertEqual(notifier.poll_once(changed, now), 1)
+        self.assertEqual(notifier._publish.call_args.args[0].id, failed_user)
+        self.assertEqual(notifier.poll_once(changed, now), 0)
+        self.assertEqual(notifier._publish.call_count, 3)
+
     def test_new_plan_day_is_saved_without_change_notification(self):
         self.store.replace_subjects(self.alice.id, {subject_key("Mathe")})
         plan = SimpleNamespace(

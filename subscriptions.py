@@ -481,6 +481,7 @@ class SubscriptionNotifier:
         emit("ntfy.poll", level=logging.DEBUG, local_now=now.isoformat(), plan_date=str(getattr(plan, "datum", None)))
         plan_date = getattr(plan, "datum", None) or now.date()
         known_signatures = self._known_plan_signatures.setdefault(plan_date, {})
+        previous_signatures = dict(known_signatures)
         changed_classes: set[str] = set()
         for class_name, class_item in getattr(plan, "klassen", {}).items():
             signature = self._plan_signature(class_item)
@@ -581,4 +582,8 @@ class SubscriptionNotifier:
                         title,
                         "high",
                     )
+        if self.delivery_errors:
+            # Retry changed-plan deliveries on the next poll. Successful recipients
+            # are still protected by persistent per-user delivery deduplication.
+            self._known_plan_signatures[plan_date] = previous_signatures
         return sent

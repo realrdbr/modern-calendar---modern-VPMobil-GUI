@@ -271,3 +271,31 @@ interner Versand danach weiterhin erfolgreich; fremde Topics und anonyme Zugriff
 mit 403 gesperrt. Die Ausnahme behebt das Request-Limit des eigenen Stacks;
 externe Proxy-Limits, globale Servergrenzen und die Push-Zustellung ans Endgerät
 sind davon unabhängig.
+
+Zusätzliche Prüfung der Start- und Versandkette:
+
+- Compose wartet vor dem Start von VP auf erfolgreiche Healthchecks von ntfy und
+  Provisioner. Die Prüfungen laufen alle 30 Sekunden und lesen nur den lokalen
+  Health-Endpunkt.
+- `sync-ntfy-users.sh` synchronisiert im VP-Container über den signierten
+  Provisioner. Es verwendet die DB-Startwiederholungen der Anwendung; DB- oder
+  Provisionierungsfehler führen zu einem Fehlerstatus statt einem falschen Erfolg.
+- Fehlgeschlagene Planänderungsnachrichten werden im nächsten Durchlauf erneut
+  versucht. Bereits erfolgreich belieferte Nutzer bleiben persistent dedupliziert.
+- `tests/ntfy_end_to_end.py` prüft mit künstlichen Daten echte Veröffentlichungen
+  und liest die Nachrichten zurück: Kalender drei/einen Tag vorher mit getrennten
+  Kategoriezeiten, Tages-/Vorabendübersicht, nächste Stunde, Deduplizierung und
+  persönliche Testnachrichten. Es ist ein expliziter Integrationstest für einen
+  isolierten Teststack (`NTFY_E2E=1`), kein Test gegen Production. Im Teststack
+  müssen `ntfy-delivery`, `ntfy-public` (öffentlicher Netzwerkweg), der signierte
+  Provisioner, eine frische Auth-/Cache-Datenbank und ein Burst-Limit von 3 mit
+  Refill 1h konfiguriert sein; externe Push-Upstreams bleiben deaktiviert.
+
+Diese Prüfungen bestätigen die korrekte Annahme und Speicherung durch ntfy.
+Die Anzeige auf einem konkreten Handy erfordert zusätzlich das richtige Abo,
+Netzverbindung und funktionierende Push-/Geräteeinstellungen. Hier wird keine
+sekundengenaue Anzeige auf Endgeräten garantiert.
+
+Auch nach vollständiger Neuerstellung der isolierten Testcontainer wurden erneut
+20 persönliche Tests und eine Nachricht des System-Publishers angenommen; zuvor
+veröffentlichte Nachrichten und Zugangsdaten blieben erhalten.
