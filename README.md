@@ -299,3 +299,8 @@ sekundengenaue Anzeige auf Endgeräten garantiert.
 Auch nach vollständiger Neuerstellung der isolierten Testcontainer wurden erneut
 20 persönliche Tests und eine Nachricht des System-Publishers angenommen; zuvor
 veröffentlichte Nachrichten und Zugangsdaten blieben erhalten.
+
+Wenn `start-all.sh` bereits beim Start oder bei der Zugangssynchronisierung
+scheitert, bleiben die Container zur Diagnose erhalten. Das Skript gibt den
+Containerstatus, die letzten Dienst-Logs und die ntfy-Healthcheck-Ergebnisse aus.
+Nach einem erfolgreichen Start gilt weiterhin: Strg+C fährt den Stack herunter.
