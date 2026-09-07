@@ -184,8 +184,10 @@ class NotificationWorker(Thread):
                 deleted = self.notifier.delete_expired_client_notifications(local_now)
                 if deleted:
                     log(f"{deleted} alte ntfy-Benachrichtigung(en) aus Clients/Web gelöscht.")
-                plan = self._load_plan_for_worker(local_now.date())
-                next_plan = self._load_plan_for_worker(local_now.date() + timedelta(days=1))
+                today = local_now.date()
+                next_days = 3 if today.weekday() == 4 else (2 if today.weekday() == 5 else 1)
+                plan = self._load_plan_for_worker(today)
+                next_plan = self._load_plan_for_worker(today + timedelta(days=next_days))
                 local_now = datetime.now(zone).replace(tzinfo=None)
                 sent = self.notifier.poll_once(plan, local_now, day_before_plan=next_plan)
                 if started >= heartbeat_at:

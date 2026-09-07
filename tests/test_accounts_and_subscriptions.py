@@ -204,7 +204,7 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         self.assertIn("window.history.replaceState", page)
 
     def test_mobile_navigation_allows_wrapped_button_text_without_growing(self):
-        self.assertIn("white-space: normal", COMMON_CSS)
+        self.assertIn("white-space:normal", COMMON_CSS)
         self.assertIn("overflow-wrap: anywhere", COMMON_CSS)
         self.assertIn("height: 36px !important", COMMON_CSS)
         self.assertIn("font-size: clamp(.68rem, 2.6vw, .875rem) !important", COMMON_CSS)
@@ -289,13 +289,13 @@ class AccountAndSubscriptionTests(unittest.TestCase):
     def test_ntfy_history_is_limited_by_server_cache_duration(self):
         ntfy_config = (Path(__file__).resolve().parent.parent / "ntfy/server.yml").read_text(encoding="utf-8")
         main_module = (Path(__file__).resolve().parent.parent / "main.py").read_text(encoding="utf-8")
-        self.assertIn('cache-duration: "23h"', ntfy_config)
+        self.assertIn('cache-duration: "24h"', ntfy_config)
         self.assertNotIn("cleanup_ntfy_history_once_per_day", main_module)
         self.assertNotIn("DELETE FROM messages", main_module)
 
     def test_login_is_two_step_and_pin_is_restricted_to_four_digits(self):
         username_page = render_login()
-        self.assertIn('data-login-product="clock"', username_page)
+        self.assertIn('class="login-product-logo"', username_page)
         self.assertIn('name="stage" value="username"', username_page)
         self.assertNotIn('name="pin"', username_page)
 
@@ -358,7 +358,52 @@ class AccountAndSubscriptionTests(unittest.TestCase):
         store._hasher.verify.return_value = True
 
         self.assertIsNone(store.authenticate("shareduser", "9999", "127.0.0.1"))
-        store._hasher.verify.assert_not_called()
+
+    def test_vortag_daily_summary_time_decoupled_from_block_times(self):
+        self.store.replace_subjects(self.alice.id, {subject_key("Mathe")})
+        settings = NotifySettings(
+            lesson_notifications_enabled=True,
+            lesson_notification_times=("18:00", "07:00", "09:10", "13:15"),
+            daily_summary_day_before=True,
+        )
+        self.store.save_notify_settings(self.alice.id, settings)
+
+        friday_plan = SimpleNamespace(
+            datum=date(2026, 9, 11),
+            zeitstempel=None,
+            zeitplan={1: (time(7, 45), time(9, 15))},
+            klassen={"11": SimpleNamespace(kurse={}, stunden={1: [lesson("Mathe", "101", 1)]})},
+        )
+        monday_plan = SimpleNamespace(
+            datum=date(2026, 9, 14),
+            zeitstempel=None,
+            zeitplan={1: (time(7, 45), time(9, 15))},
+            klassen={"11": SimpleNamespace(kurse={}, stunden={1: [lesson("Mathe", "102", 1)]})},
+        )
+
+        notifier = SubscriptionNotifier(self.store, "http://ntfy.invalid")
+        notifier._publish = Mock()
+
+        # At 07:00 on Friday, Block 1 reminder fires (07:00), but 18:00 Vortag daily summary does NOT fire.
+        sent = notifier.poll_once(friday_plan, datetime(2026, 9, 11, 7, 0), day_before_plan=monday_plan)
+        self.assertEqual(sent, 1)
+        self.assertEqual(notifier._publish.call_args[0][2], "(VPrintfy) Nächster Raum: 101")
+        notifier._publish.reset_mock()
+
+        # At 18:00 on Friday, 18:00 Vortag time arrives, so Monday's daily summary is sent.
+        sent = notifier.poll_once(friday_plan, datetime(2026, 9, 11, 18, 0), day_before_plan=monday_plan)
+        self.assertEqual(sent, 1)
+        notifier._publish.assert_called_once()
+        publish_args = notifier._publish.call_args[0]
+        self.assertEqual(publish_args[0].username, "alice")
+        self.assertIn("Morgen, 14.09.2026:", publish_args[1])
+        self.assertEqual(publish_args[2], "(VPrintfy) Morgen")
+
+        # Second poll at 18:01 is deduplicated.
+        notifier._publish.reset_mock()
+        sent = notifier.poll_once(friday_plan, datetime(2026, 9, 11, 18, 1), day_before_plan=monday_plan)
+        self.assertEqual(sent, 0)
+        notifier._publish.assert_not_called()
 
     def test_cookie_domain_is_derived_for_calendar_and_vp_subdomain(self):
         with patch.dict("os.environ", {

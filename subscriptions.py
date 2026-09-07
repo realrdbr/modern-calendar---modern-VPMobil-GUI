@@ -510,41 +510,42 @@ class SubscriptionNotifier:
             calendar_events = [] if user.vp_only else self.store.get_calendar_events(user.username)
             has_subject_selection = any(recipient.subject_selections.values())
             if settings.lesson_notifications_enabled and has_subject_selection:
-                lesson_times = sorted(
-                    [(value, self._time_from_text(value)) for value in dict.fromkeys(settings.lesson_notification_times)],
+                raw_times = settings.lesson_notification_times or DEFAULT_LESSON_NOTIFICATION_TIMES
+                summary_time_text = raw_times[0]
+                summary_time = self._time_from_text(summary_time_text)
+                summary_plan = day_before_plan if settings.daily_summary_day_before else plan
+                summary_date = getattr(summary_plan, "datum", None) or plan_date
+                summary_due = now.time() >= summary_time and summary_date.weekday() < 5
+                if summary_due:
+                    lines = self._daily_summary_lines(recipient, summary_plan)
+                    if lines:
+                        sent += self._deliver(
+                            user,
+                            f"morning:{summary_date.isoformat()}" if not settings.daily_summary_day_before else f"morning-day-before:{summary_date.isoformat()}",
+                            ("Morgen, " if settings.daily_summary_day_before else "Heute, ") + summary_date.strftime("%d.%m.%Y") + ":\n" + "\n".join(lines),
+                            "(VPrintfy) " + ("Morgen" if settings.daily_summary_day_before else "Heute"),
+                        )
+                timestamp = getattr(plan, "zeitstempel", None)
+                if timestamp and any(class_name in changed_classes for class_name in recipient.selected_classes):
+                    changes = self._change_lines(recipient, plan)
+                    if changes:
+                        signature = "|".join(
+                            f"{class_name}:{self._plan_signature(getattr(plan, 'klassen', {})[class_name])}"
+                            for class_name in recipient.selected_classes
+                            if class_name in getattr(plan, "klassen", {})
+                        )
+                        sent += self._deliver(
+                            user,
+                            f"publication:{plan_date.isoformat()}:{signature}",
+                            "Plan veröffentlicht/aktualisiert (" + timestamp.strftime("%d.%m.%Y %H:%M") + "):\n" + "\n".join(changes),
+                            "(VPrintfy) Plan-Änderung",
+                            "high",
+                        )
+                block_times = sorted(
+                    [(value, self._time_from_text(value)) for value in dict.fromkeys(raw_times[1:])],
                     key=lambda item: item[1],
                 )
-                if lesson_times:
-                    _first_key, first_time = lesson_times[0]
-                    summary_plan = day_before_plan if settings.daily_summary_day_before else plan
-                    summary_date = getattr(summary_plan, "datum", None) or plan_date
-                    summary_due = now.time() >= first_time and summary_date.weekday() < 5
-                    if summary_due:
-                        lines = self._daily_summary_lines(recipient, summary_plan)
-                        if lines:
-                            sent += self._deliver(
-                                user,
-                                f"morning:{summary_date.isoformat()}" if not settings.daily_summary_day_before else f"morning-day-before:{summary_date.isoformat()}",
-                                ("Morgen, " if settings.daily_summary_day_before else "Heute, ") + summary_date.strftime("%d.%m.%Y") + ":\n" + "\n".join(lines),
-                                "(VPrintfy) " + ("Morgen" if settings.daily_summary_day_before else "Heute"),
-                            )
-                    timestamp = getattr(plan, "zeitstempel", None)
-                    if timestamp and any(class_name in changed_classes for class_name in recipient.selected_classes):
-                        changes = self._change_lines(recipient, plan)
-                        if changes:
-                            signature = "|".join(
-                                f"{class_name}:{self._plan_signature(getattr(plan, 'klassen', {})[class_name])}"
-                                for class_name in recipient.selected_classes
-                                if class_name in getattr(plan, "klassen", {})
-                            )
-                            sent += self._deliver(
-                                user,
-                                f"publication:{plan_date.isoformat()}:{signature}",
-                                "Plan veröffentlicht/aktualisiert (" + timestamp.strftime("%d.%m.%Y %H:%M") + "):\n" + "\n".join(changes),
-                                "(VPrintfy) Plan-Änderung",
-                                "high",
-                            )
-                    for time_key, trigger_time in lesson_times[1:]:
+                for time_key, trigger_time in block_times:
                         if now.time() < trigger_time:
                             continue
                         trigger_datetime = datetime.combine(plan_date, trigger_time)
