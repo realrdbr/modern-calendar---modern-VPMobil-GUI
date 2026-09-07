@@ -8,13 +8,10 @@
 # dieser Datei, damit sich lokale und produktive Umgebung nur über die .env
 # unterscheiden müssen, ohne server.yml anzupassen.
 #
-# behind-proxy: Läuft ntfy hinter einem Reverse Proxy (z.B. Caddy auf
-# notify.cal11.de), MUSS NTFY_BEHIND_PROXY=true in der .env gesetzt sein.
-# Sonst wertet ntfy für das Rate-Limiting die Proxy-IP statt der echten
-# Client-IP aus X-Forwarded-For aus - dann teilen sich alle Nutzer (und der
-# App-Backend-Worker) ein einziges Rate-Limit-Kontingent, was zu unnötigen
-# HTTP 429 führt, obwohl die Anfragen tatsächlich von vielen verschiedenen
-# Clients stammen.
+# Bei einem Reverse Proxy NTFY_BEHIND_PROXY=true setzen.
+# Im vollständigen Compose-Stack läuft der VP-Versand über ein eigenes internes
+# Netzwerk. Nur dessen feste VP-IP ist vom Request-Limit ausgenommen
+# (NTFY_VISITOR_REQUEST_LIMIT_EXEMPT_HOSTS); Authentifizierung und ACLs gelten weiter.
 #
 # Selbst gehostetes ntfy benötigt diesen Upstream für sofortige iOS-Pushs.
 upstream-base-url: "https://ntfy.sh"
@@ -26,23 +23,10 @@ manager-interval: "1m"
 # Nur authentifizierte Nutzer dürfen veröffentlichen/abonnieren (siehe oben,
 # effektiver Wert kommt aus NTFY_AUTH_DEFAULT_ACCESS).
 
-# Rate-Limits: Sowohl der App-Backend-Worker (Publish/Delete/Polling) als auch
-# einzelne Nutzer-Browser/-Geräte (eigene read-write-Rechte auf ihr Topic)
-# erzeugen Traffic. Läuft ntfy korrekt mit behind-proxy hinter Caddy, wird
-# jeder echte Client separat gezählt und die ntfy-Standardwerte (burst: 60,
-# replenish: 5s) reichen in der Regel aus. Die Werte unten dienen nur als
-# zusätzliches Sicherheitsnetz gegen kurzzeitige Bursts (z.B. viele Nutzer
-# gleichzeitig zur selben Stundenwechsel-Zeit, inkl. Aufräumen alter
-# Nachrichten) und sind über .env/Compose überschreibbar
-# (NTFY_VISITOR_REQUEST_LIMIT_BURST / NTFY_VISITOR_REQUEST_LIMIT_REPLENISH).
+# Öffentliche Requests bleiben begrenzt. Der interne VP-Versand benötigt eine
+# separate Ausnahme, da ein großer Versandlauf das Request-Kontingent erschöpft.
 visitor-request-limit-burst: 120
 visitor-request-limit-replenish: "5s"
 
-# Anzahl gleichzeitig offener Verbindungen (Abo/Websocket) pro erkannter
-# Client-IP. ntfy-Standard ist 30 - bei falsch konfiguriertem NTFY_BEHIND_PROXY
-# (siehe oben) teilen sich dadurch ALLE Nutzer hinter dem Reverse Proxy dieses
-# Kontingent, was zu sporadisch fehlender ntfy-Verbindung führt, sobald mehr
-# Geräte gleichzeitig verbunden sind als das Kontingent erlaubt. Deutlich
-# angehoben als zusätzliches Sicherheitsnetz; die eigentliche Abhilfe bleibt
-# ein korrekt gesetztes NTFY_BEHIND_PROXY=true in der Produktions-.env.
+# Offene Abos; eine Erhöhung behebt KEINE HTTP-429-Fehler beim Publish.
 visitor-subscription-limit: 250

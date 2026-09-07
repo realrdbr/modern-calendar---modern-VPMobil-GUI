@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from ntfy.diagnostics import request
+
 
 def resolve_ntfy_internal_url() -> str:
     requested = os.getenv("NTFY_INTERNAL_URL", os.getenv("NTFY_PUBLIC_URL", "http://127.0.0.1:8090")).rstrip("/")
@@ -63,8 +65,8 @@ class NtfyService:
         payload = {**values, "timestamp": int(time.time())}
         body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
         signature = hmac.new(self.provisioner_secret, body, hashlib.sha256).hexdigest()
-        response = requests.post(
-            f"{self.provisioner_url}/{operation}", data=body,
+        response = request(requests.post,
+            f"{self.provisioner_url}/{operation}", operation="provision:" + operation, data=body,
             headers={"Content-Type": "application/json", "X-Provisioner-Signature": signature},
             timeout=35,
         )

@@ -153,3 +153,121 @@ python -m unittest tests.test_accounts_and_subscriptions
 npm run lint
 npm run build
 ```
+
+### ntfy auf dem Production-Server: Konfiguration und Diagnose
+
+Für `./start-all.sh docker-proxy` (Caddy) beziehungsweise `./start-all.sh docker`
+(mit eigenem Reverse Proxy) gehören diese Werte in die `.env` im Projektverzeichnis:
+
+```dotenv
+NTFY_PUBLIC_URL=https://notify.cal11.de
+NTFY_INTERNAL_URL=http://ntfy
+NTFY_BEHIND_PROXY=true
+NTFY_AUTH_DEFAULT_ACCESS=deny-all
+NTFY_BIND_HOST=127.0.0.1
+NTFY_PORT=8090
+APP_TIMEZONE=Europe/Berlin
+NOTIFICATION_INTERVAL_SECONDS=60
+NTFY_LOG_LEVEL=INFO
+NTFY_VISITOR_REQUEST_LIMIT_BURST=120
+NTFY_VISITOR_REQUEST_LIMIT_REPLENISH=5s
+NTFY_VISITOR_SUBSCRIPTION_LIMIT=250
+COOKIE_SECURE=true
+```
+
+Die öffentliche URL muss vom Handy erreichbar sein und mit DNS, TLS und dem
+Reverse Proxy übereinstimmen. `proxy/Caddyfile` enthält fest die Domains
+`cal11.de`, `vp.cal11.de` und `notify.cal11.de`; andere Domains dort ebenfalls
+anpassen. `TLS_EMAIL` für Caddy setzen. Ein Proxy auf dem Host leitet ntfy an
+`127.0.0.1:8090` weiter, der mitgelieferte Caddy an `ntfy:80`. Der VP-Container
+sendet über `http://ntfy-delivery` im dedizierten internen Netzwerk, unabhängig
+vom öffentlichen Port. Compose setzt diesen Versandweg fest; `NTFY_INTERNAL_URL`
+in der `.env` gilt nur für lokale Ausführung/Sonderinstallationen. Ohne Proxy
+`NTFY_BEHIND_PROXY=false` verwenden und die öffentliche URL entsprechend setzen.
+
+`APP_ENCRYPTION_KEY` muss der bestehende gültige Fernet-Schlüssel sein; nicht bei
+jedem Start neu erzeugen, da damit gespeicherte Zugangsdaten entschlüsselt werden.
+DB-Zugang, `ADMIN_PANEL_PASSWORD` und Schulzugang müssen ebenfalls stimmen.
+Compose setzt `NTFY_PROVISIONER_URL`, `NTFY_PROVISIONER_SECRET` (aus dem
+Verschlüsselungsschlüssel), Cache-/Auth-Dateien und `NTFY_AUTOSTART=false`
+automatisch. `NTFY_COMPOSE_FILE` wird im vollständigen Docker-Stack nicht benötigt.
+`NTFY_SERVER_USERNAME` und `NTFY_SERVER_PASSWORD` normalerweise weglassen: Der
+Systemzugang wird automatisch abgeleitet und provisioniert. Persönliche Topics
+und Passwörter kommen aus der Datenbank, nicht aus der `.env`.
+
+Änderungen mit `docker compose up -d --build` (bei Caddy zusätzlich
+`--profile proxy` vor `up`) übernehmen; ein bloßes `restart` übernimmt keine neuen
+Container-Umgebungswerte. `start-all.sh` baut ebenfalls neu und synchronisiert
+Zugänge, bleibt aber im Vordergrund: **Strg+C beendet den gesamten Stack**.
+Für dauerhaften Betrieb stattdessen `docker compose up -d --build` und danach
+`bash ./sync-ntfy-users.sh` verwenden. `start-all.sh local` startet nur Python und
+Node auf dem Host und benötigt dafür eine passende lokale DB-/ntfy-Konfiguration.
+
+```bash
+docker compose logs --since=30m --tail=300 vp ntfy ntfy-provisioner
+```
+
+Die JSON-Logs enthalten UTC-Zeitstempel, beim Worker zusätzlich Ortszeit und
+Zeitzone. `ntfy.request_failed` unterscheidet Authentifizierung (401), Topic-Rechte
+(403), Rate-Limit (429), Verbindungsfehler und Timeouts; `operation` unterscheidet
+persönlichen Test, Systemversand und Provisionierung. Ein erfolgreicher Test
+verwendet den persönlichen Zugang, der automatische Versand den System-Publisher.
+`ntfy.request_ok` bestätigt die Annahme durch ntfy, nicht die Anzeige am Handy.
+Nachrichteninhalte, Topic-Pfade, Passwörter und vollständige Fehler-URLs werden
+in diesen Diagnoseereignissen nicht protokolliert.
+
+`ntfy.worker_started` zeigt die wirksame Konfiguration, `ntfy.worker_heartbeat`
+alle 15 Minuten Planverfügbarkeit und Versandzahlen des aktuellen Durchlaufs.
+`ntfy.worker_slow` zeigt eine Überschreitung des Intervalls. Für eine kurze
+Fehlersuche `NTFY_LOG_LEVEL=DEBUG` setzen und VP neu erstellen: Dann erscheinen
+pro Durchlauf die Uhrzeit und pro Nutzer-ID die Zeitplaneinstellungen.
+Anschließend wieder `INFO` setzen. Die Docker-Logs von VP, ntfy und Provisioner
+rotieren mit maximal drei Dateien à 10 MB pro Dienst. Es gibt keine zusätzlichen
+Health-Polls oder Datenbankabfragen für das Logging.
+
+Der Versand erfolgt im nächsten Durchlauf (Standard 60 Sekunden, Minimum 15),
+bei langsamen Abrufen oder vielen Empfängern später. Die erste konfigurierte
+Unterrichtszeit löst die Tagesübersicht aus; spätere Zeiten die nächste
+Blockankündigung. Tagesübersichten werden am selben Tag nachgeholt; nächste
+Blockankündigungen werden nach mehr als 20 Minuten ausgelassen. Diese Regeln
+können ebenfalls erklären, warum eine Nachricht später kommt oder ausbleibt.
+
+
+### Behebung von HTTP 429 beim ntfy-Versand
+
+Der vollständige Docker-Stack nimmt ausschließlich die feste VP-Adresse im
+separaten internen Netz vom ntfy-Request-Limit aus. Testversand, automatischer
+Versand und Aufräumen verwenden dieses Netz. Öffentliche Clients und der Proxy
+sind nicht ausgenommen; `deny-all` und persönliche Topic-Rechte bleiben wirksam.
+Eine Erhöhung von `NTFY_VISITOR_SUBSCRIPTION_LIMIT` hilft bei Publish-429 nicht.
+Die IP-Ausnahme bleibt auch nach Container-Neustarts gültig und benötigt keine
+DNS-Auflösung des VP-Dienstes beim ntfy-Start.
+
+Standardnetz: `172.30.251.0/29`, ntfy: `.2`, VP: `.3`. Falls dieses Subnetz bereits
+verwendet wird, `NTFY_DELIVERY_SUBNET`, `NTFY_DELIVERY_SERVER_IP` und
+`NTFY_DELIVERY_VP_IP` gemeinsam auf ein freies Subnetz mit zwei passenden Adressen
+setzen. Proxy und weitere Dienste dürfen diesem Netz nicht beitreten. Dafür
+sind sonst keine neuen `.env`-Werte nötig. `ntfy-compose.yml` allein beziehungsweise
+`start-all.sh local` richtet dieses VP-Netz nicht ein.
+
+Auf Production nach Übernahme der Dateien:
+
+```bash
+docker compose up -d --build ntfy vp
+```
+
+Auch `./start-all.sh docker` beziehungsweise `docker-proxy` übernimmt die Änderung.
+Ein bloßes `restart` reicht nicht. Der Server-Test wiederholt einen vorübergehenden
+429 einmal nach fünf Sekunden beziehungsweise nach `Retry-After` (höchstens zehn
+Sekunden Wartezeit). Längere Limits und bekannte andere ntfy-Limits werden nicht
+sofort wiederholt. Bleibt der 429 bestehen, erscheint eine passende Meldung statt
+„Prüfe die Verbindung“. Hintergrundzustellungen bleiben beim Fehler unbestätigt
+und werden im nächsten regulären Durchlauf erneut geprüft. Logs enthalten jetzt
+auch den numerischen `ntfy_code`, etwa `42901` für das Request-Limit.
+
+Verifiziert mit dem Image `binwiederhier/ntfy:v2.25.0`: 20 interne Nachrichten bei
+Burst-Limit 3 erfolgreich; öffentliche Anfragen ab Nummer 4 mit 429 abgelehnt;
+interner Versand danach weiterhin erfolgreich; fremde Topics und anonyme Zugriffe
+mit 403 gesperrt. Die Ausnahme behebt das Request-Limit des eigenen Stacks;
+externe Proxy-Limits, globale Servergrenzen und die Push-Zustellung ans Endgerät
+sind davon unabhängig.

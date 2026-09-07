@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from email.header import Header
 import hashlib
+import logging
 import re
 from typing import Iterable
 from urllib.parse import quote
@@ -13,6 +14,7 @@ from urllib.parse import quote
 import requests
 
 from accounts import AccountStore, CalendarEvent, MAX_CALENDAR_NOTIFICATION_DAYS_BEFORE, NotifySettings, NotificationRecipient, User
+from ntfy.diagnostics import emit, error_fields, request
 from ntfy.notifications import DEFAULT_BLOCKS, Block
 from ntfy.service import resolve_ntfy_publisher_auth
 
@@ -289,8 +291,8 @@ class SubscriptionNotifier:
         sequence_id = getattr(self, "_pending_sequence_id", None)
         if sequence_id:
             headers["X-Sequence-ID"] = sequence_id
-        response = requests.post(
-            f"{self.ntfy_url}/{user.ntfy_topic}", data=message.encode("utf-8"),
+        response = request(requests.post,
+            f"{self.ntfy_url}/{user.ntfy_topic}", operation="publish", data=message.encode("utf-8"),
             headers=headers,
             timeout=self.timeout,
             # Der dedizierte Server-Publisher besitzt ausschließlich
@@ -302,16 +304,18 @@ class SubscriptionNotifier:
 
     def _deliver(self, user: User, event_key: str, message: str, title: str, priority: str = "default") -> bool:
         if not self.store.mark_delivery_once(user.id, event_key):
+            emit("ntfy.delivery_duplicate", level=logging.DEBUG, user_id=user.id, kind=event_key.split(":", 1)[0])
             return False
         self._pending_sequence_id = self._sequence_id(user, event_key)
         try:
             self._publish(user, message, title, priority)
         except requests.RequestException as error:
             self.store.forget_delivery(user.id, event_key)
-            self.delivery_errors.append(f"{user.username} ({event_key}): {error}")
+            self.delivery_errors.append(f"user_id={user.id} kind={event_key.split(':', 1)[0]} {error_fields(error)}")
             return False
         finally:
             self._pending_sequence_id = None
+        emit("ntfy.delivery_sent", user_id=user.id, kind=event_key.split(":", 1)[0])
         return True
 
     def delete_expired_client_notifications(self, now: datetime | None = None) -> int:
@@ -329,7 +333,8 @@ class SubscriptionNotifier:
                 if response.status_code not in {200, 202, 204, 404}:
                     response.raise_for_status()
             except requests.RequestException as error:
-                self.delivery_errors.append(f"{user.username} ({event_key}:delete): {error}")
+                self.delivery_errors.append(f"user_id={user.id} operation=delete {error_fields(error)}")
+                emit("ntfy.delete_failed", level=logging.ERROR, user_id=user.id, **error_fields(error))
                 continue
             self.store.mark_delivery_deleted(user.id, event_key)
             deleted += 1
@@ -340,8 +345,8 @@ class SubscriptionNotifier:
         # Der persönliche ntfy-Nutzer besitzt Schreibrecht auf genau sein Topic.
         # Dadurch funktioniert der Test unabhängig vom globalen Publisher sowohl
         # über 127.0.0.1 als auch im Compose-Netz und über die Produktionsdomain.
-        response = requests.post(
-            f"{self.ntfy_url}/{user.ntfy_topic}",
+        response = request(requests.post,
+            f"{self.ntfy_url}/{user.ntfy_topic}", operation="user_test", retry_rate_limit=True,
             data="Deine Benachrichtigungen sind richtig verbunden.".encode("utf-8"),
             headers={"Title": Header("(VPrintfy) Test erfolgreich", "utf-8").encode(), "Priority": "high", "Tags": "white_check_mark"},
             timeout=self.timeout,
@@ -473,6 +478,7 @@ class SubscriptionNotifier:
     ) -> int:
         self.delivery_errors.clear()
         now = now or datetime.now()
+        emit("ntfy.poll", level=logging.DEBUG, local_now=now.isoformat(), plan_date=str(getattr(plan, "datum", None)))
         plan_date = getattr(plan, "datum", None) or now.date()
         known_signatures = self._known_plan_signatures.setdefault(plan_date, {})
         changed_classes: set[str] = set()
@@ -488,6 +494,14 @@ class SubscriptionNotifier:
             if recipient_username is not None and user.username != recipient_username:
                 continue
             settings = recipient.notify_settings
+            emit("ntfy.recipient_schedule", level=logging.DEBUG, user_id=user.id,
+                 lesson_enabled=settings.lesson_notifications_enabled,
+                 lesson_times=settings.lesson_notification_times, day_before=settings.daily_summary_day_before,
+                 calendar_enabled=settings.calendar_notifications_enabled,
+                 calendar_time=settings.calendar_notification_time,
+                 calendar_times=settings.calendar_notification_times,
+                 selected_classes=len(recipient.selected_classes),
+                 has_subjects=any(recipient.subject_selections.values()))
             # Private calendar data is decrypted and loaded only for its owner.
             # VP-only accounts intentionally have no calendar access and must
             # never receive calendar-derived notifications, even if an old DB
@@ -534,6 +548,8 @@ class SubscriptionNotifier:
                             continue
                         trigger_datetime = datetime.combine(plan_date, trigger_time)
                         if now - trigger_datetime > timedelta(minutes=20):
+                            emit("ntfy.schedule_expired", level=logging.DEBUG, user_id=user.id,
+                                 scheduled_at=trigger_datetime.isoformat(), local_now=now.isoformat())
                             # Zu spät ausgelöst (z.B. weil kein aktueller Plan
                             # verfügbar war) - lieber auslassen als eine sehr
                             # verspätete Benachrichtigung zu versenden.

@@ -55,6 +55,11 @@ services:
       - cal11_net
 
   ntfy:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     image: binwiederhier/ntfy:v2.25.0
     container_name: ${NTFY_CONTAINER_NAME:-vpmobil-ntfy}
     command: serve
@@ -67,6 +72,8 @@ services:
       NTFY_ENABLE_LOGIN: "true"
       NTFY_ENABLE_SIGNUP: "false"
       NTFY_BEHIND_PROXY: ${NTFY_BEHIND_PROXY:-false}
+      # Only the VP address on the dedicated delivery network is exempt.
+      NTFY_VISITOR_REQUEST_LIMIT_EXEMPT_HOSTS: ${NTFY_DELIVERY_VP_IP:-172.30.251.3}
       NTFY_VISITOR_REQUEST_LIMIT_BURST: ${NTFY_VISITOR_REQUEST_LIMIT_BURST:-120}
       NTFY_VISITOR_REQUEST_LIMIT_REPLENISH: ${NTFY_VISITOR_REQUEST_LIMIT_REPLENISH:-5s}
       NTFY_VISITOR_SUBSCRIPTION_LIMIT: ${NTFY_VISITOR_SUBSCRIPTION_LIMIT:-250}
@@ -76,9 +83,18 @@ services:
     ports:
       - "${NTFY_BIND_HOST:-0.0.0.0}:${NTFY_PORT:-8090}:80"
     networks:
-      - cal11_net
+      cal11_net:
+      ntfy_delivery:
+        ipv4_address: ${NTFY_DELIVERY_SERVER_IP:-172.30.251.2}
+        aliases:
+          - ntfy-delivery
 
   ntfy-provisioner:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     build:
       context: .
       dockerfile: Dockerfile.ntfy-provisioner
@@ -95,6 +111,11 @@ services:
       - cal11_net
 
   vp:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     build:
       context: .
       dockerfile: Dockerfile.vp
@@ -120,8 +141,14 @@ services:
       COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
       APP_TIMEZONE: ${APP_TIMEZONE:-Europe/Berlin}
       NTFY_PUBLIC_URL: ${NTFY_PUBLIC_URL:-http://127.0.0.1:8090}
-      NTFY_INTERNAL_URL: ${NTFY_INTERNAL_URL:-http://ntfy}
+      # Fixed internal route: public/proxy URLs must not consume the delivery budget.
+      NTFY_INTERNAL_URL: http://ntfy-delivery
       NTFY_AUTOSTART: "false"
+      NTFY_BEHIND_PROXY: ${NTFY_BEHIND_PROXY:-false}
+      NOTIFICATION_INTERVAL_SECONDS: ${NOTIFICATION_INTERVAL_SECONDS:-60}
+      NTFY_LOG_LEVEL: ${NTFY_LOG_LEVEL:-INFO}
+      NTFY_SERVER_USERNAME: ${NTFY_SERVER_USERNAME:-vpmobil_server}
+      NTFY_SERVER_PASSWORD: ${NTFY_SERVER_PASSWORD:-}
       NTFY_PROVISIONER_URL: http://ntfy-provisioner:8080
       NTFY_PROVISIONER_SECRET: ${APP_ENCRYPTION_KEY:?APP_ENCRYPTION_KEY muss gesetzt sein}
       NTFY_CACHE_FILE: /var/lib/ntfy/cache.db
@@ -142,12 +169,16 @@ services:
       - ./data/ntfy:/var/lib/ntfy
       - vp_plan_cache:/app/.vp_cache
     networks:
-      - cal11_net
+      cal11_net:
+      ntfy_delivery:
+        ipv4_address: ${NTFY_DELIVERY_VP_IP:-172.30.251.3}
 
   proxy:
     image: caddy:2.8
     container_name: ${PROXY_CONTAINER_NAME:-cal11_proxy}
     restart: unless-stopped
+    environment:
+      TLS_EMAIL: ${TLS_EMAIL:-}
     profiles:
       - proxy
     depends_on:
@@ -174,6 +205,11 @@ volumes:
     driver: local
 
 networks:
+  ntfy_delivery:
+    internal: true
+    ipam:
+      config:
+        - subnet: ${NTFY_DELIVERY_SUBNET:-172.30.251.0/29}
   cal11_net:
     name: ${DOCKER_NET_NAME:-cal11_net}
     driver: bridge

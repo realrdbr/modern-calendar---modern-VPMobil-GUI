@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 
 from account_page import render_login, render_subscriptions
 from accounts import AccountStore, NotifySettings, Session
+from ntfy.diagnostics import configure_logging, emit, endpoint, error_fields
 from ntfy.service import NtfyService, resolve_ntfy_internal_url
 from plan_page import get_available_classes, get_selected_class_cookie_name, get_selected_subject_cookie_name, get_week_plans_for_page, get_week_version, render_plan_page, resolve_initial_class
 from rooms_page import get_free_rooms_for_page, get_room_plan_version, render_rooms_page, warm_free_room_results_from_cache
@@ -170,22 +171,40 @@ class NotificationWorker(Thread):
             return SimpleNamespace(datum=plan_date, zeitstempel=None, zeitplan={}, klassen={})
 
     def run(self) -> None:
+        heartbeat_at = 0.0
+        zone = ZoneInfo(os.getenv("APP_TIMEZONE", "Europe/Berlin"))
+        emit("ntfy.worker_started", interval_seconds=self.interval, timezone=str(zone),
+             internal_endpoint=endpoint(self.notifier.ntfy_url),
+             public_endpoint=endpoint(os.getenv("NTFY_PUBLIC_URL", "")),
+             behind_proxy=os.getenv("NTFY_BEHIND_PROXY", "false"))
         while not self.stop_event.is_set():
+            started = time.monotonic()
             try:
-                local_now = datetime.now(ZoneInfo(os.getenv("APP_TIMEZONE", "Europe/Berlin"))).replace(tzinfo=None)
+                local_now = datetime.now(zone).replace(tzinfo=None)
                 deleted = self.notifier.delete_expired_client_notifications(local_now)
                 if deleted:
                     log(f"{deleted} alte ntfy-Benachrichtigung(en) aus Clients/Web gelöscht.")
                 plan = self._load_plan_for_worker(local_now.date())
                 next_plan = self._load_plan_for_worker(local_now.date() + timedelta(days=1))
+                local_now = datetime.now(zone).replace(tzinfo=None)
                 sent = self.notifier.poll_once(plan, local_now, day_before_plan=next_plan)
+                if started >= heartbeat_at:
+                    emit("ntfy.worker_heartbeat", local_now=local_now.isoformat(),
+                         plan_date=str(getattr(plan, "datum", None)),
+                         plan_classes=len(getattr(plan, "klassen", {})),
+                         plan_updated=str(getattr(plan, "zeitstempel", None)),
+                         sent=sent, failed=len(self.notifier.delivery_errors))
+                    heartbeat_at = started + 900
                 if sent:
                     log(f"{sent} persönliche ntfy-Benachrichtigung(en) gesendet.")
                 for delivery_error in self.notifier.delivery_errors:
                     log(f"ntfy-Versand fehlgeschlagen, nächster Versuch folgt: {delivery_error}")
             except Exception as error:
-                log(f"Benachrichtigungs-Worker fehlgeschlagen: {error}")
-            self.stop_event.wait(self.interval)
+                emit("ntfy.worker_failed", level=40, **error_fields(error))
+            elapsed = time.monotonic() - started
+            if elapsed > self.interval:
+                emit("ntfy.worker_slow", level=30, duration_seconds=round(elapsed, 2), interval_seconds=self.interval)
+            self.stop_event.wait(max(1, self.interval - elapsed))
 
 
 class AppRequestHandler(BaseHTTPRequestHandler):
@@ -404,8 +423,14 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             try:
                 SubscriptionNotifier(self.store, resolve_ntfy_internal_url()).send_user_test(session.user)
                 self.render_subscriptions(session, test_sent=True)
-            except Exception:
-                self.render_subscriptions(session, error="Die Testbenachrichtigung konnte nicht gesendet werden. Prüfe die ntfy-Verbindung.")
+            except Exception as error:
+                emit("ntfy.user_test_failed", level=40, user_id=session.user.id, **error_fields(error))
+                message = (
+                    "ntfy begrenzt gerade die Anfragen (HTTP 429). Bitte versuche es später erneut."
+                    if error_fields(error)["status"] == 429 else
+                    "Die Testbenachrichtigung konnte nicht gesendet werden. Prüfe die ntfy-Verbindung."
+                )
+                self.render_subscriptions(session, error=message)
             return
         if path == "/abos":
             try:
@@ -780,34 +805,22 @@ class AppRequestHandler(BaseHTTPRequestHandler):
 
 
 def _warn_if_ntfy_misconfigured() -> None:
-    """Erkennt die häufigste Ursache für sporadisch fehlende ntfy-Verbindungen
-    und verspätete Benachrichtigungen: Läuft ntfy hinter einem Reverse Proxy
-    (öffentliche Domain statt localhost), aber ohne NTFY_BEHIND_PROXY=true,
-    wertet ntfy für sein Rate-Limiting die IP-Adresse des Proxys statt der
-    echten Client-IP aus. Dadurch teilen sich ALLE Nutzer (Handy-App-
-    Verbindungen) ein einziges Kontingent - u.a. `visitor-subscription-limit`
-    (Standard: 30 gleichzeitig offene Verbindungen pro erkannter IP). Sobald
-    mehr Geräte gleichzeitig verbunden sind, werden weitere Verbindungen
-    zufällig abgelehnt/getrennt, was sich als "mal keine Verbindung" und
-    verspätete Zustellung äußert.
-    """
+    """Hinweis auf mögliche fehlende Client-IP-Weitergabe am öffentlichen Proxy."""
     public_url = os.getenv("NTFY_PUBLIC_URL", "")
     hostname = (urlparse(public_url).hostname or "").lower()
     behind_proxy = os.getenv("NTFY_BEHIND_PROXY", "false").strip().lower() in {"1", "true", "yes"}
     if hostname and hostname not in {"127.0.0.1", "localhost", "::1"} and not behind_proxy:
         log(
             "WARNUNG: NTFY_PUBLIC_URL zeigt auf eine öffentliche Domain "
-            f"({public_url}), aber NTFY_BEHIND_PROXY ist nicht auf 'true' gesetzt. "
-            "Dadurch teilen sich alle ntfy-Clients (App-Verbindungen) hinter dem "
-            "Reverse Proxy ein einziges Rate-Limit-Kontingent - u.a. maximal 30 "
-            "gleichzeitige Verbindungen (visitor-subscription-limit). Das führt zu "
-            "sporadisch fehlender ntfy-Verbindung und verspäteten Benachrichtigungen, "
-            "sobald mehr Geräte gleichzeitig verbunden sind. Fix: NTFY_BEHIND_PROXY=true "
-            "in der Produktions-.env setzen und 'docker compose up -d --force-recreate ntfy' ausführen."
+            f"({endpoint(public_url)}), aber NTFY_BEHIND_PROXY ist nicht auf 'true' gesetzt. "
+            "Falls ein Reverse Proxy vorgeschaltet ist, NTFY_BEHIND_PROXY=true setzen "
+            "und den ntfy-Container neu erstellen, damit öffentliche Client-IP-Adressen "
+            "korrekt erkannt werden. Der interne Versand ist in Compose separat ausgenommen."
         )
 
 
 def main() -> None:
+    configure_logging()
     store = build_store()
     _warn_if_ntfy_misconfigured()
     NtfyService(ROOT).ensure_running()
