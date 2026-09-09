@@ -1,3 +1,4 @@
+import { setVisibleEventCompletion } from "./server/eventCompletion";
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
@@ -14,6 +15,7 @@ import {
   dbCreateVpOnlyUser,
   dbDeleteUser,
   dbGetEvents,
+  dbGetCompletedEventIds,
   dbGetPrivateCalendar,
   dbCreatePrivateCategory,
   dbDeletePrivateCategory,
@@ -486,7 +488,23 @@ async function startServer() {
     const user = await dbGetUser(username);
     const visibleCourses = user?.status === 'ADMIN' ? undefined : (user?.courses || []);
     const [events, privateData] = await Promise.all([dbGetEvents(false, visibleCourses), dbGetPrivateCalendar(username)]);
-    res.json([...events, ...privateData.events]);
+    const completed = await dbGetCompletedEventIds(username);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json([...events, ...privateData.events].map(event => ({ ...event, completed: completed.has(event.id) })));
+  });
+
+  app.put('/api/events/:id/completion', requireAuth, async (req, res) => {
+    if (!req.is('application/json')) return res.status(415).json({ error: 'JSON erforderlich.' });
+    try {
+      const owner = String((req as any).authenticatedUser).toLowerCase();
+      const result = await setVisibleEventCompletion(owner, String(req.params.id), req.body?.completed);
+      broadcastCalendarChange(owner);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(result);
+    } catch (error) {
+      const status = (error as { status?: number }).status || 500;
+      res.status(status).json({ error: status === 500 ? 'Erledigt-Status konnte nicht gespeichert werden.' : (error as Error).message });
+    }
   });
 
   app.post('/api/events', requireWriteAuth, async (req, res) => {

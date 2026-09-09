@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef, MouseEvent, TouchEvent } from 'react';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, addMonths, subMonths, addWeeks, subWeeks, startOfWeek, endOfWeek, isSameMonth, getISOWeek } from 'date-fns';
 import { de } from 'date-fns/locale';
-import { fetchEvents, createEvent, updateEvent, deleteEvent, fetchCourses, fetchAdmins, fetchCategories } from '../lib/api';
+import { fetchEvents, setEventCompleted, createEvent, updateEvent, deleteEvent, fetchCourses, fetchAdmins, fetchCategories } from '../lib/api';
 import { AppEvent, Course, COURSES, User, EventCategory } from '../types';
 import EventModal from './EventModal';
 import SettingsModal from './SettingsModal';
@@ -31,6 +31,16 @@ type EdgeSwipeGesture = {
   hapticSent: boolean;
 };
 
+function CompletionMark({ completed }: { completed?: boolean }) {
+  if (!completed) return null;
+  return <>
+    <span className="sr-only">Erledigt</span>
+    <svg aria-hidden="true" className="pointer-events-none absolute inset-0 z-10 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
+      <line x1="100" y1="0" x2="0" y2="100" stroke="#dc2626" strokeWidth="3" vectorEffect="non-scaling-stroke" />
+    </svg>
+  </>;
+}
+
 const SCROLL_EDGE_EPSILON = 2;
 const EDGE_SWIPE_THRESHOLD = 96;
 const EDGE_SWIPE_MAX_PULL = 132;
@@ -38,6 +48,7 @@ const EDGE_SWIPE_MAX_PULL = 132;
 export default function CalendarView({ user, onUpdatePreferences, isInitialSetup = false, forcePinChange = false, onLogout }: Props) {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [view, setView] = useState<'month' | 'week'>('month');
+  const eventLoadVersion = useRef(0);
   const [rawEvents, setRawEvents] = useState<AppEvent[]>([]);
   const [allCourses, setAllCourses] = useState<Course[]>(COURSES);
   const [categories, setCategories] = useState<EventCategory[]>([]);
@@ -150,10 +161,11 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
   };
 
   const loadEvents = async () => {
+    const version = ++eventLoadVersion.current;
     try {
       setLoading(true);
       const allEvents: AppEvent[] = await fetchEvents();
-      setRawEvents(allEvents);
+      if (version === eventLoadVersion.current) setRawEvents(allEvents);
     } catch (e) {
       console.error('Failed to load events:', e);
     } finally {
@@ -220,6 +232,12 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
       console.error('Failed to save event as new:', e);
       alert(e instanceof Error ? e.message : 'Der neue Termin konnte nicht gespeichert werden.');
     }
+  };
+
+  const handleCompletionChange = async (id: string, completed: boolean) => {
+    const result = await setEventCompleted(id, completed);
+    ++eventLoadVersion.current;
+    setRawEvents(previous => previous.map(item => item.id === id ? { ...item, completed: result.completed } : item));
   };
 
   const handleDeleteEvent = async (id: string) => {
@@ -666,9 +684,9 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
           )}
           {view === 'week' ? (
             /* --- HOURLY WEEK VIEW --- */
-            <div className="flex-1 min-h-0 overflow-auto flex flex-col min-w-[700px]">
+            <div className="calendar-week w-full shrink-0">
               {/* Week View Header */}
-              <div className={`grid grid-cols-[60px_1fr_1fr_1fr_1fr_1fr_1fr_1fr] border-b ${theme.border} ${theme.bgGridHeader} sticky top-0 z-20`}>
+              <div className={`calendar-week-row grid border-b ${theme.border} ${theme.bgGridHeader} sticky top-0 z-20`}>
                 <div className={`p-2 border-r ${theme.border} text-center font-bold text-xs ${theme.textFaint} flex items-center justify-center`}>
                   Uhrzeit
                 </div>
@@ -698,7 +716,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
               </div>
 
               {/* Section: Ganztägige Termine */}
-              <div className={`grid grid-cols-[60px_1fr_1fr_1fr_1fr_1fr_1fr_1fr] border-b ${theme.border} ${theme.bgSidebar} min-h-[48px]`}>
+              <div className={`calendar-week-row grid border-b ${theme.border} ${theme.bgSidebar} min-h-[48px]`}>
                 <div className={`p-2 border-r ${theme.border} text-[10px] font-bold ${theme.textFaint} flex items-center justify-center text-center uppercase tracking-wider`}>
                   Ganztägig
                 </div>
@@ -724,10 +742,11 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
                         <div
                           key={e.id}
                           onClick={(ev) => openEditEventModal(e, ev)}
-                          className="rounded-sm border border-black/10 px-1.5 py-1 text-xs cursor-pointer flex flex-col justify-center leading-tight"
+                          className="relative min-w-0 overflow-hidden rounded-sm border border-black/10 px-1.5 py-1 text-xs cursor-pointer flex flex-col justify-center leading-tight"
                           style={getEventCardStyle(e)}
                           title={`${e.title} (${getCourseName(e.courseId)})`}
                         >
+                          <CompletionMark completed={e.completed} />
                           <span className="font-bold truncate">{e.title}</span>
                           <span className="opacity-90 text-[10px] truncate">{getCourseName(e.courseId)}</span>
                         </div>
@@ -738,11 +757,11 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
               </div>
 
               {/* Section: Hourly Timeline (07:00 - 22:00) */}
-              <div className="flex-1 min-h-0 overflow-y-auto">
+              <div>
                 {WEEK_HOURS.map((hour) => {
                   const hourNum = parseInt(hour.split(':')[0], 10);
                   return (
-                    <div key={hour} className={`grid grid-cols-[60px_1fr_1fr_1fr_1fr_1fr_1fr_1fr] border-b ${theme.border} min-h-[60px]`}>
+                    <div key={hour} className={`calendar-week-row grid border-b ${theme.border} min-h-[60px]`}>
                       <div className={`p-1.5 border-r ${theme.border} ${theme.bgSidebar} text-xs font-mono font-bold ${theme.textFaint} flex items-start justify-center pt-2`}>
                         {hour}
                       </div>
@@ -766,11 +785,12 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
                               <div
                                 key={e.id}
                                 onClick={(ev) => openEditEventModal(e, ev)}
-                                className="rounded-sm p-1.5 text-xs cursor-pointer flex flex-col justify-center leading-tight border border-black/10"
+                                className="relative min-w-0 overflow-hidden rounded-sm p-1.5 text-xs cursor-pointer flex flex-col justify-center leading-tight border border-black/10"
                                 style={getEventCardStyle(e)}
                                 title={`${e.title} (${getCourseName(e.courseId)}) - ${e.startTime}${e.endTime ? ` bis ${e.endTime}` : ''}`}
                               >
-                                <div className="flex items-center justify-between text-xs font-semibold opacity-95 mb-0.5">
+                                <CompletionMark completed={e.completed} />
+                                <div className="flex flex-wrap items-center justify-between text-xs font-semibold opacity-95 mb-0.5">
                                   <span>{e.startTime}{e.endTime ? ` – ${e.endTime}` : ''} Uhr</span>
                                 </div>
                                 <span className="font-bold truncate text-[13px]">{e.title}</span>
@@ -916,7 +936,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
                         {slotted.map(se => (
                           <div
                             key={se.event.id}
-                            className="pointer-events-auto mx-1 rounded-sm border border-black/10 px-1.5 py-1 text-xs cursor-pointer flex flex-col justify-center leading-tight overflow-hidden"
+                            className="relative pointer-events-auto mx-1 rounded-sm border border-black/10 px-1.5 py-1 text-xs cursor-pointer flex flex-col justify-center leading-tight overflow-hidden"
                             style={{
                               ...getEventCardStyle(se.event),
                               gridColumnStart: se.colStart,
@@ -926,6 +946,7 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
                             onClick={(e) => openEditEventModal(se.event, e)}
                             title={`${se.event.title} (${getCourseName(se.event.courseId)})${se.event.startTime ? ` [${se.event.startTime}${se.event.endTime ? `-${se.event.endTime}` : ''}]` : ''}`}
                           >
+                            <CompletionMark completed={se.event.completed} />
                             <div className="flex items-baseline justify-between gap-1.5 w-full overflow-hidden">
                               <span className="font-bold truncate text-[13px]">{se.event.title}</span>
                               {se.event.startTime && (
@@ -961,6 +982,8 @@ export default function CalendarView({ user, onUpdatePreferences, isInitialSetup
           initialDate={selectedDate}
           initialTime={selectedTime}
           event={editingEvent}
+          completed={rawEvents.find(item => item.id === editingEvent?.id)?.completed || false}
+          onCompletionChange={editingEvent ? completed => handleCompletionChange(editingEvent.id, completed) : undefined}
           userCourses={user.courses}
           allCourses={allCourses}
           categories={categories}

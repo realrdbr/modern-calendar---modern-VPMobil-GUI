@@ -22,7 +22,7 @@ from accounts import AccountStore, NotifySettings, Session
 from ntfy.diagnostics import configure_logging, emit, endpoint, error_fields
 from ntfy.service import NtfyService, resolve_ntfy_internal_url
 from plan_page import get_available_classes, get_selected_class_cookie_name, get_selected_subject_cookie_name, get_week_plans_for_page, get_week_version, render_plan_page, resolve_initial_class
-from rooms_page import get_free_rooms_for_page, get_room_plan_version, render_rooms_page, warm_free_room_results_from_cache
+from rooms_page import describe_room_plan, get_room_plan_for_page, get_free_rooms_for_page, get_room_plan_version, render_rooms_page, warm_free_room_results_from_cache
 from subscriptions import SubscriptionNotifier, available_class_names_from_plans, subject_key, subject_options_from_plans
 from teacher_page import render_teacher_page
 from vp_data import ResourceNotFound, Unauthorized, fetch_plan, get_cached_plan_for_page, get_plan_for_page, get_subject_catalog_plans, get_subject_catalog_plans_for_page, log, warm_page_caches_from_disk
@@ -340,7 +340,10 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/room-version":
             from web_utils import parse_date
             selected_date = parse_date(query_value(query, "datum"))
-            plan = get_week_plans_for_page(selected_date).get(selected_date)
+            try:
+                plan = get_room_plan_for_page(selected_date, refresh=False)
+            except Exception:
+                plan = None
             self._send_json({"version": get_room_plan_version(plan, selected_date)})
             return
         if parsed.path == "/raeume":
@@ -776,18 +779,14 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         session = self._session()
         flags = self._nav_flags(session) if session else {}
         try:
-            # Wie beim Kalender/Lehrerplan wird die ganze Schulwoche cache-first
-            # geladen. So zeigt "Freie Räume" sofort Daten an, sobald IRGENDEIN
-            # Tag der Woche gecached ist – unabhängig davon, ob ausgerechnet der
-            # angefragte Tag selbst schon im Cache liegt.
-            week_plans = get_week_plans_for_page(selected_date)
-            plan = week_plans.get(selected_date)
+            plan = get_room_plan_for_page(selected_date)
             html = render_rooms_page(
                 selected_date,
                 selected_hour,
                 get_free_rooms_for_page(plan, selected_date, selected_hour) if plan is not None else None,
                 loading=plan is None,
                 plan_version=get_room_plan_version(plan, selected_date),
+                plan_description=describe_room_plan(plan),
                 logout_csrf_token=session.csrf_token if session else None,
                 **flags,
             )
@@ -797,6 +796,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 selected_hour,
                 None,
                 error_message=f"Beim Laden der Daten ist ein Fehler aufgetreten: {error}",
+                plan_version=get_room_plan_version(None, selected_date),
                 logout_csrf_token=session.csrf_token if session else None,
                 **flags,
             )

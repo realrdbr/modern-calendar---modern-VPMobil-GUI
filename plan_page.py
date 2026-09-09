@@ -1,3 +1,4 @@
+from lesson_status import is_cancelled, detail_signature, has_value
 import json
 import re
 from datetime import date, timedelta
@@ -79,7 +80,7 @@ def format_tuple(values: tuple[str, ...]) -> str:
 def get_lesson_status_text(lesson) -> str:
     """Gibt den Status einer Stunde zurück."""
 
-    if lesson.ausfall:
+    if is_cancelled(lesson):
         return "Ausfall"
 
     if lesson.änderung:
@@ -175,6 +176,10 @@ def lesson_matches_subject_filter(lesson, selected_subjects: list[str], class_it
     if not selected_subjects:
         return True
 
+    # Ohne Kurszuordnung darf ein leerer Ausfall nicht durch Fachfilter verschwinden.
+    course = getattr(class_item, "kurse", {}).get(getattr(lesson, "kursnummer", None))
+    if is_cancelled(lesson) and not has_value(lesson.fach) and course is None:
+        return True
     return get_lesson_subject_label(lesson, class_item) in selected_subjects
 
 
@@ -346,7 +351,7 @@ def render_lesson_cell(lessons: list, period_labels: list[int] | None = None) ->
     cards = []
 
     for index, lesson in enumerate(lessons):
-        changed_class = "week-lesson--changed" if lesson.änderung or lesson.ausfall else ""
+        changed_class = "week-lesson--changed" if lesson.änderung or is_cancelled(lesson) else ""
         period_label = (
             f'<span class="lesson-period-label">{period_labels[index]}. Stunde</span>'
             if period_labels and index < len(period_labels) else ""
@@ -355,7 +360,7 @@ def render_lesson_cell(lessons: list, period_labels: list[int] | None = None) ->
         cards.append(f"""
             <details class="week-lesson {changed_class}">
                 <summary>
-                    <strong>{escape(lesson.fach or "-")}</strong>
+                    <strong>{escape("-" if is_cancelled(lesson) else (lesson.fach or "-"))}</strong>
                     {period_label}
                     <span>{escape(format_tuple(lesson.lehrer))}</span>
                     <span>{escape(format_tuple(lesson.räume))}</span>
@@ -431,7 +436,7 @@ def render_week_table(
             period_labels = None
             if block_mode and period + 1 <= max_period:
                 second = week_lessons.get(period + 1, {}).get(plan_date, [])
-                signature = lambda items: [(getattr(x, 'fach', ''), tuple(getattr(x, 'lehrer', ())), tuple(getattr(x, 'räume', ()))) for x in items]
+                signature = lambda items: [(getattr(x, 'fach', ''), tuple(getattr(x, 'lehrer', ())), tuple(getattr(x, 'räume', ())), detail_signature(x)) for x in items]
                 if signature(lessons) == signature(second):
                     # Gleiche Doppelstunde: Fach/Lehrer/Raum bleiben sichtbar,
                     # die Tabellenzeile wird lediglich zu 1–2, 3–4 usw.

@@ -214,7 +214,14 @@ class Vertretungsplan(VpMobilPyModell):
         
         lehrerE: dict[str, Lehrer] = {}
         for stunde in self.stunden:
-            for lehrer in stunde.lehrer:
+            teachers = tuple(t for t in stunde.lehrer if t and t.strip() not in ("-", "--", "---"))
+            if stunde.ausfall and not teachers:
+                teachers = tuple({kurs.lehrer for kurs in self.kurse
+                                  if stunde.kursnummer is not None
+                                  and kurs.kursnummer == stunde.kursnummer
+                                  and set(kurs.klassen).intersection(stunde.klassen)
+                                  and kurs.lehrer})
+            for lehrer in teachers:
                 if lehrer not in lehrerE:
                     lehrerE[lehrer] = Lehrer(kürzel=lehrer)
                 current = lehrerE[lehrer].stunden.get(stunde.periode, tuple())
@@ -416,7 +423,14 @@ class Vertretungsplan(VpMobilPyModell):
                         stunde = Stunde.from_xml(StdTag, planart=planart, kontext={Kurz}, parser=parser)
 
                         # Bekannte Stunden mergen
-                        if (existing_stunde := next((s for s in stunden if s.periode == stunde.periode and s.kursnummer == stunde.kursnummer and (s.klassen == stunde.klassen or s.lehrer == stunde.lehrer or s.räume == stunde.räume)), None)):
+                        if (existing_stunde := next((s for s in stunden if s.periode == stunde.periode and s.kursnummer == stunde.kursnummer
+                            and s.fach == stunde.fach and s.info == stunde.info
+                            and s.fachänderung == stunde.fachänderung
+                            and s.lehreränderung == stunde.lehreränderung
+                            and s.raumänderung == stunde.raumänderung
+                            and s.klassenänderung == stunde.klassenänderung
+                            and ((s.klassen and s.klassen == stunde.klassen and s.lehrer == stunde.lehrer and s.räume == stunde.räume)
+                                 or (s.lehrer and s.lehrer == stunde.lehrer and s.räume and s.räume == stunde.räume))), None)):
                             existing_stunde.klassen = tuple(sorted(set(existing_stunde.klassen) | set(stunde.klassen), key=natural_sort_key))
                             existing_stunde.lehrer = tuple(sorted(set(existing_stunde.lehrer) | set(stunde.lehrer), key=natural_sort_key))
                             existing_stunde.räume = tuple(sorted(set(existing_stunde.räume) | set(stunde.räume), key=natural_sort_key))
@@ -668,15 +682,21 @@ class Stunde(VpMobilPyModell):
     def ausfall(self) -> bool:
         """Ob die Stunde entfällt.
         
-        Wenn die Stundeninfo das Stichwort `"selbst"` enthält und keine Lehrer
-        angegeben sind, wird das ebenfalls als Ausfall interpretiert.
+        Nur eine Notiz bei gleichzeitig leerem Fach, Lehrer und Raum
+        kennzeichnet einen Ausfall. Bindestrich-Platzhalter gelten als leer.
         """
-        return self.fach is None or ("selbst" in (self.info or "") and not self.lehrer)
+        empty = ("", "-", "--", "---", "–", "—")
+        return (
+            str(self.fach or "").strip() in empty
+            and not any(str(t or "").strip() not in empty for t in self.lehrer)
+            and not any(str(room or "").strip() not in empty for room in self.räume)
+            and bool((self.info or "").strip())
+        )
     
     @property
     def änderung(self) -> bool:
         "Ob die Stunde in irgendeiner Weise geändert wurde. Ebenfalls `True`, wenn die Stunde entfällt"
-        return self.fachänderung or self.lehreränderung or self.raumänderung or self.klassenänderung
+        return self.ausfall or self.fachänderung or self.lehreränderung or self.raumänderung or self.klassenänderung
     
     @classmethod
     def from_xml(cls, data: XML.Element, planart: Literal["K", "L", "R"] = "K", *, parser: Parser = Parser(), kontext: tuple[str, ...] = tuple(), kontextgeändert: bool = False) -> Stunde:
@@ -727,7 +747,7 @@ class Stunde(VpMobilPyModell):
         elif planart == "L":
             klassen = tuple(sorted(parser.slice_aufzählung(Le), key=natural_sort_key))
             lehrer = tuple(sorted(kontext, key=natural_sort_key))
-            räume = tuple(sorted(nicht_klassen_parser.slice_aufzählung(Le), key=natural_sort_key))
+            räume = tuple(sorted(nicht_klassen_parser.slice_aufzählung(Ra), key=natural_sort_key))
             klassenänderung = "LeAe" in find(data, "Le", "attrib")
             lehreränderung = kontextgeändert
             raumänderung = "RaAe" in find(data, "Ra", "attrib")

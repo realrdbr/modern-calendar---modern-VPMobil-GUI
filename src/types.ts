@@ -46,6 +46,7 @@ export interface Attachment {
 }
 
 export interface AppEvent {
+  completed?: boolean;
   id: string;
   title: string;
   date: string;

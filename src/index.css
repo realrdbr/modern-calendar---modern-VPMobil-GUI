@@ -24,3 +24,10 @@
     outline-offset: 2px;
   }
 }
+
+/* One scroll container keeps week headers, all-day events and hours aligned. */
+.calendar-week { min-width: 900px; }
+.calendar-week-row { grid-template-columns: 60px repeat(7, minmax(0, 1fr)); }
+.calendar-week-row > * { min-width: 0; overflow-wrap: anywhere; }
+.calendar-week-row > :first-child { position: sticky; left: 0; z-index: 10; background-color: inherit; }
+.calendar-week-row.sticky > :first-child { z-index: 30; }

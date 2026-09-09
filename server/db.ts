@@ -9,6 +9,7 @@ let pool: mysql.Pool | null = null;
 let isConnected = false;
 
 type PrivateCalendarData = { categories: any[]; events: any[] };
+const completionMemoryStore = new Map<string, Set<string>>();
 const privateMemoryStore = new Map<string, PrivateCalendarData>();
 const privateMutationQueues = new Map<string, Promise<void>>();
 
@@ -306,6 +307,16 @@ export async function initDatabase() {
           crypto_version TINYINT UNSIGNED NOT NULL DEFAULT 1,
           updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
           CONSTRAINT fk_private_calendar_user FOREIGN KEY (username)
+            REFERENCES users(username) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+      `);
+
+      await conn.query(`
+        CREATE TABLE IF NOT EXISTS user_event_completions (
+          username VARCHAR(64) NOT NULL,
+          event_id VARCHAR(255) NOT NULL,
+          PRIMARY KEY (username, event_id),
+          CONSTRAINT fk_event_completion_user FOREIGN KEY (username)
             REFERENCES users(username) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
@@ -747,6 +758,7 @@ export async function dbCreateVpOnlyUser(data: {
 }
 
 export async function dbDeleteUser(username: string) {
+  completionMemoryStore.delete(username.trim().toLowerCase());
   const uname = username.toLowerCase();
   if (isConnected && pool) {
     const [vpRows]: any = await pool.query("SHOW TABLES LIKE 'vp_users'");
@@ -1261,4 +1273,29 @@ export async function dbReorderCategories(categoryIds: string[]) {
   memoryStore.categories.filter(c => !categoryIds.includes(c.id)).forEach(c => sorted.push(c));
   memoryStore.categories = sorted;
   return true;
+}
+
+
+export async function dbGetCompletedEventIds(username: string): Promise<Set<string>> {
+  const owner = username.trim().toLowerCase();
+  if (isConnected && pool) {
+    const [rows]: any = await pool.query('SELECT event_id FROM user_event_completions WHERE username = ?', [owner]);
+    return new Set(rows.map((row: any) => String(row.event_id)));
+  }
+  return new Set(completionMemoryStore.get(owner) || []);
+}
+
+export async function dbSetEventCompleted(username: string, eventId: string, completed: boolean): Promise<void> {
+  const owner = username.trim().toLowerCase();
+  if (isConnected && pool) {
+    if (completed) {
+      await pool.query('INSERT IGNORE INTO user_event_completions (username, event_id) VALUES (?, ?)', [owner, eventId]);
+    } else {
+      await pool.query('DELETE FROM user_event_completions WHERE username = ? AND event_id = ?', [owner, eventId]);
+    }
+    return;
+  }
+  const ids = completionMemoryStore.get(owner) || new Set<string>();
+  if (completed) ids.add(eventId); else ids.delete(eventId);
+  completionMemoryStore.set(owner, ids);
 }

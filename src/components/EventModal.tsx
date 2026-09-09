@@ -1,4 +1,4 @@
-import { useState, useEffect, FormEvent, ChangeEvent } from 'react';
+import { useState, useEffect, useRef, FormEvent, ChangeEvent } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { addDays, differenceInCalendarDays, format } from 'date-fns';
 import { AppEvent, Attachment, Course, COURSES as DEFAULT_COURSES, UserPreferences, EventCategory } from '../types';
@@ -8,6 +8,8 @@ interface Props {
   isOpen: boolean;
   onClose: () => void;
   onSave: (eventData: any) => void;
+  completed?: boolean;
+  onCompletionChange?: (completed: boolean) => Promise<void>;
   onDelete?: () => void;
   initialDate?: Date | null;
   initialTime?: string;
@@ -25,7 +27,7 @@ interface Props {
   onSaveAsNew?: (eventData: any) => void;
 }
 
-export default function EventModal({ isOpen, onClose, onSave, onDelete, initialDate, initialTime, event, userCourses, allCourses = DEFAULT_COURSES, categories = [], username, preferences, isReadOnly = false, canEdit = false, isAdmin = false, conflict = false, onDismissConflict, onSaveAsNew }: Props) {
+export default function EventModal({ isOpen, onClose, onSave, onDelete, initialDate, initialTime, event, userCourses, allCourses = DEFAULT_COURSES, categories = [], username, preferences, isReadOnly = false, canEdit = false, isAdmin = false, conflict = false, onDismissConflict, onSaveAsNew, completed = false, onCompletionChange }: Props) {
   // If editing an existing event or read-only, default to view mode.
   const [isViewMode, setIsViewMode] = useState(!!event || isReadOnly);
   
@@ -40,6 +42,27 @@ export default function EventModal({ isOpen, onClose, onSave, onDelete, initialD
   const [description, setDescription] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+
+  const completionPending = useRef(false);
+  const [completionSaving, setCompletionSaving] = useState(false);
+  const [completionError, setCompletionError] = useState('');
+  const [optimisticCompleted, setOptimisticCompleted] = useState<boolean | null>(null);
+  const changeCompletion = async (checked: boolean) => {
+    if (!onCompletionChange || completionPending.current) return;
+    completionPending.current = true;
+    setCompletionSaving(true);
+    setCompletionError('');
+    setOptimisticCompleted(checked);
+    try {
+      await onCompletionChange(checked);
+    } catch (error) {
+      setCompletionError(error instanceof Error ? error.message : 'Speichern fehlgeschlagen.');
+    } finally {
+      setOptimisticCompleted(null);
+      setCompletionSaving(false);
+      completionPending.current = false;
+    }
+  };
 
   const isDark = preferences.darkMode;
   const theme = {
@@ -191,7 +214,7 @@ export default function EventModal({ isOpen, onClose, onSave, onDelete, initialD
   if (isViewMode) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-3">
-        <div className={`${theme.bgApp} shadow-lg rounded-lg w-full max-w-md border ${theme.border} text-black flex flex-col max-h-[90vh]`}>
+        <div className={`${theme.bgApp} shadow-lg rounded-lg w-full max-w-md border ${theme.border} text-black flex flex-col max-h-[90dvh]`}>
           <div className={`flex items-center justify-between px-4 py-3 border-b ${theme.border} ${theme.bgHeader}`}>
             <h2 className={`text-lg font-bold ${theme.textMain}`}>Termindetails</h2>
             <button onClick={onClose} className={`${theme.textMuted} hover:${theme.textMain} font-bold text-xl leading-none`}>
@@ -219,6 +242,19 @@ export default function EventModal({ isOpen, onClose, onSave, onDelete, initialD
               <span className={`font-semibold ${theme.textMuted}`}>Kurs:</span>
               <span>{selectedCourseDisplay}</span>
             </div>
+
+            {event && onCompletionChange && (
+              <div>
+                <label className={`flex min-h-11 cursor-pointer items-center gap-3 rounded border ${theme.border} px-3 py-2 text-sm ${theme.textMain}`}>
+                  <input type="checkbox" className="h-5 w-5 shrink-0 accent-red-600"
+                    checked={optimisticCompleted ?? completed} disabled={completionSaving}
+                    onChange={e => void changeCompletion(e.target.checked)} />
+                  <span>Als erledigt markieren</span>
+                </label>
+                <p role="status" className={`mt-1 text-xs ${theme.textMuted}`}>{completionSaving ? 'Wird gespeichert …' : ''}</p>
+                {completionError && <p role="alert" className="mt-1 text-sm text-red-600">{completionError}</p>}
+              </div>
+            )}
 
             {description && (
               <div className={`text-sm ${theme.textMain} mt-4 whitespace-pre-wrap`}>
@@ -280,7 +316,7 @@ export default function EventModal({ isOpen, onClose, onSave, onDelete, initialD
   // Edit Mode
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-3">
-      <div className={`${theme.bgApp} shadow-lg rounded-lg w-full max-w-md border ${theme.border} text-black flex flex-col max-h-[90vh]`}>
+      <div className={`${theme.bgApp} shadow-lg rounded-lg w-full max-w-md border ${theme.border} text-black flex flex-col max-h-[90dvh]`}>
         <div className={`flex items-center justify-between px-4 py-3 border-b ${theme.border} ${theme.bgHeader}`}>
           <h2 className={`text-lg font-bold ${theme.textMain}`}>
             {event ? 'Termin bearbeiten' : 'Neuer Termin'}

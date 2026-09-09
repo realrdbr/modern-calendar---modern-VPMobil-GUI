@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from lesson_status import has_value
+
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from email.header import Header
@@ -56,15 +58,22 @@ def subject_display_label(subject: str | None, teacher: str | None = None) -> st
 def lesson_subject(class_item: object, lesson: object) -> str | None:
     """Liest bei Ausfällen das Fach über die Kursnummer aus dem Plan nach."""
     subject = getattr(lesson, "fach", None)
-    if subject:
+    if has_value(subject):
+        return subject
+    # Ausfälle behalten den konkreten Kurscode (z. B. ast1), nicht nur
+    # das allgemeine Fach (AST), damit gespeicherte Fachfilter weiter passen.
+    subject = getattr(lesson, "fachmeta", None)
+    if has_value(subject):
         return subject
     course = getattr(class_item, "kurse", {}).get(getattr(lesson, "kursnummer", None))
-    course_subject = getattr(course, "fach", None) if course is not None else None
-    return course_subject
+    course_code = getattr(course, "kürzel", None)
+    if has_value(course_code):
+        return course_code
+    return getattr(course, "fach", None)
 
 
 def lesson_teacher(class_item: object, lesson: object) -> str | None:
-    teachers = getattr(lesson, "lehrer", ())
+    teachers = tuple(t for t in getattr(lesson, "lehrer", ()) if has_value(t))
     if teachers:
         return ", ".join(teachers)
     course = getattr(class_item, "kurse", {}).get(getattr(lesson, "kursnummer", None))

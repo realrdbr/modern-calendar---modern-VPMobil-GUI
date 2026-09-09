@@ -394,3 +394,12 @@ export async function reorderCategories(categoryIds: string[], adminToken?: stri
   if (!res.ok) throw new Error(await readError(res, 'Kategorie-Reihenfolge konnte nicht gespeichert werden.'));
   return res.json();
 }
+
+
+export async function setEventCompleted(id: string, completed: boolean): Promise<{ id: string; completed: boolean }> {
+  const res = await fetch(`${API_URL}/api/events/${encodeURIComponent(id)}/completion`, {
+    method: 'PUT', headers: getHeaders(), body: JSON.stringify({ completed }),
+  });
+  if (!res.ok) throw new Error((await res.json()).error || 'Erledigt-Status konnte nicht gespeichert werden.');
+  return res.json();
+}

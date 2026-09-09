@@ -1,4 +1,5 @@
 import json
+import hashlib
 from datetime import date, timedelta
 from html import escape
 from http.server import BaseHTTPRequestHandler
@@ -13,6 +14,7 @@ from vp_data import (
     _json_env_list,
     find_free_rooms_in_plan,
     get_week_plans_for_page,
+    get_room_plan_for_page,
     warm_page_caches_from_disk,
 )
 from web_utils import (
@@ -44,7 +46,21 @@ def get_room_plan_version(plan, selected_date: date) -> str:
     if plan is None:
         return f"loading:{selected_date.isoformat()}"
     timestamp = getattr(plan, "zeitstempel", None)
-    return str(timestamp) if timestamp is not None else f"normal:{selected_date.isoformat()}"
+    from vp_data import find_occupied_rooms_in_plan
+    occupancy = [(period, sorted(find_occupied_rooms_in_plan(plan, period)))
+                 for period in range(1, 9)]
+    digest = hashlib.sha256(repr(occupancy).encode()).hexdigest()
+    return f"{selected_date}:{timestamp}:{digest}"
+
+
+def describe_room_plan(plan) -> str:
+    if plan is None:
+        return ""
+    if hasattr(plan, "week_type"):
+        return "Grundlage: normaler Stundenplan. Für diesen Tag ist kein Tagesplan veröffentlicht."
+    timestamp = getattr(plan, "zeitstempel", None)
+    suffix = f" · Planstand: {timestamp:%d.%m.%Y %H:%M}" if timestamp is not None else ""
+    return "Grundlage: veröffentlichter Tagesplan" + suffix
 
 
 def get_room_quality(room: int) -> str:
@@ -80,7 +96,7 @@ def sort_rooms_by_quality(rooms: list[int]) -> list[int]:
 
 def get_free_rooms_for_page(plan, selected_date: date, selected_hour: int) -> list[int]:
     """Liefert freie Räume pro Planstand aus dem Arbeitsspeicher-Cache."""
-    version = str(getattr(plan, "zeitstempel", "") or "")
+    version = get_room_plan_version(plan, selected_date)
     key = (selected_date, version, selected_hour)
     with _room_result_cache_lock:
         cached = _room_result_cache.get(key)
@@ -110,8 +126,9 @@ def warm_free_room_results_from_cache(anchor_date: date | None = None) -> int:
         anchor_date += timedelta(days=7 - anchor_date.weekday())
     warmed = 0
     for week_anchor in (anchor_date, anchor_date + timedelta(days=7)):
-        week_plans = get_week_plans_for_page(week_anchor)
-        for plan_date, plan in week_plans.items():
+        for offset in range(5):
+            plan_date = week_anchor - timedelta(days=week_anchor.weekday()) + timedelta(days=offset)
+            plan = get_room_plan_for_page(plan_date, refresh=False)
             if plan is None:
                 continue
             for hour in range(1, 9):
@@ -133,6 +150,7 @@ def render_rooms_page(
     pin_modal_error: str | None = None,
     pin_modal_changed: bool = False,
     session_username: str | None = None,
+    plan_description: str = "",
 ) -> str:
     """Erzeugt die HTML-Seite für freie Räume."""
 
@@ -174,6 +192,7 @@ def render_rooms_page(
                     Anzahl freier Räume: {len(free_rooms)}
                 </p>
 
+                <p class="summary">{escape(plan_description)}</p>
                 <div class="legend">
                     <span><span class="legend-dot legend-dot--good"></span>Gut</span>
                     <span><span class="legend-dot legend-dot--medium"></span>Mittel gut</span>
@@ -354,15 +373,23 @@ def render_rooms_page(
                 return;
             }}
 
+            let uncertain = false;
             setInterval(() => {{
                 fetch("/api/room-version?datum={selected_date.isoformat()}", {{cache: "no-store"}})
-                    .then(response => response.json())
+                    .then(response => {{
+                        if (!response.ok) throw new Error("Plandaten nicht erreichbar");
+                        return response.json();
+                    }})
                     .then(data => {{
-                        if (data.version !== initialVersion) {{
+                        if (uncertain || data.version !== initialVersion) {{
                             window.location.reload();
                         }}
                     }})
-                    .catch(() => {{}});
+                    .catch(() => {{
+                        uncertain = true;
+                        const result = document.querySelector(".result");
+                        if (result) result.innerHTML = '<h2>Raumbelegung derzeit nicht überprüfbar</h2><p>Die Verbindung wird erneut geprüft.</p>';
+                    }});
             }}, 5000);
         }})();
     </script>''' if plan_version else ""}
@@ -382,7 +409,10 @@ class RoomsPageHandler(BaseHTTPRequestHandler):
         selected_date = parse_date(query_value(query, "datum"))
 
         if parsed_url.path == "/api/room-version":
-            plan = get_week_plans_for_page(selected_date).get(selected_date)
+            try:
+                plan = get_room_plan_for_page(selected_date, refresh=False)
+            except Exception:
+                plan = None
 
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -401,10 +431,7 @@ class RoomsPageHandler(BaseHTTPRequestHandler):
         plan = None
 
         try:
-            # Cache-first über die ganze Schulwoche (wie Kalender/Lehrerplan):
-            # zeigt sofort Ergebnisse, sobald irgendein Tag der Woche gecached
-            # ist, statt auf den exakt angefragten Tag warten zu müssen.
-            plan = get_week_plans_for_page(selected_date).get(selected_date)
+            plan = get_room_plan_for_page(selected_date)
             if plan is not None:
                 free_rooms = get_free_rooms_for_page(plan, selected_date, selected_hour)
             plan_version = get_room_plan_version(plan, selected_date)
@@ -421,7 +448,8 @@ class RoomsPageHandler(BaseHTTPRequestHandler):
             free_rooms=free_rooms,
             error_message=error_message,
             loading=plan is None and error_message is None,
-            plan_version=plan_version,
+            plan_version=plan_version or get_room_plan_version(None, selected_date),
+            plan_description=describe_room_plan(plan),
         )
 
         send_html(self, html)

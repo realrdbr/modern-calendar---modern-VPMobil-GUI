@@ -6,8 +6,10 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from threading import Lock, Thread
 from time import monotonic
+from types import SimpleNamespace
 
 from dotenv import load_dotenv
+from lesson_status import is_cancelled
 
 from vpmobil import ResourceNotFound, Standardpfade, Unauthorized, VertretungsplanZugang
 from vpmobil.weekly import fetch_weekly_plans
@@ -661,24 +663,8 @@ def get_week_plans_for_page(selected_date: date) -> dict[date, object | None]:
 def collect_relevant_classes(plan) -> list:
     """Sammelt alle Klassen, die für die Raumbelegung ausgewertet werden sollen."""
 
-    classes = []
-
-    for grade in range(1, 13):
-        main_class_found = False
-
-        for letter in ALPHABET:
-            class_name = f"{grade}{letter}"
-
-            if class_name in plan.klassen:
-                classes.append(plan.klassen[class_name])
-                continue
-
-            # Wenn es keine getrennten Klassen wie 11a oder 11b gibt,
-            # wird einmalig die Hauptklasse wie "11" übernommen.
-            if not main_class_found and str(grade) in plan.klassen:
-                classes.append(plan.klassen[str(grade)])
-                main_class_found = True
-    return classes
+    from vpmobil.utils import natural_sort_key
+    return [item for _, item in sorted(plan.klassen.items(), key=lambda pair: natural_sort_key(pair[0]))]
 
 
 def extract_room_number(room_value: object) -> int | None:
@@ -706,27 +692,43 @@ def find_occupied_rooms(classes: list, selected_hour: int) -> set[int]:
                 continue
 
             for lesson in lessons:
+                if is_cancelled(lesson):
+                    continue
                 for room in lesson.räume:
-                    room_number = extract_room_number(room)
-
-                    if room_number is not None:
-                        occupied_rooms.add(room_number)
+                    # Mehrfachräume dürfen nicht zu einer Nummer wie 101102 werden.
+                    room_text = re.sub(r"(\d)\s*([–—-])\s*(?=\d)", r"\1\2", str(room))
+                    for value in re.split(r"[,;/+&\s]+", room_text):
+                        interval = re.fullmatch(r"(\d+)[–—-](\d+)", value)
+                        if interval:
+                            first, last = sorted(map(int, interval.groups()))
+                            occupied_rooms.update(room for room in ALL_ROOMS if first <= room <= last)
+                        else:
+                            room_number = extract_room_number(value)
+                            if room_number is not None:
+                                occupied_rooms.add(room_number)
 
     return occupied_rooms
+
+
+def find_occupied_rooms_in_plan(plan, selected_hour: int) -> set[int]:
+    """Berücksichtigt auch Unterricht ohne Klassenzuordnung, etwa in Lehrerplänen."""
+    if hasattr(plan, "stunden"):
+        lessons = [lesson for lesson in plan.stunden if int(lesson.periode) == selected_hour]
+        return find_occupied_rooms([SimpleNamespace(stunden={selected_hour: lessons})], selected_hour)
+    return find_occupied_rooms(collect_relevant_classes(plan), selected_hour)
 
 
 def find_free_rooms(selected_date: date, selected_hour: int) -> list[int]:
     """Gibt alle freien Räume für ein Datum und eine Unterrichtsstunde zurück."""
 
-    plan = fetch_plan(selected_date)
+    plan = fetch_room_plan(selected_date)
     return find_free_rooms_in_plan(plan, selected_hour)
 
 
 def find_free_rooms_in_plan(plan, selected_hour: int) -> list[int]:
     """Gibt freie Räume für einen bereits geladenen Tagesplan zurück."""
 
-    classes = collect_relevant_classes(plan)
-    occupied_rooms = find_occupied_rooms(classes, selected_hour)
+    occupied_rooms = find_occupied_rooms_in_plan(plan, selected_hour)
 
     return [room for room in ALL_ROOMS if room not in occupied_rooms]
 
@@ -750,3 +752,71 @@ __all__ = [
     "find_free_rooms",
     "find_free_rooms_in_plan",
 ]
+
+
+_room_plan_cache = {}
+_room_plan_lock = Lock()
+_room_plan_refreshing = set()
+
+
+def fetch_room_plan(selected_date: date):
+    """Lädt aktuelle Raumplandaten; nur ein fehlender Tagesplan erlaubt den Normalplan."""
+    try:
+        plan = fetch_plan_from_vpmobil(selected_date)
+    except ResourceNotFound:
+        plan = fetch_official_weekly_plans(selected_date).get(selected_date)
+    if plan is None:
+        raise ResourceNotFound("Keine Plandaten für die Raumbelegung vorhanden.")
+    if getattr(plan, "datum", selected_date) not in (None, selected_date):
+        raise ValueError("Das gelieferte Plandatum stimmt nicht mit dem angefragten Datum überein.")
+    return plan
+
+
+def refresh_room_plan_in_background(selected_date: date) -> None:
+    """Ein Abruf pro Datum; Netzwerkzugriffe halten keine Cache-Sperre."""
+    with _room_plan_lock:
+        if selected_date in _room_plan_refreshing:
+            return
+        _room_plan_refreshing.add(selected_date)
+
+    def refresh():
+        try:
+            plan = fetch_room_plan(selected_date)
+            with _room_plan_lock:
+                if len(_room_plan_cache) > 30:
+                    _room_plan_cache.clear()
+                _room_plan_cache[selected_date] = (monotonic(), plan)
+        except Exception as error:
+            log(f"Raumplan-Refresh für {selected_date.isoformat()} fehlgeschlagen: {error}")
+        finally:
+            with _room_plan_lock:
+                _room_plan_refreshing.discard(selected_date)
+
+    Thread(target=refresh, daemon=True, name=f"room-refresh-{selected_date.isoformat()}").start()
+
+
+def get_room_plan_for_page(selected_date: date, *, refresh: bool = True):
+    """Liefert sofort den Cache; nur Seitenaufrufe starten einen Hintergrundabruf."""
+    with _room_plan_lock:
+        cached = _room_plan_cache.get(selected_date)
+    plan = cached[1] if cached is not None else None
+    if plan is None:
+        with _page_cache_lock:
+            plan = _page_plan_cache.get(selected_date)
+        if plan is None:
+            plan = load_plan_from_cache(selected_date)
+        if plan is None:
+            monday = _week_monday(selected_date)
+            with _weekly_cache_lock:
+                week = _weekly_plan_cache.get(monday)
+            if week is None:
+                week = _load_weekly_cache(monday)
+            plan = week.get(selected_date) if week else None
+        if plan is not None:
+            with _room_plan_lock:
+                # Ein zwischenzeitlich abgeschlossener Refresh hat Vorrang.
+                cached = _room_plan_cache.setdefault(selected_date, (0, plan))
+                plan = cached[1]
+    if refresh:
+        refresh_room_plan_in_background(selected_date)
+    return plan

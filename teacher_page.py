@@ -1,3 +1,4 @@
+from lesson_status import is_cancelled, detail_signature, has_value
 import json
 from datetime import date, timedelta
 from html import escape
@@ -9,6 +10,7 @@ from vp_data import (
     ResourceNotFound,
     Unauthorized,
     get_week_plans_for_page,
+    get_cached_official_weekly_plans_for_page,
 )
 from web_utils import (
     CALENDAR_PUBLIC_URL,
@@ -59,7 +61,7 @@ def format_tuple(values: tuple[str, ...]) -> str:
 def get_lesson_status_text(lesson) -> str:
     """Gibt den Status einer Stunde zurück."""
 
-    if lesson.ausfall:
+    if is_cancelled(lesson):
         return "Ausfall"
 
     if lesson.änderung:
@@ -68,15 +70,42 @@ def get_lesson_status_text(lesson) -> str:
     return "Regulär"
 
 
+def cancelled_teacher_assignments(plan, plan_date):
+    """Ordnet lehrerlose Ausfälle über Kursdaten oder einen eindeutigen Normalplan zu."""
+    normal_week = None
+    for class_name, class_item in getattr(plan, "klassen", {}).items():
+        for period, lessons in class_item.stunden.items():
+            for lesson in lessons:
+                if not is_cancelled(lesson) or any(has_value(t) for t in lesson.lehrer):
+                    continue
+                course_number = getattr(lesson, "kursnummer", None)
+                course = getattr(class_item, "kurse", {}).get(course_number)
+                teachers = (getattr(course, "lehrer", None),)
+                if not any(has_value(t) for t in teachers):
+                    if normal_week is None:
+                        normal_week = get_cached_official_weekly_plans_for_page(plan_date) or {}
+                    normal_plan = normal_week.get(plan_date)
+                    normal_class = getattr(normal_plan, "klassen", {}).get(class_name)
+                    candidates = list(getattr(normal_class, "stunden", {}).get(period, ()))
+                    if course_number is not None:
+                        candidates = [item for item in candidates if getattr(item, "kursnummer", None) == course_number]
+                    # Parallele Kurse ohne Zuordnung erlauben keine sichere Lehrerableitung.
+                    teachers = candidates[0].lehrer if len(candidates) == 1 else ()
+                for teacher in teachers:
+                    if has_value(teacher):
+                        yield teacher, period, _normalize_teacher_lesson(lesson, class_name)
+
+
 def get_available_teachers(week_plans: dict[date, object | None]) -> list[str]:
     """Sammelt alle Lehrerkürzel, die in der Woche vorkommen."""
 
     teachers = set()
 
-    for plan in week_plans.values():
+    for plan_date, plan in week_plans.items():
         if plan is None:
             continue
 
+        teachers.update(teacher for teacher, _, _ in cancelled_teacher_assignments(plan, plan_date))
         if hasattr(plan, "lehrer"):
             teachers.update(getattr(plan, "lehrer").keys())
             continue
@@ -137,6 +166,16 @@ def collect_teacher_lessons(
 
                     normalized_lesson = _normalize_teacher_lesson(lesson, class_name)
                     week_lessons.setdefault(int(period), {}).setdefault(plan_date, []).append(normalized_lesson)
+
+    for plan_date, plan in week_plans.items():
+        if plan is None:
+            continue
+        for teacher, period, lesson in cancelled_teacher_assignments(plan, plan_date):
+            if teacher != selected_teacher:
+                continue
+            items = week_lessons.setdefault(int(period), {}).setdefault(plan_date, [])
+            if lesson not in items:
+                items.append(lesson)
 
     return week_lessons
 
@@ -229,7 +268,7 @@ def render_lesson_cell(lessons: list, period_labels: list[int] | None = None) ->
     cards = []
 
     for index, lesson in enumerate(lessons):
-        changed_class = "week-lesson--changed" if lesson.änderung or lesson.ausfall else ""
+        changed_class = "week-lesson--changed" if lesson.änderung or is_cancelled(lesson) else ""
         period_label = (
             f'<span class="lesson-period-label">{period_labels[index]}. Stunde</span>'
             if period_labels and index < len(period_labels) else ""
@@ -238,7 +277,7 @@ def render_lesson_cell(lessons: list, period_labels: list[int] | None = None) ->
         cards.append(f"""
             <details class="week-lesson {changed_class}">
                 <summary>
-                    <strong>{escape(lesson.fach or "-")}</strong>
+                    <strong>{escape("-" if is_cancelled(lesson) else (lesson.fach or "-"))}</strong>
                     {period_label}
                     <span>{escape(format_tuple(lesson.klassen))}</span>
                     <span>{escape(format_tuple(lesson.räume))}</span>
@@ -308,7 +347,7 @@ def render_teacher_week_table(
             period_labels = None
             if block_mode and period + 1 <= max_period:
                 second = week_lessons.get(period + 1, {}).get(plan_date, [])
-                signature = lambda items: [(getattr(x, 'fach', ''), tuple(getattr(x, 'klassen', ())), tuple(getattr(x, 'räume', ()))) for x in items]
+                signature = lambda items: [(getattr(x, 'fach', ''), tuple(getattr(x, 'klassen', ())), tuple(getattr(x, 'räume', ())), detail_signature(x)) for x in items]
                 if signature(lessons) == signature(second):
                     pass
                 elif lessons != second:
