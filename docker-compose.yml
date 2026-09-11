@@ -51,6 +51,8 @@ services:
       NTFY_PROVISIONER_URL: http://ntfy-provisioner:8080
       NTFY_PROVISIONER_SECRET: ${APP_ENCRYPTION_KEY:?APP_ENCRYPTION_KEY muss gesetzt sein}
       ADMIN_PANEL_PASSWORD: ${ADMIN_PANEL_PASSWORD:?ADMIN_PANEL_PASSWORD muss gesetzt sein}
+    volumes:
+      - ./uploads:/app/uploads
     ports:
       - "${APP_BIND_HOST:-127.0.0.1}:${CAL11_PORT:-3000}:${CAL11_PORT:-3000}"
     networks:
@@ -89,7 +91,7 @@ services:
       - ./data/ntfy:/var/lib/ntfy
       - ./ntfy/server.yml:/etc/ntfy/server.yml:ro
     ports:
-      - "${NTFY_BIND_HOST:-0.0.0.0}:${NTFY_PORT:-8090}:80"
+      - "${NTFY_BIND_HOST:-127.0.0.1}:${NTFY_PORT:-8090}:80"
     networks:
       cal11_net:
       ntfy_delivery:
@@ -182,7 +184,7 @@ services:
       BAD_ROOMS: ${BAD_ROOMS}
       ALL_ROOMS: ${ALL_ROOMS}
     ports:
-      - "${VP_PORT:-8000}:${VP_PORT:-8000}"
+      - "${VP_BIND_HOST:-127.0.0.1}:${VP_PORT:-8000}:${VP_PORT:-8000}"
     volumes:
       - ./data/ntfy:/var/lib/ntfy
       - vp_plan_cache:/app/.vp_cache

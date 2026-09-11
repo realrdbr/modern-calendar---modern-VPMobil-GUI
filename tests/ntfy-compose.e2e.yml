@@ -1,0 +1,106 @@
+services:
+  ntfy:
+    image: binwiederhier/ntfy:v2.25.0
+    command: serve
+    environment:
+      NTFY_AUTH_FILE: /data/auth.db
+      NTFY_CACHE_FILE: /data/cache.db
+      NTFY_AUTH_DEFAULT_ACCESS: deny-all
+      NTFY_VISITOR_REQUEST_LIMIT_BURST: '3'
+      NTFY_VISITOR_REQUEST_LIMIT_REPLENISH: 1h
+      NTFY_VISITOR_REQUEST_LIMIT_EXEMPT_HOSTS: 172.30.250.3
+      NTFY_BEHIND_PROXY: 'true'
+    volumes:
+    - test_data:/data
+    networks:
+      delivery:
+        ipv4_address: 172.30.250.2
+        aliases:
+        - ntfy-delivery
+      public:
+        aliases:
+        - ntfy-public
+    healthcheck:
+      test:
+      - CMD
+      - wget
+      - -q
+      - -O
+      - /dev/null
+      - http://127.0.0.1/v1/health
+      interval: 1s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+  provisioner:
+    image: cal11-ntfy-e2e-provisioner
+    environment:
+      NTFY_AUTH_FILE: /data/auth.db
+      NTFY_PROVISIONER_SECRET: isolated-regression-secret
+    volumes:
+    - test_data:/data
+    networks:
+    - public
+    build:
+      context: ..
+      dockerfile: Dockerfile.ntfy-provisioner
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -c
+      - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health',
+        timeout=2).close()
+      interval: 1s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+  vp:
+    image: cal11-ntfy-e2e-vp
+    command:
+    - sleep
+    - infinity
+    working_dir: /app
+    environment:
+      PYTHONPATH: /app
+      NTFY_E2E: '1'
+      APP_ENCRYPTION_KEY: MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=
+      NTFY_INTERNAL_URL: http://ntfy-delivery
+      NTFY_PROVISIONER_URL: http://provisioner:8080
+      NTFY_PROVISIONER_SECRET: isolated-regression-secret
+      NTFY_TEST_PROXY_URL: http://proxy
+      NTFY_PUBLIC_URL: https://notify.cal11.de
+    networks:
+      delivery:
+        ipv4_address: 172.30.250.3
+      public: null
+      proxy_clients: null
+    build:
+      context: ..
+      dockerfile: Dockerfile.vp
+    depends_on:
+      ntfy:
+        condition: service_healthy
+      provisioner:
+        condition: service_healthy
+      proxy:
+        condition: service_started
+  proxy:
+    image: nginx:stable-alpine
+    volumes:
+    - ./ntfy-proxy.nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+    - public
+    - proxy_clients
+volumes:
+  test_data: null
+networks:
+  delivery:
+    internal: true
+    ipam:
+      config:
+      - subnet: 172.30.250.0/29
+  public:
+    internal: true
+  proxy_clients:
+    internal: true

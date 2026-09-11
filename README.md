@@ -304,3 +304,68 @@ Wenn `start-all.sh` bereits beim Start oder bei der Zugangssynchronisierung
 scheitert, bleiben die Container zur Diagnose erhalten. Das Skript gibt den
 Containerstatus, die letzten Dienst-Logs und die ntfy-Healthcheck-Ergebnisse aus.
 Nach einem erfolgreichen Start gilt weiterhin: Strg+C fährt den Stack herunter.
+
+
+### Uploads und Proxy absichern (September 2026)
+
+Kalenderdateien liegen dauerhaft im Host-Verzeichnis `uploads/`, eingebunden als
+`/app/uploads`. Beim Upgrade über `start-all.sh` werden Dateien aus dem bisherigen
+App-Container vor dessen Neuerstellung kopiert; bereits vorhandene Host-Dateien
+bleiben erhalten. Beim ersten Upgrade deshalb `start-all.sh` benutzen, bevor der
+alte App-Container entfernt wird. Bereits verlorene Dateien benötigen ein Backup
+oder einen erneuten Upload. Das Verzeichnis gehört in die Datensicherung.
+Fehlende Dateien liefern jetzt HTTP 404 statt der HTML-Startseite. Downloads
+behalten ihre Dateinamen und werden ohne MIME-Sniffing ausgeliefert.
+
+Für einen Proxy auf demselben Host in `.env` setzen:
+
+```dotenv
+APP_BIND_HOST=127.0.0.1
+VP_BIND_HOST=127.0.0.1
+NTFY_BIND_HOST=127.0.0.1
+NTFY_BEHIND_PROXY=true
+COOKIE_SECURE=true
+```
+
+Bestehende `.env`-Einträge überschreiben Compose-Defaults. Ein externer Proxy auf
+einem anderen Host braucht gezielt freigegebene private Bind-Adressen/Firewallregeln.
+`start-all.sh docker-proxy` aktiviert die ntfy-Proxy-Auswertung automatisch.
+Beim Host-nginx bleibt es bei `start-all.sh docker` mit obigen Einstellungen.
+Das nginx-Beispiel ersetzt eingehende Forwarded-For-Header durch die tatsächliche
+Client-IP; andernfalls könnten Clients die IP-basierte Begrenzung manipulieren.
+Die 15-MB-Proxygrenze berücksichtigt Base64 für maximal 10 MB Dateidaten.
+Nach Änderungen nginx-Konfiguration mit `nginx -t` prüfen und neu laden.
+
+`.env`, Datenbanken, Uploads und lokale Python-Umgebungen werden aus dem
+Docker-Build-Kontext ausgeschlossen. Bereits gebaute alte Images werden dadurch
+nicht nachträglich bereinigt. Lokale `.env`-Dateirechte: `chmod 600 .env`.
+
+HTTP 429 allein belegt keinen Angriff oder Passwortdiebstahl. Für die Ursache
+werden ntfy-Fehlercode und Proxy-/VP-Protokolle vom betroffenen Zeitpunkt benötigt.
+Ein DNS-Fehler beim Upstream `ntfy.sh` kann zusätzlich iOS-Push verhindern, obwohl
+der eigene ntfy-Server die Nachricht angenommen hat.
+
+Den Versand samt Zugangsschutz reproduzierbar ohne Produktionskonten prüfen:
+
+```bash
+docker compose -p ntfy-access-e2e -f tests/ntfy-compose.e2e.yml up -d --build
+docker compose -p ntfy-access-e2e -f tests/ntfy-compose.e2e.yml exec -T vp python tests/ntfy_end_to_end.py
+docker compose -p ntfy-access-e2e -f tests/ntfy-compose.e2e.yml down -v
+```
+
+Der Teststack besitzt nur interne Netze, keine veröffentlichten Ports und eigene
+Testdaten. Der letzte Befehl entfernt ausschließlich seine Testdaten; vor einer
+Wiederholung ist diese Bereinigung erforderlich. Das Subnetz `172.30.250.0/29`
+muss frei sein. Geprüft werden die tatsächlichen TCP-Adressen des internen
+Versandwegs, Zeitsteuerung, Deduplizierung, Versand bei erschöpftem öffentlichen
+Request-Limit, angemeldete JSON-/SSE-Abos über nginx, erneute Provisionierung,
+Topic-Isolation und das Leseverbot des Server-Publishers. Dabei ist die öffentliche
+URL auf `https://notify.cal11.de` gesetzt; der Versand bleibt trotzdem intern.
+Der Test läuft aus dem neu gebauten VP-Image, ohne eingebundenen Quellcode.
+
+Loopback-Portfreigaben beschränken nur direkte Zugriffe auf die Host-Ports.
+Der Caddy-Container erreicht die Dienste weiterhin über `cal11_net`; nginx auf
+demselben Host erreicht sie über `127.0.0.1`. Die Anmeldung, Schlüssel und
+persönlichen ntfy-Zugangsdaten werden durch diese Änderung nicht ersetzt.
+Öffentliche Health-/Login-Prüfungen beweisen keine interne Produktionsroute
+und keine Push-Anzeige auf einem bestimmten Endgerät.

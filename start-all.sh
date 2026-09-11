@@ -52,9 +52,28 @@ shutdown() {
 
 trap shutdown INT TERM EXIT
 
+# Preserve attachments from older containers before Compose recreates them.
+# Copy only missing files; never replace files already persisted on the host.
+preserve_uploads() {
+  local app_id staging
+  app_id="$(docker compose ps -a -q app)"
+  mkdir -p "$ROOT_DIR/uploads"
+  if [[ -n "$app_id" ]]; then
+    staging="$(mktemp -d)"
+    if docker cp "$app_id:/app/uploads/." "$staging/"; then
+      cp -an "$staging/." "$ROOT_DIR/uploads/"
+    else
+      echo "[start-all] Upload-Sicherung fehlgeschlagen. Start abgebrochen, alter Container bleibt erhalten."
+      return 1
+    fi
+    rm -rf -- "$staging"
+  fi
+}
+
 case "$MODE" in
   docker)
     echo "[start-all] Starte Stack ohne Proxy (localhost-Testing)..."
+    preserve_uploads
     docker compose up -d --build
     bash ./sync-ntfy-users.sh
     STARTUP_COMPLETE=1
@@ -62,6 +81,8 @@ case "$MODE" in
     ;;
   docker-proxy)
     echo "[start-all] Starte Stack inkl. Caddy-Proxy-Profil..."
+    export NTFY_BEHIND_PROXY=true
+    preserve_uploads
     docker compose --profile proxy up -d --build
     bash ./sync-ntfy-users.sh
     STARTUP_COMPLETE=1

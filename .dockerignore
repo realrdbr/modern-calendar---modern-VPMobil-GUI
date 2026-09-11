@@ -4,3 +4,11 @@ dist
 .env
 npm-debug.log
 .DS_Store
+
+data
+uploads
+.venv
+.vp_cache
+__pycache__
+.env.*
+!.env.example

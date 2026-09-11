@@ -1,6 +1,7 @@
 """Explicit integration check; run only in an isolated stack with NTFY_E2E=1."""
 import json
 import os
+import socket
 from datetime import date, datetime, time
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -9,7 +10,7 @@ from types import SimpleNamespace
 import requests
 
 from accounts import AccountStore, NotifySettings
-from ntfy.service import NtfyService, resolve_ntfy_internal_url
+from ntfy.service import NtfyService, resolve_ntfy_internal_url, resolve_ntfy_publisher_auth
 from ntfy.sync_users import sync_users
 from subscriptions import SubscriptionNotifier, subject_key
 
@@ -29,6 +30,10 @@ def plan(day):
 def main():
     assert os.getenv("NTFY_E2E") == "1", "Only run in the isolated test stack"
     assert resolve_ntfy_internal_url() == "http://ntfy-delivery"
+    # Verify the actual TCP route, independent of the public-domain setting.
+    with socket.create_connection(("ntfy-delivery", 80), timeout=5) as connection:
+        assert connection.getsockname()[0] == os.getenv("NTFY_TEST_VP_IP", "172.30.250.3")
+        assert connection.getpeername()[0] == os.getenv("NTFY_TEST_SERVER_IP", "172.30.250.2")
     with TemporaryDirectory() as directory:
         store = AccountStore(Path(directory) / "test.sqlite", os.environ["APP_ENCRYPTION_KEY"])
         user = store.create_user("check_user", "1234", "11", ntfy_topic="check-topic",
@@ -77,12 +82,39 @@ def main():
         assert titles.count("(VPrintfy) Heute") == 1
         assert titles.count("(VPrintfy) Morgen") == 1
         assert titles.count("(VPrintfy) Nächster Raum: 102") == 1
+        # A repeated startup sync must preserve existing subscriber credentials.
+        assert sync_users(store, NtfyService(Path.cwd())) == 1
+        proxy_url = os.getenv("NTFY_TEST_PROXY_URL")
+        if proxy_url:
+            proxied = requests.get(f"{proxy_url}/{user.ntfy_topic}/json?poll=1&since=all", auth=auth, timeout=5)
+            proxied.raise_for_status()
+            assert len(proxied.text.splitlines()) == 25
+            assert requests.get(f"{proxy_url}/forbidden/json?poll=1", auth=auth, timeout=5).status_code == 403
+        assert requests.get(f"{notifier.ntfy_url}/{user.ntfy_topic}/json?poll=1", timeout=5).status_code == 403
+        assert requests.get(f"{notifier.ntfy_url}/{user.ntfy_topic}/json?poll=1",
+                            auth=resolve_ntfy_publisher_auth(), timeout=5).status_code == 403
+        assert requests.post(f"{notifier.ntfy_url}/{user.ntfy_topic}", data="must-not-publish",
+                             timeout=5).status_code == 403
+        assert requests.post(os.environ["NTFY_PROVISIONER_URL"] + "/ensure",
+                             json={"username": "unsigned"}, timeout=5).status_code == 401
         public = [requests.post("http://ntfy-public/check-topic", data="public-test", auth=auth, timeout=5).status_code
                   for _ in range(5)]
         assert public == [200, 200, 200, 429, 429], public
         notifier.send_user_test(user)
         assert requests.post(f"{notifier.ntfy_url}/forbidden", data="test", auth=auth, timeout=5).status_code == 403
-        print("PASS: actual provisioning, calendar 3/1 days before with per-type times, morning/next/day-before, restart deduplication, 20 tests above burst=3, cached messages verified; public 429 and private ACLs preserved.")
+        if proxy_url:
+            proxied = requests.get(f"{proxy_url}/{user.ntfy_topic}/sse?poll=1&since=all", auth=auth, timeout=5)
+            proxied.raise_for_status()
+            assert "text/event-stream" in proxied.headers["Content-Type"]
+            stream_messages = [json.loads(line[5:].strip()) for line in proxied.text.splitlines() if line.startswith("data:")]
+            assert len(stream_messages) == 29
+            assert all(message["event"] == "message" for message in stream_messages)
+            # Forging the exempt VP address must not bypass the public limiter.
+            spoofed = requests.get(f"{proxy_url}/{user.ntfy_topic}/json?poll=1", auth=auth,
+                                   headers={"X-Forwarded-For": "172.30.250.3"}, timeout=5)
+            assert spoofed.status_code == 429
+            notifier.send_user_test(user)
+        print("PASS: actual provisioning, calendar 3/1 days before with per-type times, morning/next/day-before, restart deduplication, 20 tests above burst=3, cached messages verified; public 429, proxy JSON/SSE subscriptions, credential resync, publisher read denial and unsigned provisioning denial verified.")
 
 
 if __name__ == "__main__":

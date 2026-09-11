@@ -12,7 +12,10 @@ Replace the example hostnames and certificate settings first. Set these values i
 CALENDAR_PUBLIC_URL=https://cal11.de
 VERTRETUNGSPLAN_PUBLIC_URL=https://vp.cal11.de
 NTFY_PUBLIC_URL=https://notify.cal11.de
-NTFY_INTERNAL_URL=http://ntfy
+NTFY_BEHIND_PROXY=true
+APP_BIND_HOST=127.0.0.1
+VP_BIND_HOST=127.0.0.1
+NTFY_BIND_HOST=127.0.0.1
 COOKIE_SECURE=true
 COOKIE_DOMAIN=cal11.de
 ```
@@ -23,9 +26,9 @@ Angabe bleibt für abweichende Domainstrukturen empfohlen. Der Wert darf nur
 die gemeinsame Eltern-Domain enthalten; der Provisionierungsdienst und ntfy
 benötigen diese Session-Cookies nicht.
 
-For ntfy, keep `behind-proxy: true` in `ntfy/server.yml` when the proxy is the public entry point. The proxy must pass WebSocket upgrades and must not buffer ntfy streaming responses. Do not expose port 8090 publicly; the Compose template binds it to localhost.
+Compose fixes server-side delivery to `http://ntfy-delivery` on the separate internal network; do not replace it with the public domain. Client subscriptions continue to use `https://notify.cal11.de`. Set `NTFY_BEHIND_PROXY=true` in `.env` when the proxy is the public entry point. The proxy must pass WebSocket upgrades and must not buffer ntfy streaming responses. Do not expose port 8090 publicly; the Compose template binds it to localhost.
 
-For nginx, the calendar vhost in [nginx.conf](/home/rdbr/PycharmProjects/jahrgangskalender/proxy/nginx.conf) already includes upload-safe settings for `/api/upload` (`client_max_body_size 12m`, `proxy_request_buffering off`). Keep this when adjusting templates, otherwise uploads can fail with HTTP 413.
+For nginx, the calendar vhost in [nginx.conf](/home/rdbr/PycharmProjects/jahrgangskalender/proxy/nginx.conf) already includes upload-safe settings for `/api/upload` (`client_max_body_size 15m`, `proxy_request_buffering off`). Keep this when adjusting templates, otherwise uploads can fail with HTTP 413.
 
 The application backend now trusts `X-Forwarded-For` only from configured trusted proxies (env `TRUSTED_PROXIES`, default `127.0.0.1,::1`; CIDR ranges are supported). When the app runs in Docker and the reverse proxy connects via the container's published port, the peer address is the Docker bridge gateway, not `127.0.0.1` — set `TRUSTED_PROXIES` to that gateway/subnet (e.g. `172.16.0.0/12`, check with `docker network inspect`) so real client IPs are logged instead of the proxy's.
 
@@ -38,3 +41,16 @@ Sources:
 - https://nginx.org/en/docs/http/websocket.html
 - https://httpd.apache.org/docs/2.4/mod/mod_proxy.html
 - https://caddyserver.com/docs/caddyfile/directives/reverse_proxy
+
+For production with nginx running on the Docker host, use `./start-all.sh docker`
+(the `docker-proxy` mode starts the optional Caddy service and would compete for
+ports 80/443). Keep the existing production TLS certificate directives when
+applying the proxy template. Validate the installed configuration with `nginx -t`
+before reloading nginx. The internal publisher URL is independent of nginx and
+must remain `http://ntfy-delivery` in Compose.
+
+`tests/ntfy-compose.e2e.yml` exercises the notify proxy directives with a real
+nginx instance, including authenticated JSON/SSE subscriptions and attempted
+`X-Forwarded-For` spoofing after the public rate limit has been exhausted. The
+test uses HTTP inside isolated Docker networks; production TLS certificates and
+the configuration actually installed on the server must be checked separately.

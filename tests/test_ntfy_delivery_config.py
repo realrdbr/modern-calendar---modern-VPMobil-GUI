@@ -31,3 +31,29 @@ class DeliveryNetworkTests(unittest.TestCase):
             self.assertEqual(services['vp']['depends_on'][dependency]['condition'], 'service_healthy')
             self.assertIn('healthcheck', services[dependency])
         self.assertEqual(services['ntfy-provisioner']['depends_on']['ntfy']['condition'], 'service_healthy')
+
+    def test_loopback_ports_do_not_change_container_listeners_or_proxy_network(self):
+        services = self.config['services']
+        for service in ('app', 'vp', 'ntfy'):
+            self.assertIn(':-127.0.0.1}', services[service]['ports'][0])
+            self.assertIn('cal11_net', services[service]['networks'])
+        self.assertIn('cal11_net', services['proxy']['networks'])
+        for service in ('app', 'vp'):
+            self.assertEqual(services[service]['environment']['BIND_HOST'], '${BIND_HOST:-0.0.0.0}')
+        self.assertNotIn('ports', services['ntfy-provisioner'])
+        self.assertEqual(services['ntfy']['environment']['NTFY_AUTH_DEFAULT_ACCESS'],
+                         '${NTFY_AUTH_DEFAULT_ACCESS:-deny-all}')
+
+    def test_uploads_and_auth_data_remain_available_as_runtime_mounts(self):
+        services = self.config['services']
+        self.assertIn('./uploads:/app/uploads', services['app']['volumes'])
+        for service in ('ntfy', 'ntfy-provisioner'):
+            self.assertIn('./data/ntfy:/var/lib/ntfy', services[service]['volumes'])
+
+    def test_nginx_test_uses_production_notify_proxy_directives(self):
+        root = Path(__file__).resolve().parents[1]
+        production = (root / 'proxy/nginx.conf').read_text()
+        notify_location = '    location / {' + production.rsplit('    location / {', 1)[1]
+        notify_location = notify_location.replace('proxy_pass http://127.0.0.1:8090;',
+                                                  'proxy_pass http://ntfy:80;')
+        self.assertIn(notify_location, (root / 'tests/ntfy-proxy.nginx.conf').read_text())

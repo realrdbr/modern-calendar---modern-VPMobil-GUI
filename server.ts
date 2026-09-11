@@ -1,5 +1,6 @@
 import { setVisibleEventCompletion } from "./server/eventCompletion";
 import express from 'express';
+import { uploadDownloads } from './server/uploadDownloads';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
@@ -170,7 +171,7 @@ async function startServer() {
 
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
-  app.use('/uploads', express.static(uploadsDir));
+  app.use('/uploads', uploadDownloads(uploadsDir));
   app.use('/icons', express.static(path.join(process.cwd(), 'icons')));
 
   // Require active DB connection for all API routes
@@ -703,7 +704,7 @@ async function startServer() {
       const { filename, mimeType, data, privateAttachment } = req.body;
       if (!data) return res.status(400).json({ error: 'Data is required' });
 
-      const matches = data.match(/^data:(.+);base64,(.+)$/);
+      const matches = data.match(/^data:([^;]*);base64,([\s\S]*)$/);
       let buffer: Buffer;
       if (matches) {
         buffer = Buffer.from(matches[2], 'base64');

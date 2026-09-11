@@ -185,16 +185,26 @@ export default function EventModal({ isOpen, onClose, onSave, onDelete, initialD
     setAttachments(prev => prev.filter(a => a.id !== id));
   };
 
-  const downloadAttachment = (attachment: Attachment) => {
+  const downloadAttachment = async (attachment: Attachment) => {
     const href = attachment.url || attachment.data;
     if (!href) return;
-    const a = document.createElement('a');
-    a.href = href;
-    a.download = attachment.filename;
-    a.target = '_blank';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    try {
+      const response = await fetch(href);
+      if (!response.ok || response.headers.get('content-type')?.includes('text/html')) {
+        throw new Error('Anhang nicht verfügbar');
+      }
+      const blob = new Blob([await response.arrayBuffer()], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = attachment.filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch {
+      alert('Der Anhang konnte nicht heruntergeladen werden. Möglicherweise fehlt die Datei und muss erneut hochgeladen werden.');
+    }
   };
 
   const availableCourses = isAdmin 
